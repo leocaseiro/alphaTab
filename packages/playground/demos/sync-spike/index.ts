@@ -412,6 +412,11 @@ api.playerReady.on(async () => {
     applyMix();
     log('player ready');
     (window as any).spikeReady = true;
+    if (mode === 'nudgecal' && src === 'mp3') {
+        log('calibrating media latency in the background (silent) …');
+        await player.spikeCalibrate([1, 0.5, 0.75, 1.25, 1.5]);
+        log({ mediaLatencyByRate: player.stats.mediaLatencyByRate });
+    }
 });
 
 (async () => {

@@ -130,11 +130,11 @@ export class MixSpikePlayer implements IAlphaSynth {
         if (mode === 'nudge' || mode === 'nudgecal') {
             out.spikeOnTimestamp = (frame, mediaTime) => this._onTimestamp(frame, mediaTime);
         }
+        synth.spikeOnMediaPosition = t => {
+            this._synthMediaPosition = t;
+            this._synthMediaPositionAt = performance.now();
+        };
         if (mode === 'seek') {
-            synth.spikeOnMediaPosition = t => {
-                this._synthMediaPosition = t;
-                this._synthMediaPositionAt = performance.now();
-            };
             media.positionChanged.on(() => this._seekCheck());
         }
     }
@@ -157,6 +157,10 @@ export class MixSpikePlayer implements IAlphaSynth {
     }
 
     private _mediaTimeNow(): number {
+        if (this.mode === 'decode' && this._synthMediaPosition >= 0) {
+            // the synth is the clock in decode mode, the <audio> element never plays
+            return this._synthMediaPosition;
+        }
         return this.mediaOutput.audioElement.currentTime * 1000;
     }
 
@@ -467,6 +471,7 @@ export class MixSpikePlayer implements IAlphaSynth {
         this._afterSeek();
     }
     private _afterSeek() {
+        this._synthMediaPosition = -1;
         this._settleUntil = performance.now() + this.settleDuration;
         const mediaTime = this._toMedia(this.media.timePosition) + this._latencyInMedia();
         this._resyncTo(mediaTime, this.mode === 'nudge' || this.mode === 'nudgecal' ? this._resyncLead : 0);
