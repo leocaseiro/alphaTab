@@ -419,8 +419,19 @@ export class AlphaSynthWebWorkerApi implements IAlphaSynth {
                 this._checkReadyForPlayback();
                 (this.midiLoadFailed as EventEmitterOfT<Error>).trigger(data.error);
                 break;
-            case 'alphaSynth.output.addSamples':
-                this._output.addSamples(data.samples);
+            case 'alphaSynth.output.addSamples': {
+                // SPIKE (#2397): forward media time stamps if the output understands them
+                const d = data as any;
+                const output = this._output as any;
+                if (d.mediaStart !== undefined && output.spikeAddSamples) {
+                    output.spikeAddSamples(d.samples, d.mediaStart, d.mediaPerFrame);
+                } else {
+                    this._output.addSamples(data.samples);
+                }
+                break;
+            }
+            case 'alphaSynth.spike.mediaPosition' as any:
+                this.spikeOnMediaPosition?.((data as any).mediaTime);
                 break;
             case 'alphaSynth.output.play':
                 this._output.play();
@@ -482,6 +493,37 @@ export class AlphaSynthWebWorkerApi implements IAlphaSynth {
     private _onOutputReady(): void {
         this._outputIsReady = true;
         this._checkReady();
+    }
+
+    // ---- SPIKE (#2397) ----
+    public spikeOnMediaPosition?: (mediaTime: number) => void;
+
+    public spikeFollow(enabled: boolean, mediaDuration: number, syncPoints: BackingTrackSyncPoint[]) {
+        this._synth.postMessage({
+            cmd: 'alphaSynth.spike.follow',
+            enabled,
+            mediaDuration,
+            syncPoints: Environment.prepareForPostMessage(syncPoints)
+        } as any);
+    }
+
+    public spikeCorrection(value: number) {
+        this._synth.postMessage({ cmd: 'alphaSynth.spike.correction', value } as any);
+    }
+
+    public spikeResync(mediaTime: number) {
+        this._synth.postMessage({ cmd: 'alphaSynth.spike.resync', mediaTime } as any);
+    }
+
+    public spikePcm(left: Float32Array | null, right: Float32Array | null, sampleRate: number, split: boolean) {
+        const transfer: Transferable[] = [];
+        if (left) {
+            transfer.push(left.buffer);
+        }
+        if (right && right !== left) {
+            transfer.push(right.buffer);
+        }
+        (this._synth as any).postMessage({ cmd: 'alphaSynth.spike.pcm', left, right, sampleRate, split }, transfer);
     }
 
     public loadBackingTrack(_score: Score): void {

@@ -88,7 +88,17 @@ export class AudioElementBackingTrackSynthOutput implements IAudioElementBacking
         (this.timeUpdate as EventEmitterOfT<number>).trigger(timePos);
     }
 
+    // SPIKE (#2397): route the <audio> through a Web Audio graph (shared with the synth)
+    public spikeSource: MediaElementAudioSourceNode | null = null;
+    public spikeRouteThrough(ctx: AudioContext, destination: AudioNode) {
+        if (!this.spikeSource) {
+            this.spikeSource = ctx.createMediaElementSource(this.audioElement);
+        }
+        this.spikeSource.connect(destination);
+    }
+
     public play(): void {
+        window.clearInterval(this._updateInterval);
         this.audioElement.play();
         this._updateInterval = window.setInterval(() => {
             this._updatePosition();

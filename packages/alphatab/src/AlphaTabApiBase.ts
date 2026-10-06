@@ -1694,9 +1694,16 @@ export class AlphaTabApiBase<TSettings> {
                 case PlayerMode.EnabledSynthesizer:
                     newPlayer = this.uiFacade.createWorkerPlayer();
                     break;
-                case PlayerMode.EnabledBackingTrack:
-                    newPlayer = this.uiFacade.createBackingTrackPlayer();
+                case PlayerMode.EnabledBackingTrack: {
+                    // SPIKE (#2397): combine backing track + synthesizer
+                    const spikeMode = (globalThis as any).__alphaTabMixSpike;
+                    const uiFacade = this.uiFacade as any;
+                    newPlayer =
+                        spikeMode && uiFacade.createMixSpikePlayer
+                            ? uiFacade.createMixSpikePlayer(spikeMode)
+                            : this.uiFacade.createBackingTrackPlayer();
                     break;
+                }
                 case PlayerMode.EnabledExternalMedia:
                     newPlayer = new ExternalMediaPlayer(this.settings.player.bufferTimeInMilliseconds);
                     break;

@@ -55,6 +55,11 @@ declare let registerProcessor: any;
  * @internal
  */
 declare let sampleRate: number;
+/**
+ * @target web
+ * @internal
+ */
+declare let currentFrame: number;
 
 /**
  * This class implements a HTML5 Web Audio API based audio output device
@@ -79,6 +84,29 @@ export class AlphaSynthWebWorklet {
                 private _bufferCount: number = 0;
                 private _requestedBufferCount: number = 0;
                 private _isStopped = false;
+
+                // SPIKE (#2397): media time markers of the buffered chunks (FIFO, aligned with the circular buffer)
+                private _spikeChunks: { frames: number; consumed: number; mediaStart: number; mediaPerFrame: number }[] =
+                    [];
+                private _spikeFramesSinceTimestamp = 0;
+
+                private _spikeMediaTimeAtReadPosition(): number {
+                    const c = this._spikeChunks[0];
+                    return c ? c.mediaStart + c.consumed * c.mediaPerFrame : -1;
+                }
+
+                private _spikeConsume(frames: number) {
+                    let remaining = frames;
+                    while (remaining > 0 && this._spikeChunks.length > 0) {
+                        const c = this._spikeChunks[0];
+                        const take = Math.min(remaining, c.frames - c.consumed);
+                        c.consumed += take;
+                        remaining -= take;
+                        if (c.consumed >= c.frames) {
+                            this._spikeChunks.shift();
+                        }
+                    }
+                }
 
                 constructor(options: AudioWorkletNodeOptions) {
                     super(options);
@@ -106,9 +134,18 @@ export class AlphaSynthWebWorklet {
                             const f: Float32Array = data.samples;
                             this._circularBuffer.write(f, 0, f.length);
                             this._requestedBufferCount--;
+                            if ((data as any).mediaStart !== undefined) {
+                                this._spikeChunks.push({
+                                    frames: f.length / SynthConstants.AudioChannels,
+                                    consumed: 0,
+                                    mediaStart: (data as any).mediaStart,
+                                    mediaPerFrame: (data as any).mediaPerFrame
+                                });
+                            }
                             break;
                         case 'alphaSynth.output.resetSamples':
                             this._circularBuffer.clear();
+                            this._spikeChunks = [];
                             break;
                         case 'alphaSynth.output.stop':
                             this._isStopped = true;
@@ -138,11 +175,28 @@ export class AlphaSynthWebWorklet {
                         buffer = new Float32Array(samples);
                         this._outputBuffer = buffer;
                     }
+                    // SPIKE (#2397): report which media time this block starts with (every ~50ms)
+                    const spikeMediaTime = this._spikeMediaTimeAtReadPosition();
                     const samplesFromBuffer = this._circularBuffer.read(
                         buffer,
                         0,
                         Math.min(buffer.length, this._circularBuffer.count)
                     );
+                    const spikeFrames = samplesFromBuffer / SynthConstants.AudioChannels;
+                    this._spikeConsume(spikeFrames);
+                    this._spikeFramesSinceTimestamp += left.length;
+                    if (
+                        spikeMediaTime >= 0 &&
+                        spikeFrames === left.length &&
+                        this._spikeFramesSinceTimestamp >= sampleRate / 20
+                    ) {
+                        this._spikeFramesSinceTimestamp = 0;
+                        this.port.postMessage({
+                            cmd: 'alphaSynth.output.timestamp',
+                            frame: currentFrame,
+                            mediaTime: spikeMediaTime
+                        } as any);
+                    }
                     let s: number = 0;
                     const min = Math.min(left.length, samplesFromBuffer);
                     for (let i: number = 0; i < min; i++) {
@@ -228,7 +282,30 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
     public override open(bufferTimeInMilliseconds: number) {
         super.open(bufferTimeInMilliseconds);
         this._bufferTimeInMilliseconds = bufferTimeInMilliseconds;
+        // SPIKE (#2397): a shared master gain so a routed backing track and the synth share one graph
+        const ctx = this.context!;
+        this._spikeMaster = ctx.createGain();
+        this._spikeMaster.connect(ctx.destination);
         this.onReady();
+    }
+
+    // ---- SPIKE (#2397) ----
+    private _spikeMaster: GainNode | null = null;
+    public spikeOnTimestamp?: (frame: number, mediaTime: number) => void;
+    public spikeOnWorkletCreated?: (worklet: AudioNode) => void;
+    public get spikeContext(): AudioContext {
+        return this.context!;
+    }
+    public get spikeMaster(): GainNode {
+        return this._spikeMaster!;
+    }
+    public spikeAddSamples(f: Float32Array, mediaStart: number, mediaPerFrame: number): void {
+        this._postWorkerMessage({
+            cmd: 'alphaSynth.output.addSamples',
+            samples: Environment.prepareForPostMessage(f),
+            mediaStart,
+            mediaPerFrame
+        } as any);
     }
 
     public override play(): void {
@@ -302,7 +379,8 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
         this.createSource(ctx);
         this.source!.start(0);
         this.source!.connect(worklet);
-        worklet.connect(ctx.destination);
+        worklet.connect(this._spikeMaster ?? ctx.destination);
+        this.spikeOnWorkletCreated?.(worklet);
 
         for (const e of pendingEvents) {
             worklet.port.postMessage(e);
@@ -334,6 +412,9 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
                 break;
             case 'alphaSynth.output.sampleRequest':
                 this.onSampleRequest();
+                break;
+            case 'alphaSynth.output.timestamp' as any:
+                this.spikeOnTimestamp?.((data as any).frame, (data as any).mediaTime);
                 break;
         }
     }

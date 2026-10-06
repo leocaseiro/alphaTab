@@ -35,6 +35,17 @@ import type { SynthEvent } from '@coderline/alphatab/synth/synthesis/SynthEvent'
 import { TinySoundFont } from '@coderline/alphatab/synth/synthesis/TinySoundFont';
 
 /**
+ * SPIKE (#2397): a chunk of generated samples with the media time of its first frame.
+ * @internal
+ */
+class SpikeChunk {
+    public frames: number = 0;
+    public consumed: number = 0;
+    public mediaStart: number = 0;
+    public mediaPerFrame: number = 0;
+}
+
+/**
  * This is the base class for synthesizer components which can be used to
  * play a {@link MidiFile} via a {@link ISynthOutput}.
  * @public
@@ -255,7 +266,167 @@ export class AlphaSynthBase implements IAlphaSynth {
         this.output.open(bufferTimeInMilliseconds);
     }
 
+    // ---------------------------------------------------------------------------------
+    // SPIKE (#2397): let the synth follow an external media clock (backing track / video)
+    // The synth renders in the media time axis: per micro buffer the media time advances by
+    // (micro buffer duration * playback speed * correction) and the sequencer is moved to the
+    // MIDI time the sync points map that media time to.
+    // ---------------------------------------------------------------------------------
+    private _spikeFollow: boolean = false;
+    private _spikeMediaDuration: number = 0;
+    private _spikeMediaTime: number = 0;
+    private _spikeCorrection: number = 1;
+    private _spikePlayedMediaTime: number = 0;
+    private _spikeChunks: Queue<SpikeChunk> = new Queue<SpikeChunk>();
+    private _spikePcmLeft: Float32Array | null = null;
+    private _spikePcmRight: Float32Array | null = null;
+    private _spikePcmRate: number = 0;
+    private _spikePcmSplit: boolean = false;
+    private _spikeLastMediaPositionReport: number = 0;
+    public readonly spikeMediaPositionChanged: IEventEmitterOfT<number> = new EventEmitterOfT<number>();
+
+    public spikeFollow(enabled: boolean, mediaDuration: number, syncPoints: BackingTrackSyncPoint[]) {
+        this._spikeFollow = enabled;
+        this._spikeMediaDuration = mediaDuration;
+        this.sequencer.mainUpdateSyncPoints(syncPoints);
+    }
+
+    public spikeSetCorrection(correction: number) {
+        this._spikeCorrection = correction;
+    }
+
+    public spikeResync(mediaTime: number) {
+        this._spikeMediaTime = mediaTime;
+        this._spikePlayedMediaTime = mediaTime;
+        this._spikeChunks.clear();
+        const alphaTabTime = this.sequencer.mainTimePositionFromBackingTrack(mediaTime, this._spikeMediaDuration);
+        this.synthesizer.noteOffAll(true);
+        this.timePosition = alphaTabTime;
+        this.output.resetSamples();
+    }
+
+    public spikeLoadPcm(left: Float32Array | null, right: Float32Array | null, sampleRate: number, split: boolean) {
+        this._spikePcmLeft = left;
+        this._spikePcmRight = right;
+        this._spikePcmRate = sampleRate;
+        this._spikePcmSplit = split;
+    }
+
+    private _spikeMixPcm(samples: Float32Array, bufferPos: number, frames: number, mediaStart: number, mediaPerFrame: number) {
+        const left = this._spikePcmLeft!;
+        const right = this._spikePcmRight ?? left;
+        const framesPerMs = this._spikePcmRate / 1000;
+        const split = this._spikePcmSplit;
+        for (let f = 0; f < frames; f++) {
+            const pos = (mediaStart + f * mediaPerFrame) * framesPerMs;
+            const i = Math.floor(pos);
+            let l = 0;
+            let r = 0;
+            if (i >= 0 && i + 1 < left.length) {
+                const frac = pos - i;
+                l = left[i] + (left[i + 1] - left[i]) * frac;
+                r = right[i] + (right[i + 1] - right[i]) * frac;
+            }
+            const o = bufferPos + f * SynthConstants.AudioChannels;
+            if (split) {
+                // measurement only: backing track in the left channel, synth in the right channel
+                samples[o] = l;
+            } else {
+                samples[o] += l;
+                samples[o + 1] += r;
+            }
+        }
+    }
+
+    private _spikeOnSampleRequest() {
+        const microBufferMillis = (SynthConstants.MicroBufferSize / this.synthesizer.outSampleRate) * 1000;
+        const mediaPerMicroBuffer = microBufferMillis * this.sequencer.playbackSpeed * this._spikeCorrection;
+        const mediaPerFrame = mediaPerMicroBuffer / SynthConstants.MicroBufferSize;
+        const mediaStart = this._spikeMediaTime;
+
+        let samples: Float32Array = new Float32Array(
+            SynthConstants.MicroBufferSize * SynthConstants.MicroBufferCount * SynthConstants.AudioChannels
+        );
+        let bufferPos: number = 0;
+        for (let i = 0; i < SynthConstants.MicroBufferCount; i++) {
+            const nextMediaTime = this._spikeMediaTime + mediaPerMicroBuffer;
+            const internalTarget =
+                this.sequencer.mainTimePositionFromBackingTrack(nextMediaTime, this._spikeMediaDuration) *
+                this.sequencer.playbackSpeed;
+            this.sequencer.spikeFillMidiEventQueueUntil(internalTarget);
+            const synthesizedEvents = this.synthesizer.synthesize(samples, bufferPos, SynthConstants.MicroBufferSize);
+            if (this._spikePcmLeft) {
+                this._spikeMixPcm(samples, bufferPos, SynthConstants.MicroBufferSize, this._spikeMediaTime, mediaPerFrame);
+            }
+            bufferPos += SynthConstants.MicroBufferSize * SynthConstants.AudioChannels;
+            this._spikeMediaTime = nextMediaTime;
+            for (const e of synthesizedEvents) {
+                if (this.midiEventsPlayedFilterSet.has(e.event.type)) {
+                    this.playedEventsQueue.enqueue(e);
+                }
+            }
+            if (this.sequencer.isFinished && !this._spikePcmLeft) {
+                break;
+            }
+        }
+
+        if (bufferPos < samples.length) {
+            samples = samples.subarray(0, bufferPos);
+        }
+        const frames = bufferPos / SynthConstants.AudioChannels;
+        const chunk = new SpikeChunk();
+        chunk.frames = frames;
+        chunk.mediaStart = mediaStart;
+        chunk.mediaPerFrame = mediaPerFrame;
+        this._spikeChunks.enqueue(chunk);
+        this._notPlayedSamples += samples.length;
+
+        const output = this.output as ISynthOutput & {
+            spikeAddSamples?(samples: Float32Array, mediaStart: number, mediaPerFrame: number): void;
+        };
+        if (output.spikeAddSamples) {
+            output.spikeAddSamples(samples, mediaStart, mediaPerFrame);
+        } else {
+            this.output.addSamples(samples);
+        }
+    }
+
+    private _spikeOnSamplesPlayed(sampleCount: number) {
+        let remaining = sampleCount;
+        while (remaining > 0 && !this._spikeChunks.isEmpty) {
+            const c = this._spikeChunks.peek()!;
+            const take = Math.min(remaining, c.frames - c.consumed);
+            c.consumed += take;
+            remaining -= take;
+            this._spikePlayedMediaTime = c.mediaStart + c.consumed * c.mediaPerFrame;
+            if (c.consumed >= c.frames) {
+                this._spikeChunks.dequeue();
+            }
+        }
+        this._notPlayedSamples -= sampleCount * SynthConstants.AudioChannels;
+        const alphaTabTime = this.sequencer.mainTimePositionFromBackingTrack(
+            this._spikePlayedMediaTime,
+            this._spikeMediaDuration
+        );
+        this.updateTimePosition(alphaTabTime, false);
+
+        const now = Date.now();
+        if (now - this._spikeLastMediaPositionReport >= 20) {
+            this._spikeLastMediaPositionReport = now;
+            (this.spikeMediaPositionChanged as EventEmitterOfT<number>).trigger(this._spikePlayedMediaTime);
+        }
+        this.checkForFinish();
+    }
+
     protected onSampleRequest() {
+        if (
+            this._spikeFollow &&
+            this.state === PlayerState.Playing &&
+            (!this.sequencer.isFinished || this.synthesizer.activeVoiceCount > 0 || this._spikePcmLeft)
+        ) {
+            this._spikeOnSampleRequest();
+            return;
+        }
         if (
             this.state === PlayerState.Playing &&
             (!this.sequencer.isFinished || this.synthesizer.activeVoiceCount > 0)
@@ -513,6 +684,10 @@ export class AlphaSynthBase implements IAlphaSynth {
 
     private _onSamplesPlayed(sampleCount: number): void {
         if (sampleCount === 0) {
+            return;
+        }
+        if (this._spikeFollow) {
+            this._spikeOnSamplesPlayed(sampleCount);
             return;
         }
         const playedMillis: number = (sampleCount / this.synthesizer.outSampleRate) * 1000;

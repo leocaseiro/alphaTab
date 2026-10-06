@@ -33,6 +33,7 @@ import { PlayerOutputMode, ScrollMode } from '@coderline/alphatab/PlayerSettings
 import type { SettingsJson } from '@coderline/alphatab/generated/SettingsJson';
 import { AudioElementBackingTrackSynthOutput } from '@coderline/alphatab/platform/javascript/AudioElementBackingTrackSynthOutput';
 import { BackingTrackPlayer } from '@coderline/alphatab/synth/BackingTrackPlayer';
+import { MixSpikePlayer, type MixSpikeMode } from '@coderline/alphatab/platform/javascript/MixSpikePlayer';
 import { CoreSettings, FontFileFormat } from '@coderline/alphatab/CoreSettings';
 import type { IAudioExporterWorker } from '@coderline/alphatab/synth/IAudioExporter';
 import { AlphaSynthAudioExporterWorkerApi } from '@coderline/alphatab/platform/worker/AlphaSynthAudioExporterWorkerApi';
@@ -1047,6 +1048,18 @@ export class BrowserUiFacade implements IUiFacade<unknown> {
             new AudioElementBackingTrackSynthOutput(),
             this._api.settings.player.bufferTimeInMilliseconds
         );
+    }
+
+    /**
+     * SPIKE (#2397): backing track + worker synth combined.
+     */
+    public createMixSpikePlayer(mode: MixSpikeMode): IAlphaSynth | null {
+        const media = this.createBackingTrackPlayer() as BackingTrackPlayer;
+        const synth = this.createWorkerPlayer() as AlphaSynthWebWorkerApi | null;
+        if (!synth) {
+            return media;
+        }
+        return new MixSpikePlayer(media, synth, mode);
     }
 
     public throttle(action: () => void, delay: number): () => void {

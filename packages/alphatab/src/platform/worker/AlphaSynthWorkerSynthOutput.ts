@@ -65,6 +65,16 @@ export class AlphaSynthWorkerSynthOutput implements ISynthOutput {
         });
     }
 
+    // SPIKE (#2397): samples tagged with the media time of their first frame
+    public spikeAddSamples(samples: Float32Array, mediaStart: number, mediaPerFrame: number): void {
+        this._main.postMessage({
+            cmd: 'alphaSynth.output.addSamples',
+            samples: Environment.prepareForPostMessage(samples),
+            mediaStart,
+            mediaPerFrame
+        } as any);
+    }
+
     public play(): void {
         this._main.postMessage({
             cmd: 'alphaSynth.output.play'

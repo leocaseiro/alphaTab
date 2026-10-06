@@ -56,11 +56,32 @@ export class AlphaSynthWebWorker {
                 this._player.readyForPlayback.on(() => this.onReadyForPlayback());
                 this._player.midiEventsPlayed.on(e => this.onMidiEventsPlayed(e));
                 this._player.playbackRangeChanged.on(e => this.onPlaybackRangeChanged(e));
+                // SPIKE (#2397)
+                this._player.spikeMediaPositionChanged.on(t =>
+                    this._main.postMessage({ cmd: 'alphaSynth.spike.mediaPosition', mediaTime: t } as any)
+                );
                 this._main.postMessage({
                     cmd: 'alphaSynth.ready'
                 });
 
                 break;
+            // SPIKE (#2397)
+            case 'alphaSynth.spike.follow' as any: {
+                const d = data as any;
+                this._player.spikeFollow(d.enabled, d.mediaDuration, d.syncPoints);
+                break;
+            }
+            case 'alphaSynth.spike.correction' as any:
+                this._player.spikeSetCorrection((data as any).value);
+                break;
+            case 'alphaSynth.spike.resync' as any:
+                this._player.spikeResync((data as any).mediaTime);
+                break;
+            case 'alphaSynth.spike.pcm' as any: {
+                const d = data as any;
+                this._player.spikeLoadPcm(d.left, d.right, d.sampleRate, d.split);
+                break;
+            }
             case 'alphaSynth.setLogLevel':
                 Logger.logLevel = data.value;
                 break;

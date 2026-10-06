@@ -358,6 +358,25 @@ export class MidiFileSequencer {
         return anyEventsDispatched;
     }
 
+    /**
+     * SPIKE (#2397): advances the current state to an absolute internal time (speed=1 ms)
+     * and dispatches all events before it. Used when an external media clock drives the synth.
+     */
+    public spikeFillMidiEventQueueUntil(internalTime: number): boolean {
+        const state = this._currentState;
+        if (internalTime < state.currentTime) {
+            return false;
+        }
+        state.currentTime = internalTime;
+        let anyEventsDispatched = false;
+        while (state.eventIndex < state.synthData.length && state.synthData[state.eventIndex].time < internalTime) {
+            this._synthesizer.dispatchEvent(state.synthData[state.eventIndex]);
+            state.eventIndex++;
+            anyEventsDispatched = true;
+        }
+        return anyEventsDispatched;
+    }
+
     private _fillMidiEventQueueLimited(maxMilliseconds: number): boolean {
         let millisecondsPerBuffer: number =
             (SynthConstants.MicroBufferSize / this._synthesizer.outSampleRate) * 1000 * this.playbackSpeed;

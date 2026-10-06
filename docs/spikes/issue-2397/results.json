@@ -1,0 +1,96 @@
+{
+  "about": "Spike measurements for CoderLine/alphaTab#2397. offset = synth click onset - backing track beep onset (ms, + = click late), measured with two AudioWorklet taps in one AudioContext. 'settled' = after the first 1.5 s of a scenario. Perfect alignment reads about -0.65 ms (64-frame micro buffer quantization).",
+  "environment": {
+    "browser": "Chromium 152.0.7977.130 (Claude desktop browser pane), macOS",
+    "audioContext": { "sampleRate": 48000, "baseLatency": 0.00533, "outputLatency": 0.024 },
+    "alphaTab": { "base": "develop @ 25ef76d3", "bufferTimeInMilliseconds": 500, "soundFont": "sonivox.sf2" },
+    "score": "Pelados em Santos (GP8), 1 drum track, 119 bars, 107 sync points, 135/145 BPM, 476 beats",
+    "backingTrack": "embedded MP3 204.38 s, 4,654,774 bytes; replaced by a generated 48 kHz WAV with a 3 ms 2 kHz beep on each beat for measuring"
+  },
+  "modes": {
+    "free": {
+      "description": "baseline: synth follows sync points, re-synced only on play/seek/speed, no correction",
+      "runs": [
+        {
+          "segments": {
+            "start@0s 1.0x": { "clicks": 57, "settled": { "mean": 100.69, "median": 100.71, "p95Abs": 101.31, "maxAbs": 101.33, "std": 0.39 } },
+            "seek->60s 1.0x": { "clicks": 35, "settled": { "mean": 10.01, "median": 9.98, "p95Abs": 10.63, "maxAbs": 10.67, "std": 0.41 } },
+            "seek->100s 0.5x": { "clicks": 17, "settled": { "mean": 12.0, "median": 7.13, "p95Abs": 26.58, "maxAbs": 26.58, "std": 7.92 } },
+            "seek->130s 1.5x": { "clicks": 21, "settled": { "mean": -22.24, "median": -22.15, "p95Abs": 24.31, "maxAbs": 24.31, "std": 1.25 } }
+          }
+        },
+        {
+          "segments": {
+            "start@0s 1.0x": { "settled": { "mean": 106.03, "p95Abs": 106.65, "std": 0.39 } },
+            "seek->60s 1.0x": { "settled": { "mean": 4.68, "p95Abs": 5.29, "std": 0.41 } },
+            "seek->100s 0.5x": { "settled": { "mean": 12.0, "p95Abs": 26.58, "std": 7.92 } },
+            "seek->130s 1.5x": { "settled": { "mean": -22.24, "p95Abs": 24.31, "std": 1.25 } }
+          }
+        }
+      ],
+      "longRun1x": {
+        "description": "no correction, play from 0:00 at 1.0x for 152 s (crosses the 135->145 BPM tempo change)",
+        "windowsMeanMs": { "2-12s": 116.63, "40-50s": 116.66, "80-90s": 116.72, "120-130s": 116.74, "140-152s": 116.57 },
+        "minMaxMs": [116.02, 117.33]
+      }
+    },
+    "seek": {
+      "description": "Spike 1: seek the synth when |drift| > 50 ms (checked on each media time update)",
+      "totalDriftSeeks": 1,
+      "segments": {
+        "start@0s 1.0x": { "clicks": 57, "first": { "mean": 28.75, "maxAbs": 101.33 }, "settled": { "mean": 4.69, "median": 4.71, "p95Abs": 5.31, "maxAbs": 5.33, "std": 0.39 }, "resyncs": 2 },
+        "seek->60s 1.0x": { "clicks": 35, "first": { "mean": 4.88, "maxAbs": 5.29 }, "settled": { "mean": 4.68, "median": 4.65, "p95Abs": 5.29, "maxAbs": 5.33, "std": 0.41 }, "resyncs": 1 },
+        "seek->100s 0.5x": { "clicks": 17, "first": { "mean": 22.29, "maxAbs": 29.98 }, "settled": { "mean": 12.0, "median": 7.13, "p95Abs": 26.58, "maxAbs": 26.58, "std": 7.92 }, "resyncs": 2 },
+        "seek->130s 1.5x": { "clicks": 21, "first": { "mean": -21.81, "maxAbs": 23.77 }, "settled": { "mean": -22.24, "median": -22.15, "p95Abs": 24.31, "maxAbs": 24.31, "std": 1.25 }, "resyncs": 2 }
+      }
+    },
+    "nudge": {
+      "description": "Spike 2: worklet timestamps + speed nudging (max +-1%), re-sync if |drift| > 120 ms (15 ms while settling)",
+      "totalResyncs": 12,
+      "learnedResyncLeadMs": 2.3,
+      "segments": {
+        "start@0s 1.0x": { "clicks": 57, "first": { "mean": 4.75, "maxAbs": 5.33 }, "settled": { "mean": 2.0, "median": 1.96, "p95Abs": 2.98, "maxAbs": 3.77, "std": 0.53 }, "resyncs": 1 },
+        "seek->60s 1.0x": { "clicks": 35, "first": { "mean": -8.9, "maxAbs": 10.71 }, "settled": { "mean": 0.3, "median": 1.02, "p95Abs": 4.19, "maxAbs": 6.6, "std": 2.02 }, "resyncs": 1 },
+        "seek->100s 0.5x": { "clicks": 17, "first": { "mean": 46.29, "maxAbs": 77.98 }, "settled": { "mean": 56.71, "median": 51.5, "p95Abs": 73.25, "maxAbs": 73.25, "std": 8.51 }, "resyncs": 3 },
+        "seek->130s 1.5x": { "clicks": 21, "first": { "mean": -4.21, "maxAbs": 15.77 }, "settled": { "mean": -5.32, "median": -5.0, "p95Abs": 8.25, "maxAbs": 8.25, "std": 1.77 }, "resyncs": 6 }
+      }
+    },
+    "nudgecal": {
+      "description": "Spike 2b: Spike 2 + per-speed <audio> latency measured by a silent probe",
+      "calibratedMediaLatencyMs": { "1": 0.1, "0.5": 60, "1.5": -3.6 },
+      "calibrationDurationMs": { "1": 3858, "0.5": 7750, "1.5": 2590 },
+      "totalResyncs": 8,
+      "learnedResyncLeadMs": 2.7,
+      "segments": {
+        "start@0s 1.0x": { "clicks": 57, "first": { "mean": 25.08, "maxAbs": 106.67 }, "settled": { "mean": 1.4, "median": 1.46, "p95Abs": 2.27, "maxAbs": 2.29, "std": 0.73 }, "resyncs": 2 },
+        "seek->60s 1.0x": { "clicks": 35, "first": { "mean": -0.01, "maxAbs": 0.48 }, "settled": { "mean": 1.3, "median": 1.33, "p95Abs": 1.96, "maxAbs": 1.98, "std": 0.46 }, "resyncs": 1 },
+        "seek->100s 0.5x": { "clicks": 17, "first": { "mean": -15.04, "maxAbs": 48.06 }, "settled": { "mean": -3.38, "median": -8.5, "p95Abs": 13.25, "maxAbs": 13.25, "std": 8.58 }, "resyncs": 3 },
+        "seek->130s 1.5x": { "clicks": 21, "first": { "mean": 0.06, "maxAbs": 1.17 }, "settled": { "mean": -0.74, "median": -0.37, "p95Abs": 2.98, "maxAbs": 2.98, "std": 1.32 }, "resyncs": 3 }
+      }
+    },
+    "decode": {
+      "description": "Spike 3: MP3 decoded (decodeAudioData) and mixed inside the synth worker; synth is the clock",
+      "totalResyncs": 3,
+      "decode": { "beepWavMs": 23.5, "realMp3Ms": [406, 429], "mainThreadMaxGapMs": 6, "pcmMBRealMp3": 78.5 },
+      "segments": {
+        "start@0s 1.0x": { "clicks": 57, "first": { "mean": -0.6, "maxAbs": 1.19 }, "settled": { "mean": -0.66, "median": -0.65, "p95Abs": 1.29, "maxAbs": 1.35, "std": 0.39 }, "resyncs": 1 },
+        "seek->60s 1.0x": { "clicks": 35, "first": { "mean": -0.45, "maxAbs": 0.85 }, "settled": { "mean": -0.65, "median": -0.69, "p95Abs": 1.31, "maxAbs": 1.33, "std": 0.41 }, "resyncs": 1 },
+        "seek->100s 0.5x": { "clicks": 17, "first": { "mean": -0.65, "maxAbs": 0.85 }, "settled": { "mean": -0.74, "median": -0.85, "p95Abs": 1.27, "maxAbs": 1.27, "std": 0.38 }, "resyncs": 1 },
+        "seek->130s 1.5x": { "clicks": 21, "first": { "mean": -0.48, "maxAbs": 1.31 }, "settled": { "mean": -0.69, "median": -0.71, "p95Abs": 1.31, "maxAbs": 1.31, "std": 0.41 }, "resyncs": 1 }
+      }
+    }
+  },
+  "audioElementLatencyVsCurrentTime": {
+    "description": "Chrome <audio> routed via createMediaElementSource: (time currentTime reaches T) - (time the audio of T enters Web Audio), real ms; positive = audio heard before currentTime says so",
+    "clicksOnly": { "1": [0.2, 2.0, 1.2, 0.0, 1.1], "0.75": [31.0, 30.8, 38.9, 38.5], "0.5": [52.9, 62.9, 67.9], "1.25": [-3.3, -2.8, -0.8, -0.7, -2.2, -0.7], "1.5": [-4.8, -3.9, -4.1, -4.7, -3.9, -4.1, -4.1] },
+    "clicksOnly0_5x40s": { "pattern": "alternating ~58 / ~70 ms, stable", "heardSpacingMs": [1015, 980, 1015, 980.5, 1014.5, 985.5, 1014.5], "currentTimeRatePerSecond": 0.5 },
+    "musicPlusBeeps": { "1": { "mean": 0.7, "min": -0.1, "max": 1.8 }, "0.5": { "mean": 62.8, "min": 42.3, "max": 71.5 }, "0.75": { "mean": 34.0, "min": 22.3, "max": 43.3 }, "1.5": { "mean": -3.0, "min": -10.0, "max": 0.0 } }
+  },
+  "audioElementClockUnrouted": {
+    "updateIntervalMs": 4.5,
+    "steadyStateResidualMs": { "p50": 1.33, "p95": 2.36, "max": 2.84 },
+    "firstMoveAfterPlayMs": 1.4,
+    "maxResidualFirst300msMs": 41.3,
+    "slopeVsPerformanceNow": 0.99996
+  }
+}
