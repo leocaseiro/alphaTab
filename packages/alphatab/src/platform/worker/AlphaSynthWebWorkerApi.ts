@@ -511,6 +511,10 @@ export class AlphaSynthWebWorkerApi implements IAlphaSynth {
         this._synth.postMessage({ cmd: 'alphaSynth.spike.correction', value } as any);
     }
 
+    public spikePcmGain(value: number) {
+        this._synth.postMessage({ cmd: 'alphaSynth.spike.pcmGain', value } as any);
+    }
+
     public spikeResync(mediaTime: number) {
         this._synth.postMessage({ cmd: 'alphaSynth.spike.resync', mediaTime } as any);
     }

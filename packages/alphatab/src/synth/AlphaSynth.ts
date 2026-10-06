@@ -282,6 +282,7 @@ export class AlphaSynthBase implements IAlphaSynth {
     private _spikePcmRight: Float32Array | null = null;
     private _spikePcmRate: number = 0;
     private _spikePcmSplit: boolean = false;
+    public spikePcmGain: number = 1;
     private _spikeLastMediaPositionReport: number = 0;
     public readonly spikeMediaPositionChanged: IEventEmitterOfT<number> = new EventEmitterOfT<number>();
 
@@ -332,8 +333,8 @@ export class AlphaSynthBase implements IAlphaSynth {
                 // measurement only: backing track in the left channel, synth in the right channel
                 samples[o] = l;
             } else {
-                samples[o] += l;
-                samples[o + 1] += r;
+                samples[o] += l * this.spikePcmGain;
+                samples[o + 1] += r * this.spikePcmGain;
             }
         }
     }

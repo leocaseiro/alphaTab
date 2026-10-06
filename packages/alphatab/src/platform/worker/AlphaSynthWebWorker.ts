@@ -74,6 +74,9 @@ export class AlphaSynthWebWorker {
             case 'alphaSynth.spike.correction' as any:
                 this._player.spikeSetCorrection((data as any).value);
                 break;
+            case 'alphaSynth.spike.pcmGain' as any:
+                this._player.spikePcmGain = (data as any).value;
+                break;
             case 'alphaSynth.spike.resync' as any:
                 this._player.spikeResync((data as any).mediaTime);
                 break;

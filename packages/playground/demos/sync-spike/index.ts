@@ -33,6 +33,9 @@ function log(...args: unknown[]) {
 (document.getElementById('mode') as HTMLSelectElement).value = mode;
 (document.getElementById('src') as HTMLSelectElement).value = src;
 (document.getElementById('listen') as HTMLInputElement).checked = listen;
+if (src === 'mp3') {
+    (document.getElementById('drums') as HTMLInputElement).checked = true;
+}
 for (const id of ['mode', 'src', 'listen']) {
     document.getElementById(id)!.addEventListener('change', () => {
         const url = new URL(window.location.href);
@@ -407,9 +410,22 @@ function applyMix() {
 }
 metronomeEl.addEventListener('change', applyMix);
 drumsEl.addEventListener('change', applyMix);
+const mediaVolEl = document.getElementById('mediaVol') as HTMLInputElement;
+const synthVolEl = document.getElementById('synthVol') as HTMLInputElement;
+function applyVolumes() {
+    // measuring needs both streams unscaled
+    if (src === 'beeps') {
+        player.setMix(1, 1);
+        return;
+    }
+    player.setMix(Number.parseFloat(mediaVolEl.value), Number.parseFloat(synthVolEl.value));
+}
+mediaVolEl.addEventListener('input', applyVolumes);
+synthVolEl.addEventListener('input', applyVolumes);
 
 api.playerReady.on(async () => {
     applyMix();
+    applyVolumes();
     log('player ready');
     (window as any).spikeReady = true;
     if (mode === 'nudgecal' && src === 'mp3') {

@@ -119,13 +119,21 @@ export class MixSpikePlayer implements IAlphaSynth {
         synth.readyForPlayback.on(() => this._checkReadyForPlayback());
 
         const out = this.synthOutput;
+        const ctx = out.spikeContext;
+        this.mediaGain = ctx.createGain();
+        this.mediaGain.connect(out.spikeMaster);
+        this.synthGain = ctx.createGain();
+        this.synthGain.connect(out.spikeMaster);
         out.spikeOnWorkletCreated = node => {
+            // the synth reaches the speakers through its own gain (mix balance)
+            node.disconnect();
+            node.connect(this.synthGain);
             for (const cb of this._onSynthWorklet) {
                 cb(node);
             }
         };
         if (mode !== 'decode') {
-            this.mediaOutput.spikeRouteThrough(out.spikeContext, out.spikeMaster);
+            this.mediaOutput.spikeRouteThrough(ctx, this.mediaGain);
         }
         if (mode === 'nudge' || mode === 'nudgecal') {
             out.spikeOnTimestamp = (frame, mediaTime) => this._onTimestamp(frame, mediaTime);
@@ -136,6 +144,21 @@ export class MixSpikePlayer implements IAlphaSynth {
         };
         if (mode === 'seek') {
             media.positionChanged.on(() => this._seekCheck());
+        }
+    }
+
+    /** mix balance: gain of the backing track (routed <audio>) */
+    public readonly mediaGain: GainNode;
+    /** mix balance: gain of the synthesizer output */
+    public readonly synthGain: GainNode;
+
+    /** mix balance for listening; in decode mode the MP3 is scaled inside the worker */
+    public setMix(mediaVolume: number, synthVolume: number) {
+        this.mediaGain.gain.value = mediaVolume;
+        this.synthGain.gain.value = synthVolume;
+        if (this.mode === 'decode') {
+            // decode mode: the MP3 is inside the synth stream, so compensate the synth gain
+            this.synth.spikePcmGain(synthVolume > 0 ? mediaVolume / synthVolume : 0);
         }
     }
 
