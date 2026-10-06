@@ -1,6 +1,7 @@
 // SPIKE (#2397) — THROWAWAY measurement harness for synth + backing track synchronization.
 //
-// URL params: ?mode=free|seek|nudge|decode&src=beeps|mp3&listen=1&file=/test-data/temp/pelados.gp
+// URL params: ?mode=free|seek|nudge|nudgecal|decode&src=beeps|mp3&listen=0|1&drums=0|1&metronome=0|1&mv=0..1&sv=0..4
+//             &file=/test-data/temp/pelados.gp
 //
 // With src=beeps the embedded MP3 is replaced by a generated track with a 2 kHz beep exactly on every
 // beat (positions computed from the file's own sync points). The synth plays only the metronome.
@@ -19,7 +20,8 @@ import { Paths } from '../../src/util/Paths';
 const params = new URL(window.location.href).searchParams;
 const mode = (params.get('mode') ?? 'nudge') as MixSpikeMode;
 const src = params.get('src') ?? 'beeps';
-const listen = params.get('listen') === '1';
+// sound is ON unless listen=0 (measurement runs mute themselves while they run)
+const listen = params.get('listen') !== '0';
 const file = params.get('file') ?? '/test-data/temp/pelados.gp';
 
 const logEl = document.getElementById('log')!;
@@ -30,19 +32,43 @@ function log(...args: unknown[]) {
     console.log('[spike]', line);
 }
 
+const input = (id: string) => document.getElementById(id) as HTMLInputElement;
 (document.getElementById('mode') as HTMLSelectElement).value = mode;
 (document.getElementById('src') as HTMLSelectElement).value = src;
-(document.getElementById('listen') as HTMLInputElement).checked = listen;
-if (src === 'mp3') {
-    (document.getElementById('drums') as HTMLInputElement).checked = true;
+input('listen').checked = listen;
+// keep the mix settings across reloads (changing mode/src reloads the page)
+input('drums').checked = params.has('drums') ? params.get('drums') === '1' : src === 'mp3';
+input('metronome').checked = params.get('metronome') !== '0';
+if (params.has('mv')) {
+    input('mediaVol').value = params.get('mv')!;
 }
-for (const id of ['mode', 'src', 'listen']) {
+if (params.has('sv')) {
+    input('synthVol').value = params.get('sv')!;
+}
+if (params.has('mtv')) {
+    input('metronomeVol').value = params.get('mtv')!;
+}
+function currentUrl(): URL {
+    const url = new URL(window.location.href);
+    url.searchParams.set('mode', (document.getElementById('mode') as HTMLSelectElement).value);
+    url.searchParams.set('src', (document.getElementById('src') as HTMLSelectElement).value);
+    url.searchParams.set('listen', input('listen').checked ? '1' : '0');
+    url.searchParams.set('drums', input('drums').checked ? '1' : '0');
+    url.searchParams.set('metronome', input('metronome').checked ? '1' : '0');
+    url.searchParams.set('mv', input('mediaVol').value);
+    url.searchParams.set('sv', input('synthVol').value);
+    url.searchParams.set('mtv', input('metronomeVol').value);
+    return url;
+}
+for (const id of ['mode', 'src']) {
     document.getElementById(id)!.addEventListener('change', () => {
-        const url = new URL(window.location.href);
-        url.searchParams.set('mode', (document.getElementById('mode') as HTMLSelectElement).value);
-        url.searchParams.set('src', (document.getElementById('src') as HTMLSelectElement).value);
-        url.searchParams.set('listen', (document.getElementById('listen') as HTMLInputElement).checked ? '1' : '0');
-        window.location.href = url.toString();
+        window.location.href = currentUrl().toString();
+    });
+}
+// remember the other settings in the address bar without reloading
+for (const id of ['listen', 'drums', 'metronome', 'mediaVol', 'synthVol', 'metronomeVol']) {
+    document.getElementById(id)!.addEventListener('change', () => {
+        window.history.replaceState(null, '', currentUrl().toString());
     });
 }
 
@@ -162,7 +188,8 @@ const api = new alphaTab.AlphaTabApi(document.querySelector('.at-canvas') as HTM
 (window as any).api = api;
 const player = (api.player as any).instance as MixSpikePlayer;
 (window as any).spikePlayer = player;
-player.split = mode === 'decode';
+// measurement only: put the backing track into the left and the synth into the right channel
+player.split = mode === 'decode' && src === 'beeps';
 
 // ---- taps ----
 const tapOnsets = { media: [] as number[], synth: [] as number[] };
@@ -225,8 +252,13 @@ async function setupTaps() {
         player.mediaOutput.spikeSource!.connect(tapMedia);
         player.onSynthWorkletCreated(node => node.connect(tapSynth));
     }
-    player.masterGain.gain.value = listen ? 1 : 0;
+    applySound();
 }
+
+function applySound() {
+    player.masterGain.gain.value = input('listen').checked ? 1 : 0;
+}
+input('listen').addEventListener('change', applySound);
 
 // ---- analysis ----
 interface SegmentStats {
@@ -339,6 +371,11 @@ async function runMeasurement() {
     }
     api.stop();
     api.playbackSpeed = 1;
+    // measuring: silent, metronome only at full level, both streams unscaled (fixed tap thresholds)
+    player.masterGain.gain.value = 0;
+    api.metronomeVolume = 1;
+    api.changeTrackMute(api.score!.tracks, true);
+    player.setMix(1, 1);
     await sleep(500);
     if (mode === 'nudgecal') {
         log('calibrating media latency for 1, 0.5, 1.5 …');
@@ -372,6 +409,9 @@ async function runMeasurement() {
         )
     );
     api.pause();
+    applySound();
+    applyMix();
+    applyVolumes();
     const summary = {
         mode,
         sampleRate: player.audioContext.sampleRate,
@@ -402,22 +442,19 @@ document.getElementById('speed')!.addEventListener('change', e => {
 });
 const metronomeEl = document.getElementById('metronome') as HTMLInputElement;
 const drumsEl = document.getElementById('drums') as HTMLInputElement;
+const metronomeVolEl = document.getElementById('metronomeVol') as HTMLInputElement;
 function applyMix() {
-    api.metronomeVolume = metronomeEl.checked ? 1 : 0;
+    api.metronomeVolume = metronomeEl.checked ? Number.parseFloat(metronomeVolEl.value) : 0;
     if (api.score) {
         api.changeTrackMute(api.score.tracks, !drumsEl.checked);
     }
 }
 metronomeEl.addEventListener('change', applyMix);
+metronomeVolEl.addEventListener('input', applyMix);
 drumsEl.addEventListener('change', applyMix);
 const mediaVolEl = document.getElementById('mediaVol') as HTMLInputElement;
 const synthVolEl = document.getElementById('synthVol') as HTMLInputElement;
 function applyVolumes() {
-    // measuring needs both streams unscaled
-    if (src === 'beeps') {
-        player.setMix(1, 1);
-        return;
-    }
     player.setMix(Number.parseFloat(mediaVolEl.value), Number.parseFloat(synthVolEl.value));
 }
 mediaVolEl.addEventListener('input', applyVolumes);
