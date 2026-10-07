@@ -193,6 +193,7 @@ async function prepareScore(bytes: Uint8Array, name: string): Promise<alphaTab.m
 }
 
 const fileNameEl = document.getElementById('fileName')!;
+let pendingFileName = '';
 async function loadBytes(bytes: Uint8Array, name: string) {
     const score = await prepareScore(bytes, name);
     if (!score) {
@@ -201,10 +202,10 @@ async function loadBytes(bytes: Uint8Array, name: string) {
     api.stop();
     tapOnsets.media.length = 0;
     tapOnsets.synth.length = 0;
-    fileNameEl.textContent = `${name} (wait for "player ready")`;
-    api.playerReady.on(() => {
-        fileNameEl.textContent = name;
-    });
+    // the label is finalised by the playerReady handler (subscribing here would fire immediately
+    // because the previous song is still "ready")
+    pendingFileName = name;
+    fileNameEl.textContent = `${name} — loading, wait for "player ready"…`;
     api.renderScore(
         score,
         score.tracks.map(t => t.index)
@@ -512,6 +513,7 @@ synthVolEl.addEventListener('input', applyVolumes);
 api.playerReady.on(async () => {
     applyMix();
     applyVolumes();
+    fileNameEl.textContent = pendingFileName;
     log('player ready');
     (window as any).spikeReady = true;
     if (mode === 'nudgecal') {
