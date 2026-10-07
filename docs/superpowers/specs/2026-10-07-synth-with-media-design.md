@@ -34,6 +34,7 @@ milliseconds, at any playback speed, with no cost when the feature is off.
 | S8 | Mixing on | CPU and main-thread cost comparable to plain synthesizer mode, no decoded audio in memory |
 | S9 | External media (YouTube) | best-effort: in sync after `mediaSyncOffsetInMilliseconds` tuning **(untested)** |
 | S10 | Loop wrap at 0.5× / 1× / 1.5× | the range's first beat clicks on every repetition within the first-click tolerance (S4b); no extra or missing clicks; ≤ 30 ms added per wrap (spike 4: 0 missing clicks at all three speeds, < 15 ms per wrap at 1×, ~24 ms at 0.5× / 1.5×) |
+| S11 | Levels | metronome clearly audible over a mastered backing track at default levels (by ear, manual test); nothing clips (spike 5: click peak −11.4 dBFS, short-term level ~8 dB under the recording's; nothing over 0 dBFS at default levels) |
 
 ## 2. Decisions (made with the requester, in order)
 
@@ -43,7 +44,7 @@ milliseconds, at any playback speed, with no cost when the feature is off.
 | Base | Latest upstream `develop` (1.9.0 alpha); consumers upgrade |
 | Approach | **Timestamp lock + gentle speed nudging + per-speed latency calibration** (spike "2b"). Rejected: seek-on-drift (offsets < threshold never corrected), decode-and-mix (pitch shifts when slowed, 78.5 MB RAM, no YouTube) |
 | Switch | Boolean setting `player.enableSynthesizerWithMedia` (default `false`) |
-| Public additions | `player.mediaSyncOffsetInMilliseconds` (default 0) and runtime `api.backingTrackVolume` (default 1) |
+| Public additions | `player.mediaSyncOffsetInMilliseconds` (default 0) and runtime `api.backingTrackVolume` and `api.synthVolume` (both default 1) |
 | Probe | Silent latency probe per speed, run **in the background after load** for 1×, 0.5×, 0.75×, 1.25×, 1.5×; other speeds on first use; cached per session |
 | Count-in tempo | Tempo from the **sync points** at the start position; if there are none, the score's tempo |
 | External media | **Included in v1, best-effort** (fitted clock + manual offset) |
@@ -57,7 +58,7 @@ milliseconds, at any playback speed, with no cost when the feature is off.
 
 ```text
  <audio> backing track ──createMediaElementSource──► mediaGain ───┐
-                                                                   ├──► masterGain ──► destination
+                                                                   ├──► masterGain ──► limiter ──► destination
  synth worker ──samples + media time stamps──► AudioWorklet ──► synthGain ──┘
       ▲                                              │  "at context frame F I output media time T" (~20/s)
       │ seekToMediaTime / rateCorrection             ▼
@@ -74,6 +75,7 @@ milliseconds, at any playback speed, with no cost when the feature is off.
 | Worker protocol | New commands and the time-stamped sample message | `platform/worker/*` | web |
 | AudioWorklet output | Media-time stamps, warm keep-alive, request accounting fix | `platform/javascript/AlphaSynthAudioWorkletOutput.ts` | web |
 | `MediaSynthPlayer` | `IAlphaSynth` combining media player + worker synth; owns the loop wrap | `platform/javascript/MediaSynthPlayer.ts` (new) | web |
+| Output limiter | `DynamicsCompressorNode` after `masterGain` (threshold −1 dBFS, ratio 20) so the sum of media and synth can't clip; mixing mode only. The spike's −3 dB would squash a mastered recording's own peaks (spike 5: −2.3 dBFS) | `platform/javascript/MediaSynthPlayer.ts` | web |
 | `MediaSyncController` | Start/seek handshakes, settle, nudge, re-sync, learning | `platform/javascript/MediaSyncController.ts` (new; pure logic, unit-testable) | web (logic is platform-neutral) |
 | Media clocks | Backing-track clock (routed `<audio>`) and external-media clock (fitted) | `platform/javascript/MediaClock.ts` (new) | web |
 | `MediaLatencyProbe` | Measures `<audio>` time-stretch latency per speed | `platform/javascript/MediaLatencyProbe.ts` (new) | web |
@@ -138,11 +140,12 @@ AudioWorklet changes:
 |---|---|
 | `positionChanged`, `stateChanged`, `finished`, `midiLoaded`, `playbackRangeChanged`, `loadedMidiInfo`, `currentPosition`, `timePosition`, `tickPosition` | media player (the clock) |
 | `midiEventsPlayed`, `soundFontLoaded/Failed`, `loadSoundFont`, `resetSoundFonts`, `setChannel*`, transposition, `metronomeVolume`, `countInVolume`, `playOneTimeMidiFile` | synth |
-| `masterVolume` | both (`masterGain`) |
-| `backingTrackVolume` (new) | `mediaGain` |
+| `masterVolume` | backing track: `masterGain` (covers media and synth; the inner players' own volumes stay at 1) · external media: forwarded to the inner `ExternalMediaPlayer` (its handler gets `masterVolume × backingTrackVolume`, §7) and applied to the synth through `masterGain` |
+| `backingTrackVolume` (new) | backing track: `mediaGain` · external media: forwarded to the inner `ExternalMediaPlayer` (§7) |
+| `synthVolume` (new) | `synthGain` |
 | `play/pause/stop`, `playbackSpeed`, `loadMidiFile`, `updateSyncPoints`, `loadBackingTrack` | both, through the controller |
 | `playbackRange`, `isLooping` | `MediaSynthPlayer` itself (loop wrap, §6.2); the inner players run without them |
-| `ready` / `readyForPlayback` | when both are ready (then warm up the worklet, start the background probe) |
+| `ready` / `readyForPlayback` | when both are ready (then warm up the worklet, start the background probe). If the synth can't run — worker or worklet creation fails, no `player.soundFont` is set, or `soundFontLoadFailed` fires — readiness follows the media player alone and playback is media-only, with a warning (as for ScriptProcessor, §2) |
 | `output` | the media output (keeps `output.audioElement` usable) |
 
 Routing: the backing track's `<audio>` goes through `createMediaElementSource` into the synth's
@@ -203,12 +206,19 @@ mediaSyncOffsetInMilliseconds: number = 0;       // + = synth plays later; manua
 
 // runtime (AlphaTabApiBase + IAlphaSynth implementations)
 backingTrackVolume: number = 1;                  // the media's own level (masterVolume still scales both)
+synthVolume: number = 1;                         // the synth's level against the media when mixing is on
 ```
 
 `backingTrackVolume` is added to `IAlphaSynth` (public interface, so a minor break for third-party
 implementations): `AlphaSynth` / worker synth ignore it; `BackingTrackPlayer` / `ExternalMediaPlayer`
 apply `masterVolume × backingTrackVolume` to the media (so it also works without mixing);
-`AlphaSynthWrapper` remembers it across player switches like `masterVolume`.
+`AlphaSynthWrapper` remembers it across player switches like `masterVolume`. `synthVolume` is added the
+same way: `MediaSynthPlayer` applies it to `synthGain`; every other implementation ignores it
+(`masterVolume` already scales a lone synth); `AlphaSynthWrapper` remembers it too.
+
+Levels: at default levels the click sits about 8 dB under a mastered recording (spike 5). If it is too
+quiet, lower `backingTrackVolume` (0.35 ≈ −9 dB) or raise `synthVolume`; the output limiter keeps
+raised levels from clipping.
 
 Behaviour of existing calls when mixing is on:
 
@@ -229,7 +239,9 @@ comments in the repo's style, and `@since 1.9.0`.
 Wiring: `_setupOrDestroyPlayer` → when the resolved mode is `EnabledBackingTrack` or
 `EnabledExternalMedia` and `enableSynthesizerWithMedia` is set → `uiFacade.createMediaSynthPlayer(mode)`
 (new `IUiFacade` member). Web returns a `MediaSynthPlayer`; other platforms return `null` → today's
-media-only player. `_setupOrDestroyPlayer` today only recreates the player when the *mode* changes; it
+media-only player. Web also returns `null`, and logs a warning, when `outputMode` is not
+`WebAudioAudioWorklets` or AudioWorklets are unavailable (no `AudioWorkletNode`, or not a secure
+context, where `createWorkerPlayer` already falls back to ScriptProcessor with only a debug log). `_setupOrDestroyPlayer` today only recreates the player when the *mode* changes; it
 must also recreate it when `enableSynthesizerWithMedia` changes (via `updateSettings()`).
 
 ## 8. Fixes included, and coordination
