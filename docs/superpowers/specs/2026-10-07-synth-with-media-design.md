@@ -272,7 +272,14 @@ must also recreate it when `enableSynthesizerWithMedia` changes (via `updateSett
    one) → `pnpm add @coderline/alphatab@<alpha>` → `pnpm patch @coderline/alphatab@<alpha>` → copy
    this branch's `dist` into the folder it prints → `pnpm patch-commit <folder>` (writes the patch
    and `patchedDependencies`). Both upgrade to the alpha first; each project generates its own patch
-   file (patch-package and `pnpm patch` use different file formats).
+   file (patch-package and `pnpm patch` use different file formats). In `alphaTabWebsite`, delete
+   `patches/@coderline+alphatab+1.8.1.patch` in the same commit as the upgrade: it is
+   CoderLine/alphaTab#2591 (drum tablature) back-ported to 1.8.1, the alpha contains all of it
+   (verified 2026-10-08 with `guitar-pro-rock-beat-repeat.gp`), and a stale patch file fails every
+   install (patch-package exits 1 and skips any patch after it). After the upgrade a hi-hat on
+   string 6 is drawn on the 6th tab line (as in Guitar Pro) instead of line 5, and drum notes have
+   `note.fret = NaN`, so the rhythm game's marker id in `cross-markers.tsx` should use
+   `note.percussionArticulation` for drums.
 5. Upstream PR: later and optional (would need C#/Kotlin-safe shared code, which §4 keeps, plus docs).
 
 ## 12. Out of scope / later
