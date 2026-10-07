@@ -37,7 +37,7 @@ milliseconds, at any playback speed, with no cost when the feature is off.
 
 | Ref | Decision |
 |---|---|
-| Target | A JS fix usable in the requester's own projects first (patch-package). Upstream PR later, optional |
+| Target | A JS fix usable in the requester's own projects first (a patch: patch-package / `pnpm patch`). Upstream PR later, optional |
 | Base | Latest upstream `develop` (1.9.0 alpha); consumers upgrade |
 | Approach | **Timestamp lock + gentle speed nudging + per-speed latency calibration** (spike "2b"). Rejected: seek-on-drift (offsets < threshold never corrected), decode-and-mix (pitch shifts when slowed, 78.5 MB RAM, no YouTube) |
 | Switch | Boolean setting `player.enableSynthesizerWithMedia` (default `false`) |
@@ -49,7 +49,7 @@ milliseconds, at any playback speed, with no cost when the feature is off.
 | Code home | Shared TS for the synth "follow media" part; web-only (`platform/javascript`) for the combined player, sync controller and probe |
 | Output mode | Mixing requires `PlayerOutputMode.WebAudioAudioWorklets` (default). ScriptProcessor → media only + warning |
 | Verification | Keep the spike's measurement page as a playground demo ("sync lab") |
-| Delivery | patch-package patch (tarball for a first try), for **both** `alphaTabWebsite` and `notation-hero/web` (see §11) |
+| Delivery | A patch (tarball for a first try) for **both**: patch-package in `alphaTabWebsite`, `pnpm patch` in `notation-hero/web` (see §11) |
 
 ## 3. Architecture
 
@@ -254,12 +254,25 @@ must also recreate it when `enableSynthesizerWithMedia` changes (via `updateSett
 1. Implement on a clean branch `feat/2397-synth-with-media` off `develop` (the spike branch stays
    as a reference).
 2. First try: `npm pack` the built package → `file:` dependency.
-3. Then a patch-package patch: install the `1.9.0-alpha` build that is current at delivery time in
-   the target project → replace its `node_modules/@coderline/alphatab/dist` with this branch's build →
-   `npx patch-package @coderline/alphatab`. Regenerate the patch whenever the alpha is upgraded.
+3. Then a patch: install the `1.9.0-alpha` build that is current at delivery time in the target
+   project → look up the commit it was built from (`npm view @coderline/alphatab@<alpha> gitHead`;
+   alphaTab also logs it as `VersionInfo.commit`) → check that this commit is an ancestor of this
+   branch (`git merge-base --is-ancestor <commit> HEAD`); if not, rebase this branch onto `develop`
+   at or after that commit and rebuild → replace its `node_modules/@coderline/alphatab/dist` with
+   this branch's build → create the patch (`npx patch-package @coderline/alphatab`; `pnpm patch` in
+   notation-hero, step 4). Repeat the check and regenerate whenever the alpha is upgraded. The patch
+   then only adds commits (this feature, plus any `develop` commits newer than the alpha) and never
+   reverts upstream fixes.
 4. **Target projects: both** — `alphaTabWebsite` (rhythm game, already on patch-package, `^1.8.1`)
-   and `notation-hero/web` (Next.js, `1.8.4`, needs patch-package added). Both upgrade to the alpha
-   first; the same patch file applies to both when they pin the same alpha version.
+   and `notation-hero/web` (Next.js, `1.8.4`; a pnpm workspace, so it uses **`pnpm patch`**, not
+   patch-package, which only creates patches next to an npm/yarn lockfile): in `web`, first add
+   `'@coderline/alphatab@<alpha>'` to `minimumReleaseAgeExclude` in `pnpm-workspace.yaml` (alphaTab
+   alphas are exempt from the 7-day release-age rule; exact `name@version` like the list's other
+   entries, updated with every alpha upgrade, and `pnpm run check:supply-chain-pins` flags a stale
+   one) → `pnpm add @coderline/alphatab@<alpha>` → `pnpm patch @coderline/alphatab@<alpha>` → copy
+   this branch's `dist` into the folder it prints → `pnpm patch-commit <folder>` (writes the patch
+   and `patchedDependencies`). Both upgrade to the alpha first; each project generates its own patch
+   file (patch-package and `pnpm patch` use different file formats).
 5. Upstream PR: later and optional (would need C#/Kotlin-safe shared code, which §4 keeps, plus docs).
 
 ## 12. Out of scope / later
