@@ -1,3 +1,8 @@
+---
+lap: 1
+last_applied: none
+---
+
 # Synthesizer + backing track / external media mixing — design
 
 | | |
