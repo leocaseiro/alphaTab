@@ -558,6 +558,64 @@ async function startTest(n: number, beforeBeatMs: number, speed = 1) {
 (window as any).spikeStartTest = startTest;
 
 /**
+ * lap-1 F-10 spike: count-in hand-off. Starts exactly on a beat with `beats` beats of count-in (the synth
+ * renders them, metronome only); reports the count-in clicks, the downbeat (click at the media's first
+ * beep) and the next clicks.
+ */
+async function countInTest(n: number, beats = 4, speed = 1) {
+    const sr = player.audioContext.sampleRate;
+    player.masterGain.gain.value = 0;
+    api.metronomeVolume = 1;
+    api.changeTrackMute(api.score!.tracks, true);
+    player.setMix(1, 1);
+    api.playbackSpeed = speed;
+    const rows: object[] = [];
+    for (let i = 0; i < n; i++) {
+        api.pause();
+        await sleep(400);
+        const k = 40 + i * 23;
+        const target = beatMediaTimes[k];
+        player.countInMediaMs = target - beatMediaTimes[k - beats];
+        api.timePosition = alphaTabTimeForMedia(target);
+        await sleep(300);
+        tapOnsets.media.length = 0;
+        tapOnsets.synth.length = 0;
+        const ctx = player.audioContext;
+        const playFrame = ctx.currentTime * sr;
+        const playT = performance.now();
+        api.play();
+        await sleep(player.countInMediaMs / speed + (speed < 1 ? 4500 : 2500));
+        const media = [...tapOnsets.media].sort((a, b) => a - b);
+        const synthAfter = tapOnsets.synth.filter(f => f > playFrame).sort((a, b) => a - b);
+        const mediaAfter = media.filter(f => f > playFrame);
+        const firstBeep = mediaAfter.length ? mediaAfter[0] : null;
+        const ms = (f: number) => Math.round((f / sr) * 1000 * 10) / 10;
+        const countInClicks = firstBeep === null ? null : synthAfter.filter(f => f < firstBeep - 0.05 * sr).length;
+        const downbeatClick = firstBeep === null || !synthAfter.length ? null : nearest(synthAfter, firstBeep);
+        const downbeatMs = downbeatClick === null || firstBeep === null ? null : ms(downbeatClick - firstBeep);
+        const skipped = downbeatMs === null || Math.abs(downbeatMs) > 50;
+        const after =
+            firstBeep === null
+                ? []
+                : synthAfter
+                      .filter(f => f > firstBeep + 0.05 * sr)
+                      .slice(0, 4)
+                      .map(f => ms(f - nearest(media, f)));
+        const resyncs = player.stats.driftLog.filter(e => e.t > playT && e.action === 'resync').length;
+        const log0 = player.countInLog[player.countInLog.length - 1];
+        rows.push({ target: Math.round(target), countInClicks, downbeatMs, skipped, after, resyncs, playLateMs: log0?.lateMs, learnedDm: log0?.learned });
+    }
+    api.pause();
+    player.countInMediaMs = 0;
+    applySound();
+    applyMix();
+    applyVolumes();
+    log({ countInTest: { beats, speed, rows } });
+    return rows;
+}
+(window as any).spikeCountInTest = countInTest;
+
+/**
  * Loop test (lap-1 F-4): loops `bars` bars from beat 40 for `wraps` repetitions and checks every beat:
  * each backing-track beep must have its own click. Reports offsets, missing/extra clicks and the gap at each wrap.
  */

@@ -519,5 +519,516 @@
     "sumDefaultMixWindowsOver0dB": 0,
     "sumSpikePageMixPeakMaxDb": -3.8,
     "sumSpikePageMixWindowsOver0dB": 0
+  },
+  "spike6CountIn": {
+    "what": "sync lab nudgecal, beeps, 4-beat count-in emulated (synth starts 4 beats before the target, metronome only); media paused until play() issued a learned media-start latency before the boundary frame from the worklet stamps; downbeat = synth click nearest the media first beep (click - beep, + = click late); settle threshold 12 ms + settle nudge gain 300 at 1x",
+    "asBuiltSettle4ms_1x": {
+      "downbeatMs": [
+        -4,
+        0,
+        6.7,
+        -1.3,
+        0,
+        1.3,
+        -1.3,
+        0
+      ],
+      "resyncs": [
+        2,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "1x": [
+      {
+        "countInClicks": 4,
+        "downbeatMs": 1.3,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 1.4,
+        "learnedDmMs": 1.4,
+        "next4Ms": [
+          0.9,
+          0.5,
+          0.1,
+          1.2
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 0.0,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 1.0,
+        "learnedDmMs": 1.7,
+        "next4Ms": [
+          0.7,
+          1.6,
+          1.2,
+          0.8
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 1.3,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 0.2,
+        "learnedDmMs": 2.4,
+        "next4Ms": [
+          0.9,
+          0.5,
+          0.0,
+          0.9
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": -1.3,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 2.6,
+        "learnedDmMs": 3.3,
+        "next4Ms": [
+          -0.5,
+          1.7,
+          0.9,
+          0.5
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 0.0,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 2.1,
+        "learnedDmMs": 4.3,
+        "next4Ms": [
+          0.9,
+          1.8,
+          0.1,
+          -0.4
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 1.3,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 1.7,
+        "learnedDmMs": 2.3,
+        "next4Ms": [
+          0.9,
+          -1.0,
+          -0.1,
+          0.8
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": -1.3,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 2.4,
+        "learnedDmMs": 3.2,
+        "next4Ms": [
+          0.7,
+          0.9,
+          0.3,
+          -0.3
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 0.0,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 2.0,
+        "learnedDmMs": 4.1,
+        "next4Ms": [
+          0.7,
+          0.0,
+          0.8,
+          0.1
+        ]
+      }
+    ],
+    "1.5x_pre60": [
+      {
+        "countInClicks": 4,
+        "downbeatMs": -21.3,
+        "skipped": false,
+        "resyncs": 1,
+        "playLateMs": 1.3,
+        "learnedDmMs": 23.8,
+        "next4Ms": [
+          2.2,
+          0.9,
+          1.1,
+          1.5
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 1.3,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 1.4,
+        "learnedDmMs": 23.3,
+        "next4Ms": [
+          0.4,
+          0.6,
+          2.2,
+          0.2
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 1.3,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 1.8,
+        "learnedDmMs": 25.6,
+        "next4Ms": [
+          -0.8,
+          -292.0,
+          1.3,
+          -0.7
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 2.7,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 1.7,
+        "learnedDmMs": 24.9,
+        "next4Ms": [
+          3.1,
+          3.6,
+          2.6,
+          0.5
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 2.7,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 1.9,
+        "learnedDmMs": 23.4,
+        "next4Ms": [
+          -0.8,
+          0.8,
+          1.6,
+          -1.1
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 0.0,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 0.3,
+        "learnedDmMs": 26.1,
+        "next4Ms": [
+          -0.5,
+          -0.4,
+          -0.6,
+          -0.5
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 1.3,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 1.3,
+        "learnedDmMs": 26.4,
+        "next4Ms": [
+          -1.3,
+          1.6,
+          -2.1,
+          -1.0
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 2.7,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 0.7,
+        "learnedDmMs": 26.9,
+        "next4Ms": [
+          0.0,
+          2.9,
+          1.1,
+          -1.6
+        ]
+      }
+    ],
+    "0.5x_pre0": [
+      {
+        "countInClicks": 4,
+        "downbeatMs": -36.3,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 1.1,
+        "learnedDmMs": -8.6,
+        "next4Ms": [
+          19.5,
+          9.9,
+          1.1,
+          -3.8
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": -45.6,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 1.4,
+        "learnedDmMs": -14.2,
+        "next4Ms": [
+          5.0,
+          -3.7,
+          18.9,
+          9.7
+        ]
+      },
+      {
+        "countInClicks": 5,
+        "downbeatMs": -53.6,
+        "skipped": true,
+        "resyncs": 0,
+        "playLateMs": 1.4,
+        "learnedDmMs": -9.0,
+        "next4Ms": [
+          -2.8,
+          -16.8,
+          2.7,
+          -12.7
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": -47.0,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 2.1,
+        "learnedDmMs": -14.2,
+        "next4Ms": [
+          -1.5,
+          7.6,
+          -12.1,
+          8.3
+        ]
+      },
+      {
+        "countInClicks": 5,
+        "downbeatMs": -55.0,
+        "skipped": true,
+        "resyncs": 0,
+        "playLateMs": 4.7,
+        "learnedDmMs": -5.0,
+        "next4Ms": [
+          1.2,
+          -8.8,
+          10.6,
+          0.9
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": -41.6,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 0.6,
+        "learnedDmMs": -12.4,
+        "next4Ms": [
+          17.4,
+          11.0,
+          4.3,
+          -2.6
+        ]
+      }
+    ],
+    "0.5x_pre60": [
+      {
+        "countInClicks": 4,
+        "downbeatMs": 20.5,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 3.8,
+        "learnedDmMs": -11.9,
+        "next4Ms": [
+          10.9,
+          2.2,
+          -6.5,
+          19.3
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 11.2,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 0.8,
+        "learnedDmMs": -11.6,
+        "next4Ms": [
+          -2.6,
+          -10.0,
+          16.2,
+          8.4
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 8.5,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 1.4,
+        "learnedDmMs": -8.9,
+        "next4Ms": [
+          -5.1,
+          10.3,
+          -4.6,
+          8.1
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 9.9,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 4.8,
+        "learnedDmMs": -12.2,
+        "next4Ms": [
+          -9.1,
+          6.3,
+          -13.4,
+          7.0
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 7.2,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 1.4,
+        "learnedDmMs": -7.6,
+        "next4Ms": [
+          -2.4,
+          -12.5,
+          11.9,
+          2.3
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 15.2,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 0.6,
+        "learnedDmMs": -15.0,
+        "next4Ms": [
+          10.2,
+          3.4,
+          -3.4,
+          -8.9
+        ]
+      }
+    ],
+    "0.5x_pre120": [
+      {
+        "countInClicks": 4,
+        "downbeatMs": 7.2,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 2.1,
+        "learnedDmMs": -8.9,
+        "next4Ms": [
+          0.3,
+          -7.1,
+          -14.5,
+          11.3
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 13.9,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 1.1,
+        "learnedDmMs": -12.6,
+        "next4Ms": [
+          0.0,
+          -8.7,
+          17.5,
+          9.7
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 11.2,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 0.4,
+        "learnedDmMs": -10.7,
+        "next4Ms": [
+          -2.4,
+          11.7,
+          -3.3,
+          10.8
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 12.5,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 0.4,
+        "learnedDmMs": -16.6,
+        "next4Ms": [
+          -6.5,
+          7.6,
+          -12.1,
+          8.3
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 4.5,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 2.4,
+        "learnedDmMs": -13.3,
+        "next4Ms": [
+          -5.1,
+          -13.8,
+          10.6,
+          0.9
+        ]
+      },
+      {
+        "countInClicks": 4,
+        "downbeatMs": 7.2,
+        "skipped": false,
+        "resyncs": 0,
+        "playLateMs": 2.9,
+        "learnedDmMs": -13.4,
+        "next4Ms": [
+          2.2,
+          -3.3,
+          -8.7,
+          -14.2
+        ]
+      }
+    ]
   }
 }

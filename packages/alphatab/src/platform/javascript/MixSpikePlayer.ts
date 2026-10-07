@@ -56,6 +56,8 @@ export class MixSpikeStats {
     public mediaLatencyByRate: Record<string, number> = {};
     public startLead: number = 0;
     public calibrationMs: Record<string, number> = {};
+    /** lap-1 F-10 spike: learned ms from media play() to the target entering the graph, per speed */
+    public mediaStartLatency: Record<string, number> = {};
 }
 
 /**
@@ -96,6 +98,23 @@ export class MixSpikePlayer implements IAlphaSynth {
     public loopWraps: number[] = [];
     /** media ms to start before the loop start above 1x (Chrome drops the first ms of time-stretched audio) */
     public loopPreRoll: number = 0;
+    /**
+     * lap-1 F-10 spike: count-in hand-off. The synth renders `countInMediaMs` of media time before the
+     * target (metronome clicks with the tracks muted: a count-in at the song's tempo) and then the song, as
+     * one stream. The worklet stamps give the context frame where the synth reaches the target; the media's
+     * play() is issued a learned media-start latency (per speed) before that frame.
+     */
+    public countInMediaMs: number = 0;
+    /** first guess (ms) of the media-start latency before anything is learned */
+    public countInStartGuess: number = 0;
+    /** media ms the media starts before the target below 1x (test whether the stretch start transient matters) */
+    public countInPreRollBelow1: number = 0;
+    public countInLog: { speed: number; lateMs: number; agreed: number; learned: number }[] = [];
+    private _mediaStartLatencyBySpeed: Map<number, number> = new Map<number, number>();
+    private _countIn: { target: number; speed: number; pre: number; frameT: number | null; playAt: number } | null =
+        null;
+    private _countInTimer: ReturnType<typeof setTimeout> | null = null;
+    private _awaitingFirstDriftAfterCountIn: boolean = false;
     private _loopTimer: ReturnType<typeof setTimeout> | null = null;
     private _playbackRange: PlaybackRange | null = null;
     private _isLooping: boolean = false;
@@ -166,7 +185,10 @@ export class MixSpikePlayer implements IAlphaSynth {
             this.mediaOutput.spikeRouteThrough(ctx, this.mediaGain);
         }
         if (mode === 'nudge' || mode === 'nudgecal') {
-            out.spikeOnTimestamp = (frame, mediaTime) => this._onTimestamp(frame, mediaTime);
+            out.spikeOnTimestamp = (frame, mediaTime) => {
+                this._countInStamp(frame, mediaTime);
+                this._onTimestamp(frame, mediaTime);
+            };
         }
         synth.spikeOnMediaPosition = t => {
             this._synthMediaPosition = t;
@@ -306,6 +328,19 @@ export class MixSpikePlayer implements IAlphaSynth {
                 ? (window[window.length - 1] + window[window.length - 2]) / 2
                 : null;
 
+        if (this._awaitingFirstDriftAfterCountIn && agreed !== null) {
+            // count-in: the media started `agreed / speed` ms late (synth ahead) -> issue play() that much earlier
+            this._awaitingFirstDriftAfterCountIn = false;
+            const cur = this._mediaStartLatencyBySpeed.get(speed) ?? this.countInStartGuess;
+            const next = Math.max(-50, Math.min(250, cur + agreed / speed));
+            this._mediaStartLatencyBySpeed.set(speed, next);
+            this.stats.mediaStartLatency[String(speed)] = Math.round(next * 10) / 10;
+            const last = this.countInLog[this.countInLog.length - 1];
+            if (last) {
+                last.agreed = Math.round(agreed * 10) / 10;
+                last.learned = Math.round(next * 10) / 10;
+            }
+        }
         if (this._awaitingFirstDriftAfterStart && window.length >= 3) {
             // learn how much later the synth starts than the media after play() (median of 3 readings)
             this._awaitingFirstDriftAfterStart = false;
@@ -630,6 +665,9 @@ export class MixSpikePlayer implements IAlphaSynth {
     }
 
     public play(): boolean {
+        if (this.countInMediaMs > 0 && this.mode === 'nudgecal') {
+            return this._playWithCountIn();
+        }
         this._sendFollowConfig();
         const speed = this.media.playbackSpeed;
         const latency = this._latencyInMedia();
@@ -661,6 +699,75 @@ export class MixSpikePlayer implements IAlphaSynth {
             return true;
         }
         return this.media.play();
+    }
+
+    // lap-1 F-10 spike: count-in hand-off (see countInMediaMs)
+    private _playWithCountIn(): boolean {
+        const speed = this.media.playbackSpeed;
+        const target = this._mediaTimeNow();
+        // media pre-roll (media ms): above 1x always (Chrome drops the start of stretched audio); below 1x opt-in
+        const pre = speed > 1 ? this.loopPreRoll : speed < 1 ? this.countInPreRollBelow1 : 0;
+        this._sendFollowConfig();
+        this._settleUntil = 0;
+        this._correction = 1;
+        this.synth.spikeCorrection(1);
+        this._countIn = { target, speed, pre, frameT: null, playAt: 0 };
+        // the media stays paused during the count-in, so the controller ignores the stamps (media not Playing)
+        this._resyncTo(target - this.countInMediaMs, 0, false);
+        this.stats.resyncs--;
+        if (pre > 0) {
+            const seq = (this.media as any).sequencer;
+            this.media.timePosition = seq.mainTimePositionFromBackingTrack(target - pre, this._mediaDuration());
+        }
+        this.synth.play();
+        return true;
+    }
+
+    private _countInStamp(frame: number, synthMediaTime: number) {
+        const c = this._countIn;
+        if (!c || synthMediaTime < c.target - this.countInMediaMs - 100 || synthMediaTime > c.target) {
+            return;
+        }
+        const ctx = this.audioContext;
+        // the context frame where the synth reaches the target (refined on every stamp until the media starts)
+        c.frameT = frame + ((c.target - synthMediaTime) / c.speed / 1000) * ctx.sampleRate;
+        const dm = this._mediaStartLatencyBySpeed.get(c.speed) ?? this.countInStartGuess;
+        c.playAt = c.frameT / ctx.sampleRate - (dm + c.pre / c.speed) / 1000;
+        if (this._countInTimer) {
+            return;
+        }
+        const waitMs = (c.playAt - ctx.currentTime) * 1000;
+        this._countInTimer = setTimeout(
+            () => {
+                this._countInTimer = null;
+                if (this._countIn !== c) {
+                    return;
+                }
+                // the last few ms: wait on the audio clock (bounded, spike only)
+                const until = performance.now() + 30;
+                while (ctx.currentTime < c.playAt && performance.now() < until) {
+                    // busy wait
+                }
+                this._startMediaAfterCountIn();
+            },
+            Math.max(0, waitMs - 12)
+        );
+    }
+
+    private _startMediaAfterCountIn() {
+        const c = this._countIn;
+        if (!c) {
+            return;
+        }
+        this._countIn = null;
+        const lateMs = (this.audioContext.currentTime - c.playAt) * 1000;
+        this.countInLog.push({ speed: c.speed, lateMs: Math.round(lateMs * 10) / 10, agreed: NaN, learned: NaN });
+        this._settleUntil = performance.now() + this.settleDuration;
+        this._driftWindow = [];
+        this._driftEma = null;
+        this._ignoreUntil = 0;
+        this._awaitingFirstDriftAfterCountIn = true;
+        this.media.play();
     }
 
     // lap-1 F-4 option A: the combined player owns the wrap and restarts both through the start handshake
@@ -733,6 +840,12 @@ export class MixSpikePlayer implements IAlphaSynth {
     }
 
     public pause(): void {
+        if (this._countInTimer) {
+            clearTimeout(this._countInTimer);
+            this._countInTimer = null;
+        }
+        this._countIn = null;
+        this._awaitingFirstDriftAfterCountIn = false;
         if (this._loopTimer) {
             clearTimeout(this._loopTimer);
             this._loopTimer = null;
