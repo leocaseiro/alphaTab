@@ -54,6 +54,7 @@ export class MixSpikeStats {
     public pcmBytes: number = 0;
     public resyncLead: number = 0;
     public mediaLatencyByRate: Record<string, number> = {};
+    public startLead: number = 0;
     public calibrationMs: Record<string, number> = {};
 }
 
@@ -69,10 +70,10 @@ export class MixSpikePlayer implements IAlphaSynth {
     /** measurement only: in decode mode put the backing track into the left, the synth into the right channel */
     public split: boolean = false;
     public seekThreshold: number = 50;
-    public nudgeMaxCorrection: number = 0.01;
+    public nudgeMaxCorrection: number = 0.02;
     public nudgeGainMillis: number = 3000;
     public nudgeResyncThreshold: number = 120;
-    public settleResyncThreshold: number = 15;
+    public settleResyncThreshold: number = 4;
     public settleDuration: number = 1500;
 
     private _syncPoints: BackingTrackSyncPoint[] = [];
@@ -81,6 +82,10 @@ export class MixSpikePlayer implements IAlphaSynth {
     private _driftEma: number | null = null;
     private _correction: number = 1;
     private _resyncLead: number = 10;
+    // learned difference between the synth's and the media's start after play() (ms, real time)
+    private _startLead: number = 0;
+    private _awaitingFirstDriftAfterStart: boolean = false;
+    public warmStart: boolean = true;
     private _awaitingFirstDriftAfterResync: boolean = false;
     private _synthMediaPosition: number = -1;
     private _synthMediaPositionAt: number = 0;
@@ -208,8 +213,11 @@ export class MixSpikePlayer implements IAlphaSynth {
         this.synth.spikeFollow(true, this._mediaDuration(), this._syncPoints);
     }
 
+    private _driftWindow: number[] = [];
+
     private _resyncTo(mediaTime: number, lead: number = 0, learn: boolean = true) {
         const speed = this.media.playbackSpeed;
+        this._driftWindow = [];
         this.synth.spikeResync(mediaTime + lead * speed);
         this.stats.resyncs++;
         this.stats.resyncTimes.push(performance.now());
@@ -261,16 +269,45 @@ export class MixSpikePlayer implements IAlphaSynth {
         const settling = now < this._settleUntil;
         let action = '';
 
-        if (this._awaitingFirstDriftAfterResync) {
+        // The media clock can jump by tens of ms right after play/seek. Never act on a single reading:
+        // only on two consecutive readings that agree within 3 ms (their mean is used).
+        const window = this._driftWindow;
+        window.push(drift);
+        if (window.length > 3) {
+            window.shift();
+        }
+        const agreed =
+            window.length >= 2 && Math.abs(window[window.length - 1] - window[window.length - 2]) < 3
+                ? (window[window.length - 1] + window[window.length - 2]) / 2
+                : null;
+
+        if (this._awaitingFirstDriftAfterStart && window.length >= 3) {
+            // learn how much later the synth starts than the media after play() (median of 3 readings)
+            this._awaitingFirstDriftAfterStart = false;
+            const median = [...window].sort((a, b) => a - b)[1];
+            this._startLead = Math.max(-50, Math.min(150, this._startLead - median / speed));
+            this.stats.startLead = Math.round(this._startLead * 10) / 10;
+        }
+        if (this._awaitingFirstDriftAfterResync && agreed !== null) {
             // learn the pipeline latency: the synth started `drift` ms off after the last re-sync
             this._awaitingFirstDriftAfterResync = false;
-            this._resyncLead = Math.max(0, Math.min(100, this._resyncLead - drift / speed));
+            this._resyncLead = Math.max(0, Math.min(100, this._resyncLead - agreed / speed));
             this.stats.resyncLead = this._resyncLead;
         }
 
-        if (Math.abs(drift) > (settling ? this.settleResyncThreshold : this.nudgeResyncThreshold)) {
+        // at 1x Chrome's media clock is clean (±1 ms); time-stretched speeds jitter by up to ±15 ms
+        const settleThreshold = speed === 1 ? this.settleResyncThreshold : 15;
+        if (agreed !== null && Math.abs(agreed) > (settling ? settleThreshold : this.nudgeResyncThreshold)) {
             action = 'resync';
+            if (this._awaitingFirstDriftAfterStart) {
+                // the start itself was off by `agreed`: learn it before the re-sync clears the window
+                this._awaitingFirstDriftAfterStart = false;
+                this._startLead = Math.max(-50, Math.min(150, this._startLead - agreed / speed));
+                this.stats.startLead = Math.round(this._startLead * 10) / 10;
+            }
             this._resyncTo(this._mediaTimeNow() + latency * speed, this._resyncLead);
+        } else if (agreed === null && settling) {
+            action = 'wait';
         } else {
             this._driftEma = this._driftEma === null ? drift : this._driftEma + (drift - this._driftEma) * 0.3;
             const max = this.nudgeMaxCorrection;
@@ -427,6 +464,11 @@ export class MixSpikePlayer implements IAlphaSynth {
 
     private _checkReadyForPlayback() {
         if (this.isReadyForPlayback) {
+            if (this.warmStart) {
+                // build the synth's audio pipeline before the first play
+                this.synthOutput.spikeKeepAlive = true;
+                this.synthOutput.spikeWarmUp();
+            }
             (this.readyForPlayback as EventEmitter).trigger();
         }
     }
@@ -541,12 +583,23 @@ export class MixSpikePlayer implements IAlphaSynth {
         this._sendFollowConfig();
         const mediaTime = this._mediaTimeNow() + this._latencyInMedia();
         this._settleUntil = performance.now() + this.settleDuration;
-        this._resyncTo(mediaTime, 0, false);
+        const nudging = this.mode === 'nudge' || this.mode === 'nudgecal';
+        // start handshake: the synth must not start *after* the media, otherwise a beat at the start
+        // position is already in the past for it and gets skipped. If the synth is the slower one
+        // (startLead > 0) the media start is delayed instead; if the media is slower the synth
+        // starts a bit earlier in the song (a few ms of pre-roll).
+        const lead = nudging ? this._startLead : 0;
+        this._resyncTo(mediaTime + Math.min(0, lead) * this.media.playbackSpeed, 0, false);
+        this._awaitingFirstDriftAfterStart = nudging;
         this.stats.resyncs--; // the start is not counted as a re-sync
         if (this.mode === 'decode') {
             return this.synth.play();
         }
         this.synth.play();
+        if (lead > 0) {
+            setTimeout(() => this.media.play(), lead);
+            return true;
+        }
         return this.media.play();
     }
 

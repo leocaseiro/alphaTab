@@ -19,8 +19,12 @@
   every speed, but the MP3 changes pitch when slowed down, costs 78.5 MB RAM, and can't do YouTube.
 - **Seek-on-drift (Spike 1)** never really corrects anything: any offset under the 50 ms threshold
   stays. Measured: +5 ms, +12 ms, −22 ms.
-- **Every media-driven approach has one late first click (~100–117 ms)** after Play, because the
-  synth's audio starts later than the MP3. It needs a start handshake (not built in the spike).
+- **The late first click after Play (~100–117 ms) is solved for 2b**: warm start (the synth's
+  worklet survives pauses) plus a start handshake (the MP3 starts a learned few ms later). Measured: first
+  click 0–5 ms, all later clicks within ~1 ms
+  ([details](./spike-2-timestamp-nudge.md#follow-up-fixing-the-late-first-click-after-listening-tests)).
+  Still open: the first click after a *seek during playback* at 0.5×/1.5× (−49 / −24 ms). Fix:
+  re-sync on the MP3's `seeked` event.
 
 ## The question
 
@@ -67,18 +71,21 @@ without costing performance when the feature is off?
 | F4 | **At 0.5× Chrome's time-stretch moves the MP3's own beats by up to ±17 ms** | Heard beep spacing alternated 1015 / 980 ms instead of 1000 ms. No sync method that keeps Chrome's time-stretch can beat this |
 | F5 | `<audio>.currentTime` (not routed) is fine-grained, but jumpy right after `play()` | Updates every ~4.5 ms; jitter p95 2.4 ms in steady state; up to 41 ms off in the first ~300 ms |
 | F6 | Bugs found on the way (today's alphaTab) | Count-in + backing track/external media → infinite loop ("Page unresponsive") · count-in rewinds the media to 0:00 · `midiEventsPlayed` never fires in those modes · metronome silently dropped |
+| F7 | **Creating the synth's AudioWorklet on every Play is what makes the first click late** | Warm start (worklet created once, kept through pauses) took the first click from 101–107 ms late to 0–5 ms |
+| F8 | **The worklet's "samples requested" counter must never go negative** | When it did (spike warm-start bug), the worklet over-requested forever: overflow dropped, synth audio ~1.8× fast, timestamps still looked fine. Clamp at 0 |
+| F9 | **alphaTab's synth is much quieter than a mastered MP3** | Drums from this file: −38.5 dBFS RMS (same in plain synth mode) vs MP3 −19.3 dBFS. Mixing needs separate backing-track / synth volumes |
 
 ## Results side by side
 
 Settled **mean / p95 |offset|** per scenario. Perfect = −0.65 ms. **Bold** = within the ~10 ms target.
 
-| Scenario | No correction (baseline) | 1 Seek on drift | 2 Timestamp + nudge | **2b + speed calibration** | 3 Decode + mix |
-|---|---|---|---|---|---|
-| Play from 0:00, 1.0× | +100.7 / 101.3 ms | **+4.7 / 5.3 ms** ¹ | **+2.0 / 3.0 ms** | **+1.4 / 2.3 ms** ¹ | **−0.7 / 1.3 ms** |
-| Seek to 1:00, 1.0× | +10.0 / 10.6 ms ² | **+4.7 / 5.3 ms** | **+0.3 / 4.2 ms** | **+1.3 / 2.0 ms** | **−0.7 / 1.3 ms** |
-| 0.5× (seek to 1:40) | +12.0 / 26.6 ms | +12.0 / 26.6 ms | +56.7 / 73.3 ms | **−3.4 / 13.3 ms** ³ | **−0.7 / 1.3 ms** ⁴ |
-| 1.5× (seek to 2:10) | −22.2 / 24.3 ms | −22.2 / 24.3 ms | **−5.3 / 8.3 ms** | **−0.7 / 3.0 ms** | **−0.7 / 1.3 ms** ⁴ |
-| First click after Play | 101 ms late | 101 ms late | on time (this run) | 107 ms late | on time |
+| Scenario | No correction (baseline) | 1 Seek on drift | 2 Timestamp + nudge | 2b + speed calibration | **2b + start fixes** | 3 Decode + mix |
+|---|---|---|---|---|---|---|
+| Play from 0:00, 1.0× | +100.7 / 101.3 ms | **+4.7 / 5.3 ms** ¹ | **+2.0 / 3.0 ms** | **+1.4 / 2.3 ms** ¹ | **+0.6 / 1.3 ms** | **−0.7 / 1.3 ms** |
+| Seek to 1:00, 1.0× | +10.0 / 10.6 ms ² | **+4.7 / 5.3 ms** | **+0.3 / 4.2 ms** | **+1.3 / 2.0 ms** | **+0.1 / 1.3 ms** | **−0.7 / 1.3 ms** |
+| 0.5× (seek to 1:40) | +12.0 / 26.6 ms | +12.0 / 26.6 ms | +56.7 / 73.3 ms | **−3.4 / 13.3 ms** ³ | **−2.4 / 15.9 ms** ³ | **−0.7 / 1.3 ms** ⁴ |
+| 1.5× (seek to 2:10) | −22.2 / 24.3 ms | −22.2 / 24.3 ms | **−5.3 / 8.3 ms** | **−0.7 / 3.0 ms** | **0.0 / 3.0 ms** | **−0.7 / 1.3 ms** ⁴ |
+| First click after Play | 101 ms late | 101 ms late | on time (this run) | 107 ms late | **0–5 ms** (15/15 runs) | on time |
 
 ¹ Before settling, one click was 101 ms (Spike 1) / 107 ms (2b) late (finding F2).
 ² Second baseline run: +4.7 ms. The offset a seek leaves behind varies between runs at 1.0×

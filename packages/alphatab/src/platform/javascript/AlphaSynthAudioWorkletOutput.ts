@@ -89,6 +89,8 @@ export class AlphaSynthWebWorklet {
                 private _spikeChunks: { frames: number; consumed: number; mediaStart: number; mediaPerFrame: number }[] =
                     [];
                 private _spikeFramesSinceTimestamp = 0;
+                // SPIKE (#2397): kept alive while paused (warm start)
+                private _spikePaused = false;
 
                 private _spikeMediaTimeAtReadPosition(): number {
                     const c = this._spikeChunks[0];
@@ -132,11 +134,14 @@ export class AlphaSynthWebWorklet {
                     switch (cmd) {
                         case 'alphaSynth.output.addSamples':
                             const f: Float32Array = data.samples;
-                            this._circularBuffer.write(f, 0, f.length);
-                            this._requestedBufferCount--;
-                            if ((data as any).mediaStart !== undefined) {
+                            const written = this._circularBuffer.write(f, 0, f.length);
+                            // SPIKE (#2397): never let the request accounting go negative. A negative count
+                            // makes the worklet over-request forever: the overflow is dropped and the synth
+                            // audio runs fast (found while testing warm starts).
+                            this._requestedBufferCount = Math.max(0, this._requestedBufferCount - 1);
+                            if ((data as any).mediaStart !== undefined && written > 0) {
                                 this._spikeChunks.push({
-                                    frames: f.length / SynthConstants.AudioChannels,
+                                    frames: written / SynthConstants.AudioChannels,
                                     consumed: 0,
                                     mediaStart: (data as any).mediaStart,
                                     mediaPerFrame: (data as any).mediaPerFrame
@@ -149,6 +154,15 @@ export class AlphaSynthWebWorklet {
                             break;
                         case 'alphaSynth.output.stop':
                             this._isStopped = true;
+                            break;
+                        case 'alphaSynth.output.spikePause' as any:
+                            // keep _requestedBufferCount: requests in flight are still answered by the worker
+                            this._spikePaused = true;
+                            this._circularBuffer.clear();
+                            this._spikeChunks = [];
+                            break;
+                        case 'alphaSynth.output.spikeResume' as any:
+                            this._spikePaused = false;
                             break;
                     }
                 }
@@ -166,6 +180,12 @@ export class AlphaSynthWebWorklet {
                     const right: Float32Array = outputs[0][1];
 
                     if (!left || !right) {
+                        return true;
+                    }
+
+                    if (this._spikePaused) {
+                        left.fill(0);
+                        right.fill(0);
                         return true;
                     }
 
@@ -321,6 +341,12 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
         this.activate();
         const ctx = this.context!;
 
+        // SPIKE (#2397): warm start, the worklet survives pauses
+        if (this.spikeKeepAlive && this._worklet) {
+            this._worklet.port.postMessage({ cmd: 'alphaSynth.output.spikeResume' } as any);
+            return;
+        }
+
         // we just want the events which come in after this play call until its worklet is created
         const pendingEvents: IAlphaSynthWorkerMessage[] = [];
         this._pendingEvents = pendingEvents;
@@ -329,11 +355,39 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
     }
 
     public override pause(): void {
+        // SPIKE (#2397): warm start, keep the worklet (silent) instead of tearing it down
+        if (this.spikeKeepAlive && !this._spikeDestroying) {
+            this._enqueue(() => {
+                this._worklet?.port.postMessage({ cmd: 'alphaSynth.output.spikePause' } as any);
+            });
+            return;
+        }
         this._pendingEvents = undefined;
         this._enqueue(() => this._stop());
     }
 
+    // SPIKE (#2397)
+    public spikeKeepAlive: boolean = false;
+    private _spikeDestroying: boolean = false;
+    /** creates the worklet ahead of the first play (paused, silent) */
+    public spikeWarmUp(): void {
+        if (this._worklet) {
+            return;
+        }
+        const ctx = this.context!;
+        this._enqueue(async () => {
+            if (this._worklet) {
+                return;
+            }
+            await this._start(ctx, []);
+            // re-read: _start() assigned it (TS narrowed it to never above)
+            const worklet = this._worklet as AudioWorkletNode<IAlphaSynthWorkerMessage> | null;
+            worklet?.port.postMessage({ cmd: 'alphaSynth.output.spikePause' } as any);
+        });
+    }
+
     public override destroy(): void {
+        this._spikeDestroying = true;
         // a pending worklet load must not delay the destroy
         this._destroyed.abort();
         this.pause();

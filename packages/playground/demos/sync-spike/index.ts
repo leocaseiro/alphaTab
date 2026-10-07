@@ -482,6 +482,57 @@ async function runMeasurement() {
     return summary;
 }
 (window as any).spikeRun = runMeasurement;
+
+/**
+ * Start test: N plays from different positions; reports the offset of the first clicks after each Play.
+ * beforeBeatMs: how long before a beat the playback starts (0 = exactly on a beat).
+ */
+async function startTest(n: number, beforeBeatMs: number) {
+    const sr = player.audioContext.sampleRate;
+    player.masterGain.gain.value = 0;
+    api.metronomeVolume = 1;
+    api.changeTrackMute(api.score!.tracks, true);
+    player.setMix(1, 1);
+    api.playbackSpeed = 1;
+    const rows: { startMedia: number; first: number[]; lockMs: number | null }[] = [];
+    for (let i = 0; i < n; i++) {
+        api.pause();
+        await sleep(400);
+        const beat = beatMediaTimes[40 + i * 23];
+        const startMedia = beat - beforeBeatMs;
+        api.timePosition = alphaTabTimeForMedia(startMedia);
+        await sleep(300);
+        tapOnsets.media.length = 0;
+        tapOnsets.synth.length = 0;
+        const ctx = player.audioContext;
+        const playFrame = ctx.currentTime * sr;
+        api.play();
+        await sleep(2500);
+        const media = [...tapOnsets.media].sort((a, b) => a - b);
+        const offs = tapOnsets.synth
+            .filter(f => f > playFrame)
+            .slice(0, 5)
+            .map(f => Math.round((((f - nearest(media, f)) / sr) * 1000) * 10) / 10);
+        // ms after Play until clicks stay within 3 ms
+        let lockMs: number | null = null;
+        const synthAfter = tapOnsets.synth.filter(f => f > playFrame);
+        for (let k = 0; k < synthAfter.length; k++) {
+            const ok = synthAfter.slice(k).every(f => Math.abs(((f - nearest(media, f)) / sr) * 1000) < 3);
+            if (ok) {
+                lockMs = Math.round(((synthAfter[k] - playFrame) / sr) * 1000);
+                break;
+            }
+        }
+        rows.push({ startMedia: Math.round(startMedia), first: offs, lockMs });
+    }
+    api.pause();
+    applySound();
+    applyMix();
+    applyVolumes();
+    log({ startTest: { beforeBeatMs, rows } });
+    return rows;
+}
+(window as any).spikeStartTest = startTest;
 (window as any).spikeTaps = tapOnsets;
 (window as any).spikeAnalyze = analyze;
 

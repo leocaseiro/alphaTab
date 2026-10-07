@@ -112,6 +112,36 @@ The re-sync counts include the re-syncs alphaTab's own play/seek/speed actions t
 | Recovers from synth underruns and media buffering (re-sync on > 120 ms) | First click after Play is late until a start handshake is added |
 | No extra cost when mixing is off; ~20 small messages/s when on | — |
 
+## Follow-up: fixing the late first click (after listening tests)
+
+Listening confirmed what the numbers showed: the first beat after Play was late. Measured cause:
+on every Play the synth's AudioWorklet was created from scratch (async module + node + several
+thread hops), so its audio started **~100–117 ms after the MP3's**. Four changes fixed it:
+
+| Change | What it does |
+|---|---|
+| **Warm start** | The worklet is created when the player becomes ready and survives pauses (silent while paused). Play only costs one message round trip |
+| **Start handshake** | The controller learns how much later the synth starts than the MP3 (median of the first 3 readings after Play). Next Play, the **MP3 start is delayed by that much** (a few ms) instead of starting the synth later, so a beat right at the start position isn't skipped |
+| **Two agreeing readings** | The media clock can jump right after play/seek. A re-sync needs two consecutive readings that agree within 3 ms. Tight threshold at 1.0× (4 ms), 15 ms at stretched speeds (Chrome's clock jitters ±15 ms there). Nudges up to ±2% |
+| **Request accounting fix** | Found while testing the warm start: if the worklet's "samples requested" counter goes negative, it over-requests forever. The overflow is dropped, so the synth audio runs ~1.8× fast while its timestamps still look right. The counter is now clamped at 0, and only written samples are tracked |
+
+### Spike 2b with the start fixes (final)
+
+| Scenario | First click after Play/seek | Settled mean | Settled p95 \|offset\| | Settled max | Re-syncs |
+|---|---:|---:|---:|---:|---:|
+| Play from 0:00, 1.0× | **+5.3 ms** (was 107 ms) | **+0.6 ms** | **1.3 ms** | 1.3 ms | 3 |
+| Seek to 1:00, 1.0× | −2.7 ms | **+0.1 ms** | **1.3 ms** | 1.5 ms | 1 |
+| Seek to 1:40, 0.5× | −49 ms ² | −2.4 ms | 15.9 ms ¹ | 15.9 ms | 3 |
+| Seek to 2:10, 1.5× | −24 ms ² | **0.0 ms** | **3.0 ms** | 3.0 ms | 3 |
+
+Start test (Stop → Play, and seek → Play exactly on a beat; 15 runs): **one click per beat in 15/15
+runs**. The first click was 0 ms in about half the runs and ~5 ms in the rest (Chrome starts the
+`<audio>` on 5.3 ms steps). Every later click was within ~1 ms.
+
+² Still open: **a seek during playback at a stretched speed** makes the synth jump before the MP3
+has finished seeking, so the first click after it is early. Fix for the real design: re-sync on the
+MP3's `seeked` event, and keep the synth silent until then.
+
 ## How to reproduce
 
 ```text
