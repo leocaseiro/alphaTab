@@ -78,6 +78,29 @@ export class MixSpikePlayer implements IAlphaSynth {
     public settleResyncThreshold: number = 4;
     public settleDuration: number = 1500;
 
+    /**
+     * spike 2026-10-08 (lap-1 F-3): start the synth at the target, never past it. A positive
+     * time-stretch latency is caught up after the first beat by a faster nudge; one start lead per speed.
+     */
+    public startAtTarget: boolean = false;
+    public catchUpMaxCorrection: number = 0.08;
+    public catchUpGainMillis: number = 300;
+    private _startLeadBySpeed: Map<number, number> = new Map<number, number>();
+    private _catchUpUntil: number = 0;
+    private _startGap: number = 0;
+
+    /** spike 2026-10-08 (lap-1 F-4): who owns the loop wrap */
+    public loopOwner: 'none' | 'combined' | 'media' = 'none';
+    /** loop range in media ms (combined owner) */
+    public loopRange: { start: number; end: number } | null = null;
+    public loopWraps: number[] = [];
+    /** media ms to start before the loop start above 1x (Chrome drops the first ms of time-stretched audio) */
+    public loopPreRoll: number = 0;
+    private _loopTimer: ReturnType<typeof setTimeout> | null = null;
+    private _playbackRange: PlaybackRange | null = null;
+    private _isLooping: boolean = false;
+    private _seekedHooked: boolean = false;
+
     private _syncPoints: BackingTrackSyncPoint[] = [];
     private _settleUntil: number = 0;
     private _ignoreUntil: number = 0;
@@ -287,8 +310,16 @@ export class MixSpikePlayer implements IAlphaSynth {
             // learn how much later the synth starts than the media after play() (median of 3 readings)
             this._awaitingFirstDriftAfterStart = false;
             const median = [...window].sort((a, b) => a - b)[1];
-            this._startLead = Math.max(-50, Math.min(150, this._startLead - median / speed));
-            this.stats.startLead = Math.round(this._startLead * 10) / 10;
+            if (this.startAtTarget) {
+                // the synth is intentionally behind by the start gap: learn only the rest, per speed
+                const cur = this._startLeadBySpeed.get(speed) ?? 0;
+                const next = Math.max(-50, Math.min(150, cur - (median + this._startGap) / speed));
+                this._startLeadBySpeed.set(speed, next);
+                this.stats.startLead = Math.round(next * 10) / 10;
+            } else {
+                this._startLead = Math.max(-50, Math.min(150, this._startLead - median / speed));
+                this.stats.startLead = Math.round(this._startLead * 10) / 10;
+            }
         }
         if (this._awaitingFirstDriftAfterResync && agreed !== null) {
             // learn the pipeline latency: the synth started `drift` ms off after the last re-sync
@@ -299,7 +330,13 @@ export class MixSpikePlayer implements IAlphaSynth {
 
         // at 1x Chrome's media clock is clean (±1 ms); time-stretched speeds jitter by up to ±15 ms
         const settleThreshold = speed === 1 ? this.settleResyncThreshold : 15;
-        if (agreed !== null && Math.abs(agreed) > (settling ? settleThreshold : this.nudgeResyncThreshold)) {
+        // start at target: while catching up the synth is intentionally behind by up to the start gap
+        const catchingUp = this.startAtTarget && now < this._catchUpUntil;
+        const threshold = settling ? settleThreshold + (catchingUp ? this._startGap : 0) : this.nudgeResyncThreshold;
+        if (catchingUp && agreed !== null && Math.abs(agreed) < 2) {
+            this._catchUpUntil = 0;
+        }
+        if (agreed !== null && Math.abs(agreed) > threshold) {
             action = 'resync';
             if (this._awaitingFirstDriftAfterStart) {
                 // the start itself was off by `agreed`: learn it before the re-sync clears the window
@@ -310,10 +347,16 @@ export class MixSpikePlayer implements IAlphaSynth {
             this._resyncTo(this._mediaTimeNow() + latency * speed, this._resyncLead);
         } else if (agreed === null && settling) {
             action = 'wait';
+        } else if (this.startAtTarget && this._awaitingFirstDriftAfterStart) {
+            action = 'wait';
         } else {
             this._driftEma = this._driftEma === null ? drift : this._driftEma + (drift - this._driftEma) * 0.3;
-            const max = this.nudgeMaxCorrection;
-            const gain = settling ? this.settleNudgeGainMillis : this.nudgeGainMillis;
+            const max = catchingUp ? this.catchUpMaxCorrection : this.nudgeMaxCorrection;
+            const gain = catchingUp
+                ? this.catchUpGainMillis
+                : settling && speed === 1
+                  ? this.settleNudgeGainMillis
+                  : this.nudgeGainMillis;
             const correction = 1 - Math.max(-max, Math.min(max, this._driftEma / gain));
             if (Math.abs(correction - this._correction) > 0.0002) {
                 this._correction = correction;
@@ -545,18 +588,22 @@ export class MixSpikePlayer implements IAlphaSynth {
         this._resyncTo(mediaTime, this.mode === 'nudge' || this.mode === 'nudgecal' ? this._resyncLead : 0);
     }
     public get playbackRange(): PlaybackRange | null {
-        return this.media.playbackRange;
+        return this._playbackRange;
     }
     public set playbackRange(value: PlaybackRange | null) {
-        this.media.playbackRange = value;
-        this.synth.playbackRange = value;
+        // lap-1 F-4: 'none' = both loop (as built), 'media' = media only, 'combined' = neither (we wrap)
+        this._playbackRange = value;
+        this.media.playbackRange = this.loopOwner === 'combined' ? null : value;
+        this.synth.playbackRange = this.loopOwner === 'none' ? value : null;
     }
     public get isLooping(): boolean {
-        return this.media.isLooping;
+        return this._isLooping;
     }
     public set isLooping(value: boolean) {
-        this.media.isLooping = value;
-        this.synth.isLooping = value;
+        this._isLooping = value;
+        this.media.isLooping = this.loopOwner === 'combined' ? false : value;
+        this.synth.isLooping = this.loopOwner === 'none' ? value : false;
+        this._hookMediaLoop();
     }
     public get countInVolume(): number {
         return 0;
@@ -584,21 +631,31 @@ export class MixSpikePlayer implements IAlphaSynth {
 
     public play(): boolean {
         this._sendFollowConfig();
-        const mediaTime = this._mediaTimeNow() + this._latencyInMedia();
+        const speed = this.media.playbackSpeed;
+        const latency = this._latencyInMedia();
+        let mediaTime = this._mediaTimeNow() + latency;
         this._settleUntil = performance.now() + this.settleDuration;
         const nudging = this.mode === 'nudge' || this.mode === 'nudgecal';
         // start handshake: the synth must not start *after* the media, otherwise a beat at the start
         // position is already in the past for it and gets skipped. If the synth is the slower one
         // (startLead > 0) the media start is delayed instead; if the media is slower the synth
         // starts a bit earlier in the song (a few ms of pre-roll).
-        const lead = nudging ? this._startLead : 0;
-        this._resyncTo(mediaTime + Math.min(0, lead) * this.media.playbackSpeed, 0, false);
+        let lead = nudging ? this._startLead : 0;
+        if (this.startAtTarget) {
+            // never start past the target: a positive latency offset is caught up after the first beat
+            lead = nudging ? (this._startLeadBySpeed.get(speed) ?? 0) : 0;
+            mediaTime = this._mediaTimeNow() + Math.min(0, latency);
+            this._startGap = Math.max(0, latency);
+            this._catchUpUntil = this._startGap > 0 ? performance.now() + this.settleDuration : 0;
+        }
+        this._resyncTo(mediaTime + Math.min(0, lead) * speed, 0, false);
         this._awaitingFirstDriftAfterStart = nudging;
         this.stats.resyncs--; // the start is not counted as a re-sync
         if (this.mode === 'decode') {
             return this.synth.play();
         }
         this.synth.play();
+        this._scheduleLoopWrap(Math.max(0, lead));
         if (lead > 0) {
             setTimeout(() => this.media.play(), lead);
             return true;
@@ -606,7 +663,80 @@ export class MixSpikePlayer implements IAlphaSynth {
         return this.media.play();
     }
 
+    // lap-1 F-4 option A: the combined player owns the wrap and restarts both through the start handshake
+    private _scheduleLoopWrap(mediaStartDelay: number) {
+        if (this._loopTimer) {
+            clearTimeout(this._loopTimer);
+            this._loopTimer = null;
+        }
+        if (this.loopOwner !== 'combined' || !this.loopRange || !this._isLooping) {
+            return;
+        }
+        const speed = this.media.playbackSpeed;
+        const untilEnd = (this.loopRange.end - 15 - this._mediaTimeNow()) / speed;
+        this._loopTimer = setTimeout(() => this._wrapCombined(), Math.max(0, untilEnd) + mediaStartDelay);
+    }
+
+    private _wrapCombined() {
+        this._loopTimer = null;
+        if (!this.loopRange || this.state !== PlayerState.Playing) {
+            return;
+        }
+        this.media.pause();
+        this.synth.pause();
+        // the backing-track player's sequencer maps media time to time at the current speed already.
+        // Above 1x Chrome's time-stretch drops the first ms after play(): pre-roll so that is silence
+        const pre = this.media.playbackSpeed > 1 ? this.loopPreRoll : 0;
+        const seq = (this.media as any).sequencer;
+        this.media.timePosition = seq.mainTimePositionFromBackingTrack(this.loopRange.start - pre, this._mediaDuration());
+        this._synthMediaPosition = -1;
+        this.loopWraps.push(performance.now());
+        const el = this.mediaOutput.audioElement;
+        const go = () => this.play();
+        if (el.seeking) {
+            el.addEventListener('seeked', go, { once: true });
+        } else {
+            go();
+        }
+    }
+
+    // lap-1 F-4 option B: the media loops by itself; the synth is silent from 'seeking' to 'seeked'
+    // and then restarts at the range start
+    private _hookMediaLoop() {
+        const el = this.mediaOutput?.audioElement;
+        if (this._seekedHooked || !el) {
+            return;
+        }
+        this._seekedHooked = true;
+        el.addEventListener('seeking', () => {
+            if (this.loopOwner === 'media' && this._isLooping && this.media.state === PlayerState.Playing) {
+                this.synth.pause();
+            }
+        });
+        el.addEventListener('seeked', () => {
+            if (this.loopOwner !== 'media' || !this._isLooping || this.media.state !== PlayerState.Playing) {
+                return;
+            }
+            const latency = this._latencyInMedia();
+            const target = this._mediaTimeNow();
+            this._settleUntil = performance.now() + this.settleDuration;
+            if (this.startAtTarget) {
+                this._startGap = Math.max(0, latency);
+                this._catchUpUntil = this._startGap > 0 ? performance.now() + this.settleDuration : 0;
+                this._resyncTo(target + Math.min(0, latency), 0);
+            } else {
+                this._resyncTo(target + latency, this._resyncLead);
+            }
+            this.synth.play();
+            this.loopWraps.push(performance.now());
+        });
+    }
+
     public pause(): void {
+        if (this._loopTimer) {
+            clearTimeout(this._loopTimer);
+            this._loopTimer = null;
+        }
         this.media.pause();
         this.synth.pause();
     }

@@ -4,8 +4,9 @@
 > ("External Media Sync / Backing Tracks - Allow mixing with Synthesizer").
 > All code is throwaway, on branch `spike/2397-sync-options` (based on `develop` @ `25ef76d3`).
 > Details per approach: [Spike 1](./spike-1-seek-on-drift.md) ·
-> [Spike 2 / 2b](./spike-2-timestamp-nudge.md) · [Spike 3](./spike-3-decode-and-mix.md).
-> Raw numbers: [results.json](./results.json).
+> [Spike 2 / 2b](./spike-2-timestamp-nudge.md) · [Spike 3](./spike-3-decode-and-mix.md) ·
+> [Spike 4: first beat, start re-syncs, loops](./spike-4-first-beat-and-loops.md).
+> Raw numbers: [results.json](./results.json) · [results-2026-10-08.json](./results-2026-10-08.json).
 
 ## TL;DR
 
@@ -25,6 +26,12 @@
   ([details](./spike-2-timestamp-nudge.md#follow-up-fixing-the-late-first-click-after-listening-tests)).
   Still open: the first click after a *seek during playback* at 0.5×/1.5× (−49 / −24 ms). Fix:
   re-sync on the MP3's `seeked` event.
+- **Correction from [Spike 4](./spike-4-first-beat-and-loops.md):** with a real skip check, a start
+  exactly on a beat **skipped the first beat** (1×: 2 / 15, 0.5×: 10 / 10), because the synth
+  started at *position + latency offset*. Starting the synth at the target fixed it (0 skips at
+  every speed). Spike 4 also shows the 4 ms settle threshold cutting sounding notes, measures loop
+  wraps (the combined player owning the wrap is cleanest), and finds Chrome dropping the start of
+  time-stretched audio above 1× (fixed by a 60 ms pre-roll).
 
 ## The question
 

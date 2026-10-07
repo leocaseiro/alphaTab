@@ -300,7 +300,11 @@ async function setupTaps() {
         });
     } else {
         player.mediaOutput.spikeSource!.connect(tapMedia);
-        player.onSynthWorkletCreated(node => node.connect(tapSynth));
+        player.onSynthWorkletCreated(node => {
+            node.connect(tapSynth);
+            // lap-1 spike 2026-10-08: envelope recordings (F-8 re-sync cut, 1.5x first-beat clip)
+            (window as any).spikeSynthNode = node;
+        });
     }
     applySound();
 }
@@ -552,6 +556,98 @@ async function startTest(n: number, beforeBeatMs: number, speed = 1) {
     return rows;
 }
 (window as any).spikeStartTest = startTest;
+
+/**
+ * Loop test (lap-1 F-4): loops `bars` bars from beat 40 for `wraps` repetitions and checks every beat:
+ * each backing-track beep must have its own click. Reports offsets, missing/extra clicks and the gap at each wrap.
+ */
+async function loopTest(owner: 'combined' | 'media', speed: number, bars = 2, wraps = 10, beatsPerBar = 4) {
+    const sr = player.audioContext.sampleRate;
+    player.masterGain.gain.value = 0;
+    api.metronomeVolume = 1;
+    api.changeTrackMute(api.score!.tracks, true);
+    player.setMix(1, 1);
+    api.pause();
+    api.playbackSpeed = speed;
+    await sleep(400);
+    const k0 = 40;
+    const k1 = k0 + bars * beatsPerBar;
+    const startMedia = beatMediaTimes[k0];
+    const endMedia = beatMediaTimes[k1];
+    const beatMs = (beatMediaTimes[k0 + 1] - beatMediaTimes[k0]) / speed;
+    api.timePosition = alphaTabTimeForMedia(endMedia);
+    await sleep(150);
+    const endTick = api.tickPosition;
+    api.timePosition = alphaTabTimeForMedia(startMedia);
+    await sleep(150);
+    const startTick = api.tickPosition;
+    player.loopOwner = owner;
+    player.loopRange = { start: startMedia, end: endMedia };
+    player.loopWraps = [];
+    (api as any).playbackRange = { startTick, endTick };
+    api.isLooping = true;
+    await sleep(300);
+    tapOnsets.media.length = 0;
+    tapOnsets.synth.length = 0;
+    const playFrame = player.audioContext.currentTime * sr;
+    api.play();
+    const repMs = (endMedia - startMedia) / speed;
+    await sleep(repMs * (wraps + 1) + 300);
+    api.pause();
+    api.isLooping = false;
+    (api as any).playbackRange = null;
+    player.loopOwner = 'none';
+    await sleep(300);
+    const media = tapOnsets.media.filter(f => f > playFrame).sort((a, b) => a - b);
+    const synth = tapOnsets.synth.filter(f => f > playFrame).sort((a, b) => a - b);
+    const offsets: number[] = [];
+    let missing = 0;
+    for (const m of media) {
+        const off = ((nearest(synth, m) - m) / sr) * 1000;
+        if (Math.abs(off) <= 50) {
+            offsets.push(off);
+        } else {
+            missing++;
+        }
+    }
+    let extra = 0;
+    for (const s of synth) {
+        if (Math.abs(((s - nearest(media, s)) / sr) * 1000) > 50) {
+            extra++;
+        }
+    }
+    // gap at each wrap: beep intervals longer than one beat + 15 ms
+    const gaps: number[] = [];
+    for (let i = 1; i < media.length; i++) {
+        const d = ((media[i] - media[i - 1]) / sr) * 1000;
+        if (d > beatMs + 15) {
+            gaps.push(Math.round(d - beatMs));
+        }
+    }
+    const abs = offsets.map(Math.abs).sort((a, b) => a - b);
+    const p95 = abs.length ? Math.round(abs[Math.min(abs.length - 1, Math.floor(abs.length * 0.95))] * 10) / 10 : null;
+    const mean = offsets.length ? Math.round((offsets.reduce((a, b) => a + b, 0) / offsets.length) * 10) / 10 : null;
+    const result = {
+        owner,
+        speed,
+        startAtTarget: player.startAtTarget,
+        beeps: media.length,
+        clicks: synth.length,
+        missing,
+        extra,
+        mean,
+        p95,
+        wraps: player.loopWraps.length,
+        gaps,
+        beatMs: Math.round(beatMs)
+    };
+    applySound();
+    applyMix();
+    applyVolumes();
+    log({ loopTest: result });
+    return result;
+}
+(window as any).spikeLoopTest = loopTest;
 (window as any).spikeTaps = tapOnsets;
 (window as any).spikeDebug = {
     get beatMediaTimes() {
