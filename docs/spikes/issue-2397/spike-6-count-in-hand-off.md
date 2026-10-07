@@ -103,6 +103,30 @@ from 300 ms on; where the line crosses `T` is when the video's clock started. Th
   `AudioContext`, so these are the API's clock values, not taps (S9 stays best-effort with the manual
   offset). A pre-roll ad, if the video has one, was not seen in these runs.
 
+### Desk research: Soundslice and the YouTube API
+
+Read from public docs and the IFrame API's own script, not measured:
+
+- **Soundslice** offers a 1–3 bar count-in for real recordings as well as synthetic audio, at the
+  recording's tempo from its sync data, also before loops
+  ([help](https://www.soundslice.com/help/en/player/basic/8/metronome-and-count-in/),
+  [blog](https://www.soundslice.com/blog/269/new-loop-menu-and-improved-count-in)). The docs don't say
+  whether the video waits during the clicks or plays a pre-roll, and describe no YouTube start-delay
+  compensation; for their synth-over-YouTube mode they mention a slight delay from YouTube buffering
+  ([help](https://www.soundslice.com/help/en/player/advanced/313/synth-overlay/)). YouTube's own UI stays
+  visible in their player ([help](https://www.soundslice.com/help/en/player/basic/78/adjusting-videos/)).
+- **No scheduled start** in the IFrame Player API: only `playVideo`, `seekTo`, `cue…`/`load…`
+  ([reference](https://developers.google.com/youtube/iframe_api_reference)). `onStateChange` carries only
+  the new state, so a click inside the player looks the same as an API call.
+- **`getCurrentTime()` is extrapolated** inside the API script between the iframe's updates (last
+  reported time + elapsed time × rate while playing, capped at +1 s), which is why it read as smooth
+  here; the true value only refreshes when the iframe reports.
+- **Hiding controls is allowed, overlays are not**: `controls=0` and `disablekb=1` are documented player
+  parameters ([parameters](https://developers.google.com/youtube/player_parameters)); YouTube's required
+  minimum functionality forbids overlays in front of the embedded player
+  ([terms](https://developers.google.com/youtube/terms/required-minimum-functionality)). Clicking the video
+  surface itself probably still starts it (reported by another project; not verified here).
+
 ## What this means for the design
 
 - **The hand-off works**: one stream through the boundary, the boundary frame from the stamps and a
