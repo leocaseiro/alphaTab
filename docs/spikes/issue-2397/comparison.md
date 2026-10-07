@@ -6,7 +6,7 @@
 > Details per approach: [Spike 1](./spike-1-seek-on-drift.md) ·
 > [Spike 2 / 2b](./spike-2-timestamp-nudge.md) · [Spike 3](./spike-3-decode-and-mix.md) ·
 > [Spike 4: first beat, start re-syncs, loops](./spike-4-first-beat-and-loops.md) ·
-> [Spike 5: unprobed speeds, playBeat during mixed playback](./spike-5-unprobed-speeds-and-playbeat.md).
+> [Spike 5: unprobed speeds, playBeat during mixed playback, click level](./spike-5-unprobed-speeds-and-playbeat.md).
 > Raw numbers: [results.json](./results.json) · [results-2026-10-08.json](./results-2026-10-08.json).
 
 ## TL;DR

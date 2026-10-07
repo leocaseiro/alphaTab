@@ -1,11 +1,11 @@
-# Spike 5 — Latency at unprobed speeds, and playBeat during mixed playback
+# Spike 5 — Latency at unprobed speeds, playBeat during mixed playback, click level
 
 > Part of the [CoderLine/alphaTab#2397](https://github.com/CoderLine/alphaTab/issues/2397) spike.
 > Throwaway code on branch `spike/2397-sync-options`. Run 2026-10-08 during the design review, on
 > the same machine as the other spikes (Chromium, macOS, 48 kHz), sync lab in `nudgecal` mode
 > (Spike 2b), `pelados.gp` with the generated beep backing track.
 > Raw numbers: [results-2026-10-08.json](./results-2026-10-08.json) (keys `spike5UnprobedSpeeds`,
-> `spike5PlayBeat`).
+> `spike5PlayBeat`, `spike5ClickLevel`).
 
 ## 1. Latency at speeds the probe has not measured
 
@@ -75,6 +75,36 @@ backing-track / external-media players, `playOneTimeMidiFile` seeks the media to
 about one beat there, then pauses and seeks back to about the old position divided by the speed
 (wrong at speeds other than 1×). The same sequencer loop as the count-in freeze
 (`fillMidiEventQueueToEndTime`) may also hang there, so that path was not run.
+
+## 3. Click level against a mastered backing track
+
+**Why.** Review finding F-14 says the default mix may bury the metronome under a mastered recording,
+and the design dropped the spike's output limiter. Earlier spikes measured the synth drums (~19 dB
+under the MP3) but never the metronome click.
+
+**How.** Sync lab, `src=mp3` (the file's own recording), 1×, silent (master gain 0), metronome on at
+`metronomeVolume` 1, synth tracks muted. Analysers on the raw media and synth streams, plus two
+silent summing busses: the design's default mix (media 1, synth 1) and the spike page's mix (media
+0.35, synth 2). 10 s from 20 s into the song, read every 10 ms (21 ms windows).
+
+| Measure | Value |
+|---|---:|
+| Recording, short-term level (RMS, median / 90th percentile) | −18.0 / −15.2 dBFS |
+| Recording, highest peak | −2.3 dBFS |
+| Metronome click, peak (22 clicks, all the same) | −11.4 dBFS |
+| Metronome click, short-term level in its 21 ms window | −25.9 dBFS |
+| Sum at the default mix (1 / 1), highest peak; windows over 0 dBFS | −2.3 dBFS; 0 |
+| Sum at the spike page's mix (0.35 / 2), highest peak; windows over 0 dBFS | −3.8 dBFS; 0 |
+
+- The click's short-term level sits about 8 dB under the recording's: likely audible in quiet
+  passages, possibly masked in dense ones. Whether it is "clearly audible" needs an ear.
+- Nothing clipped in 10 s at either mix. The worst case, a click landing exactly on the recording's
+  loudest peak, would just pass full scale (0.77 + 0.27 ≈ 1.04, +0.3 dBFS): rare, but possible at
+  default levels.
+- The spike's limiter threshold (−3 dB) is below this recording's own peaks (−2.3 dBFS), so it would
+  squash the backing track itself. A limiter that only catches the sum needs a threshold near −1 dBFS.
+- Both apps that motivated this work cap the metronome and master volumes at 1 (sliders 0–1 or
+  on/off toggles), so neither can boost the click above the default today.
 
 ## How to reproduce
 

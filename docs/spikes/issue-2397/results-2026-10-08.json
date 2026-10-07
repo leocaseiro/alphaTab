@@ -504,5 +504,20 @@
       }
     ],
     "controllerActionsAfter": {}
+  },
+  "spike5ClickLevel": {
+    "what": "sync lab src=mp3 (pelados.gp recording), 1x, silent, metronomeVolume 1, synth tracks muted; AnalyserNode fftSize 1024 (21 ms) every 10 ms for 10 s from 20 s; sum busses: default mix media 1/synth 1, spike page mix media 0.35/synth 2",
+    "windows": 938,
+    "mediaRmsMedianDb": -18.0,
+    "mediaRmsP90Db": -15.2,
+    "mediaPeakMaxDb": -2.3,
+    "clickCount": 22,
+    "clickPeakMedianDb": -11.4,
+    "clickPeakMaxDb": -11.4,
+    "clickWindowRmsMedianDb": -25.9,
+    "sumDefaultMixPeakMaxDb": -2.3,
+    "sumDefaultMixWindowsOver0dB": 0,
+    "sumSpikePageMixPeakMaxDb": -3.8,
+    "sumSpikePageMixWindowsOver0dB": 0
   }
 }

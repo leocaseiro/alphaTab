@@ -216,6 +216,7 @@ Behaviour of existing calls when mixing is on:
 |---|---|
 | `metronomeVolume`, `countInVolume` | work in media modes (synth) |
 | `changeTrackVolume/Mute/Solo`, transposition | synth tracks |
+| Synth tracks (default) | active (not muted) when mixing is on; existing mute/solo/volume states apply (§2) |
 | `playbackSpeed` | both (+ latency correction) |
 | `timePosition`, `tickPosition` | media; synth follows |
 | `playbackRange`, `isLooping` | the combined player owns the loop wrap (§6.2) |
