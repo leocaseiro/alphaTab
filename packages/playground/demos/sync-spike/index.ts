@@ -150,10 +150,19 @@ let sequencer!: MidiFileSequencer;
 let durationMs = 0;
 let beatMediaTimes: number[] = [];
 
-async function prepareScore(): Promise<alphaTab.model.Score> {
-    const bytes = new Uint8Array(await (await fetch(file)).arrayBuffer());
-    const score = alphaTab.importer.ScoreLoader.loadScoreFromBytes(bytes, settings);
-    const mp3 = score.backingTrack!.rawAudioFile!;
+async function prepareScore(bytes: Uint8Array, name: string): Promise<alphaTab.model.Score | null> {
+    let score: alphaTab.model.Score;
+    try {
+        score = alphaTab.importer.ScoreLoader.loadScoreFromBytes(bytes, settings);
+    } catch (e) {
+        log(`${name}: could not load (${(e as Error).message})`);
+        return null;
+    }
+    const mp3 = score.backingTrack?.rawAudioFile;
+    if (!mp3) {
+        log(`${name}: no embedded audio track. This spike needs a Guitar Pro file with an audio track (+ sync points).`);
+        return null;
+    }
     durationMs = await mediaDuration(mp3);
 
     const midi = new MidiFile();
@@ -178,10 +187,50 @@ async function prepareScore(): Promise<alphaTab.model.Score> {
         score.backingTrack!.rawAudioFile = encodeWav(pcm, rate);
     }
     log(
-        `file=${file} src=${src} mode=${mode} duration=${(durationMs / 1000).toFixed(2)}s beats=${beatMediaTimes.length} syncPoints=${generator.syncPoints.length}`
+        `file=${name} src=${src} mode=${mode} duration=${(durationMs / 1000).toFixed(2)}s beats=${beatMediaTimes.length} syncPoints=${generator.syncPoints.length} tracks=${score.tracks.length}`
     );
     return score;
 }
+
+const fileNameEl = document.getElementById('fileName')!;
+async function loadBytes(bytes: Uint8Array, name: string) {
+    const score = await prepareScore(bytes, name);
+    if (!score) {
+        return;
+    }
+    api.stop();
+    tapOnsets.media.length = 0;
+    tapOnsets.synth.length = 0;
+    fileNameEl.textContent = `${name} (wait for "player ready")`;
+    api.playerReady.on(() => {
+        fileNameEl.textContent = name;
+    });
+    api.renderScore(
+        score,
+        score.tracks.map(t => t.index)
+    );
+}
+
+// file picker + drag & drop anywhere on the page (the file stays in memory only)
+document.getElementById('fileInput')!.addEventListener('change', async e => {
+    const f = (e.target as HTMLInputElement).files?.[0];
+    if (f) {
+        await loadBytes(new Uint8Array(await f.arrayBuffer()), f.name);
+    }
+});
+window.addEventListener('dragover', e => {
+    e.preventDefault();
+    document.body.classList.add('dragging');
+});
+window.addEventListener('dragleave', () => document.body.classList.remove('dragging'));
+window.addEventListener('drop', async e => {
+    e.preventDefault();
+    document.body.classList.remove('dragging');
+    const f = e.dataTransfer?.files?.[0];
+    if (f) {
+        await loadBytes(new Uint8Array(await f.arrayBuffer()), f.name);
+    }
+});
 
 (globalThis as any).__alphaTabMixSpike = mode;
 const api = new alphaTab.AlphaTabApi(document.querySelector('.at-canvas') as HTMLElement, settings);
@@ -465,15 +514,48 @@ api.playerReady.on(async () => {
     applyVolumes();
     log('player ready');
     (window as any).spikeReady = true;
-    if (mode === 'nudgecal' && src === 'mp3') {
+    if (mode === 'nudgecal') {
         log('calibrating media latency in the background (silent) …');
         await player.spikeCalibrate([1, 0.5, 0.75, 1.25, 1.5]);
         log({ mediaLatencyByRate: player.stats.mediaLatencyByRate });
     }
 });
 
+// live readout: how far is each metronome click from the backing track's beep (beeps only)
+const liveEl = document.getElementById('live')!;
+let liveSeen = 0;
+setInterval(() => {
+    const speed = api.playbackSpeed;
+    const lat = player.stats.mediaLatencyByRate[String(speed)];
+    const calib =
+        mode === 'nudgecal'
+            ? lat === undefined
+                ? `Chrome latency @${speed}×: calibrating…`
+                : `Chrome latency @${speed}×: ${lat} ms (compensated)`
+            : mode === 'nudge'
+              ? `Chrome latency @${speed}×: not compensated`
+              : '';
+    if (src !== 'beeps') {
+        liveEl.textContent = `live: ${calib} — switch Audio to "generated beeps" to see click-vs-beep offsets`;
+        return;
+    }
+    const sr = player.audioContext.sampleRate;
+    const media = [...tapOnsets.media].sort((a, b) => a - b);
+    const recent = tapOnsets.synth.slice(-8);
+    if (media.length === 0 || recent.length === 0 || tapOnsets.synth.length === liveSeen) {
+        return;
+    }
+    liveSeen = tapOnsets.synth.length;
+    const offsets = recent
+        .map(s => ((s - nearest(media, s)) / sr) * 1000)
+        .filter(o => Math.abs(o) < 150)
+        .map(o => Math.round(o));
+    const mean = offsets.length ? Math.round(offsets.reduce((a, b) => a + b, 0) / offsets.length) : 0;
+    liveEl.textContent = `live @${speed}×: click − beep (last ${offsets.length}): ${offsets.map(o => (o > 0 ? `+${o}` : `${o}`)).join(' ')} ms → mean ${mean > 0 ? '+' : ''}${mean} ms   ${calib}`;
+}, 400);
+
 (async () => {
     await setupTaps();
-    const score = await prepareScore();
-    api.renderScore(score, [0]);
+    const bytes = new Uint8Array(await (await fetch(file)).arrayBuffer());
+    await loadBytes(bytes, file.split('/').pop() ?? file);
 })();

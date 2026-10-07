@@ -10,11 +10,14 @@
             .bar select, .bar button { font-size: 14px; }
             pre { margin: 0; padding: 8px; max-height: 30vh; overflow: auto; background: #f6f6f6; font-size: 12px; }
             .at-viewport { height: 55vh; overflow: auto; }
+            body.dragging { outline: 4px dashed #2a7; outline-offset: -8px; }
         </style>
     </head>
     <body>
         <div class="bar">
             <strong>Sync spike #2397</strong>
+            <label title="or drop a .gp file anywhere on the page">File <input type="file" id="fileInput" accept=".gp,.gpx" /></label>
+            <em id="fileName"></em>
             <label>Mode
                 <select id="mode">
                     <option value="free">free (no correction)</option>
@@ -34,7 +37,7 @@
             <button id="play">Play / Pause</button>
             <label><input type="checkbox" id="metronome" checked /> metronome</label>
             <label>Metronome vol <input type="range" id="metronomeVol" min="0" max="3" step="0.1" value="1" /></label>
-            <label><input type="checkbox" id="drums" /> synth drums</label>
+            <label><input type="checkbox" id="drums" /> synth tracks</label>
             <label>Speed
                 <select id="speed">
                     <option>0.5</option>
@@ -45,9 +48,10 @@
                 </select>
             </label>
             <label>MP3 vol <input type="range" id="mediaVol" min="0" max="1" step="0.05" value="0.35" /></label>
-            <label>Synth vol <input type="range" id="synthVol" min="0" max="4" step="0.1" value="2" /></label>
+            <label>Synth vol <input type="range" id="synthVol" min="0" max="8" step="0.1" value="2" /></label>
             <button id="measure">Run measurement</button>
         </div>
+        <div class="bar" id="live" style="font-family: ui-monospace, monospace; font-size: 13px;">live: —</div>
         <pre id="log">loading…</pre>
         <div class="at-viewport"><div class="at-canvas"></div></div>
         <script type="module" src="./index.ts"></script>

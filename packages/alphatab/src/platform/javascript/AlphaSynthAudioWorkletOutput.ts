@@ -285,7 +285,15 @@ export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
         // SPIKE (#2397): a shared master gain so a routed backing track and the synth share one graph
         const ctx = this.context!;
         this._spikeMaster = ctx.createGain();
-        this._spikeMaster.connect(ctx.destination);
+        // limiter so a boosted synth does not clip (same path for synth and backing track)
+        const limiter = ctx.createDynamicsCompressor();
+        limiter.threshold.value = -3;
+        limiter.knee.value = 0;
+        limiter.ratio.value = 20;
+        limiter.attack.value = 0.001;
+        limiter.release.value = 0.1;
+        this._spikeMaster.connect(limiter);
+        limiter.connect(ctx.destination);
         this.onReady();
     }
 
