@@ -398,7 +398,8 @@ function analyze(name: string, fromFrame: number, toFrame: number, fromPerf: num
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 function alphaTabTimeForMedia(mediaTime: number) {
-    return sequencer.mainTimePositionFromBackingTrack(mediaTime, durationMs) / sequencer.playbackSpeed;
+    // api.timePosition is in time at the current speed (the harness's own sequencer always runs at 1x)
+    return sequencer.mainTimePositionFromBackingTrack(mediaTime, durationMs) / api.playbackSpeed;
 }
 
 async function segment(name: string, action: () => void, durationMs: number, settleMs = 1500): Promise<SegmentStats> {
@@ -487,14 +488,22 @@ async function runMeasurement() {
  * Start test: N plays from different positions; reports the offset of the first clicks after each Play.
  * beforeBeatMs: how long before a beat the playback starts (0 = exactly on a beat).
  */
-async function startTest(n: number, beforeBeatMs: number) {
+async function startTest(n: number, beforeBeatMs: number, speed = 1) {
     const sr = player.audioContext.sampleRate;
     player.masterGain.gain.value = 0;
     api.metronomeVolume = 1;
     api.changeTrackMute(api.score!.tracks, true);
     player.setMix(1, 1);
-    api.playbackSpeed = 1;
-    const rows: { startMedia: number; first: number[]; lockMs: number | null }[] = [];
+    api.playbackSpeed = speed;
+    const rows: {
+        startMedia: number;
+        first: number[];
+        lockMs: number | null;
+        resyncs: number;
+        firstGap: number | null;
+        skipped: boolean;
+        counts: string;
+    }[] = [];
     for (let i = 0; i < n; i++) {
         api.pause();
         await sleep(400);
@@ -506,8 +515,10 @@ async function startTest(n: number, beforeBeatMs: number) {
         tapOnsets.synth.length = 0;
         const ctx = player.audioContext;
         const playFrame = ctx.currentTime * sr;
+        const playT = performance.now();
         api.play();
-        await sleep(2500);
+        await sleep(speed < 1 ? 4500 : 2500);
+        const resyncs = player.stats.driftLog.filter(e => e.t > playT && e.action === 'resync').length;
         const media = [...tapOnsets.media].sort((a, b) => a - b);
         const offs = tapOnsets.synth
             .filter(f => f > playFrame)
@@ -523,7 +534,15 @@ async function startTest(n: number, beforeBeatMs: number) {
                 break;
             }
         }
-        rows.push({ startMedia: Math.round(startMedia), first: offs, lockMs });
+        // skip check: the first backing-track beep after Play must have its own click (within 50 ms)
+        const mediaAfter = media.filter(f => f > playFrame);
+        const firstGap =
+            mediaAfter.length > 0 && synthAfter.length > 0
+                ? Math.round(((synthAfter[0] - mediaAfter[0]) / sr) * 1000 * 10) / 10
+                : null;
+        const skipped = firstGap === null || Math.abs(firstGap) > 50;
+        const counts = `${synthAfter.length}/${mediaAfter.length}`;
+        rows.push({ startMedia: Math.round(startMedia), first: offs, lockMs, resyncs, firstGap, skipped, counts });
     }
     api.pause();
     applySound();
@@ -534,6 +553,15 @@ async function startTest(n: number, beforeBeatMs: number) {
 }
 (window as any).spikeStartTest = startTest;
 (window as any).spikeTaps = tapOnsets;
+(window as any).spikeDebug = {
+    get beatMediaTimes() {
+        return beatMediaTimes;
+    },
+    get sequencer() {
+        return sequencer;
+    },
+    alphaTabTimeForMedia
+};
 (window as any).spikeAnalyze = analyze;
 
 document.getElementById('play')!.addEventListener('click', () => api.playPause());

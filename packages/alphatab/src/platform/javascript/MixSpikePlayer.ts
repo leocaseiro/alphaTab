@@ -72,6 +72,8 @@ export class MixSpikePlayer implements IAlphaSynth {
     public seekThreshold: number = 50;
     public nudgeMaxCorrection: number = 0.02;
     public nudgeGainMillis: number = 3000;
+    /** nudge gain while settling (lap-1 F-8 option A: a faster nudge instead of a re-sync) */
+    public settleNudgeGainMillis: number = 3000;
     public nudgeResyncThreshold: number = 120;
     public settleResyncThreshold: number = 4;
     public settleDuration: number = 1500;
@@ -311,7 +313,8 @@ export class MixSpikePlayer implements IAlphaSynth {
         } else {
             this._driftEma = this._driftEma === null ? drift : this._driftEma + (drift - this._driftEma) * 0.3;
             const max = this.nudgeMaxCorrection;
-            const correction = 1 - Math.max(-max, Math.min(max, this._driftEma / this.nudgeGainMillis));
+            const gain = settling ? this.settleNudgeGainMillis : this.nudgeGainMillis;
+            const correction = 1 - Math.max(-max, Math.min(max, this._driftEma / gain));
             if (Math.abs(correction - this._correction) > 0.0002) {
                 this._correction = correction;
                 this.synth.spikeCorrection(correction);

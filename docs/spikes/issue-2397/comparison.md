@@ -85,9 +85,13 @@ Settled **mean / p95 |offset|** per scenario. Perfect = −0.65 ms. **Bold** = w
 | Seek to 1:00, 1.0× | +10.0 / 10.6 ms ² | **+4.7 / 5.3 ms** | **+0.3 / 4.2 ms** | **+1.3 / 2.0 ms** | **+0.1 / 1.3 ms** | **−0.7 / 1.3 ms** |
 | 0.5× (seek to 1:40) | +12.0 / 26.6 ms | +12.0 / 26.6 ms | +56.7 / 73.3 ms | **−3.4 / 13.3 ms** ³ | **−2.4 / 15.9 ms** ³ | **−0.7 / 1.3 ms** ⁴ |
 | 1.5× (seek to 2:10) | −22.2 / 24.3 ms | −22.2 / 24.3 ms | **−5.3 / 8.3 ms** | **−0.7 / 3.0 ms** | **0.0 / 3.0 ms** | **−0.7 / 1.3 ms** ⁴ |
-| First click after Play | 101 ms late | 101 ms late | on time (this run) | 107 ms late | **0–5 ms** (15/15 runs) | on time |
+| First click after Play | 101 ms late | 101 ms late | on time (this run) | 107 ms late | **0–5 ms** (15/15 runs) ⁵ | on time |
 
 ¹ Before settling, one click was 101 ms (Spike 1) / 107 ms (2b) late (finding F2).
+
+⁵ Judged from click offsets, which cannot show a skipped beat. A later run with a per-start skip
+check found the first beat skipped when starting exactly on a beat: 2/15 starts at 1×, 10/10 at 0.5×
+(cause and fix direction: [spike 2, Follow-up 2](./spike-2-timestamp-nudge.md)).
 ² Second baseline run: +4.7 ms. The offset a seek leaves behind varies between runs at 1.0×
 (+4.7 … +10 ms). At 0.5× and 1.5× it repeated to the 0.01 ms in three runs. Either way it isn't zero.
 ³ Within the MP3's own beat wobble at 0.5× (finding F4).

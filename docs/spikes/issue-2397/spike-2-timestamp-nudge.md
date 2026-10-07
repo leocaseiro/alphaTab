@@ -135,12 +135,46 @@ thread hops), so its audio started **~100–117 ms after the MP3's**. Four chang
 | Seek to 2:10, 1.5× | −24 ms ² | **0.0 ms** | **3.0 ms** | 3.0 ms | 3 |
 
 Start test (Stop → Play, and seek → Play exactly on a beat; 15 runs): **one click per beat in 15/15
-runs**. The first click was 0 ms in about half the runs and ~5 ms in the rest (Chrome starts the
+runs** (judged from click offsets and counts; a later run with a per-start skip check found skipped
+first beats, see Follow-up 2). The first click was 0 ms in about half the runs and ~5 ms in the rest (Chrome starts the
 `<audio>` on 5.3 ms steps). Every later click was within ~1 ms.
 
 ² Still open: **a seek during playback at a stretched speed** makes the synth jump before the MP3
 has finished seeking, so the first click after it is early. Fix for the real design: re-sync on the
 MP3's `seeked` event, and keep the synth silent until then.
+
+## Follow-up 2: a skip check finds skipped first beats (2026-10-08, spec review)
+
+The start test above judged "never skipped" from click offsets, which cannot show a skipped beat
+(the next click then lines up with the next beep). The start test now also checks that the backing
+track's **first beep after Play has its own click** (within 50 ms), counts the controller's re-syncs
+per start, and takes a speed. It also fixes a harness bug: at speeds ≠ 1× it seeked to the wrong
+place (`api.timePosition` is in time at the current speed).
+
+Starts exactly on a beat, nudgecal mode, same machine:
+
+| Speed | Setup | Starts | First beat skipped | Re-syncs | First click |
+|---|---|---:|---:|---|---|
+| 1.0× | as built (settle threshold 4 ms) | 15 | **2** (the same 2 positions every run) | 10, in 6 starts | −1.7 … +10.7 ms |
+| 1.0× | settle threshold 12 ms + faster settle nudge (gain 300 ms) | 15 | — (no skip check yet) | **0** | −5.3 … +6.7 ms, within 3 ms after ≤ 0.9 s |
+| 0.5× | as built | 10 | **10** | 1 | — |
+| 1.5× | as built | 10 | 0 ¹ | 1 | — |
+| 1.0× | latency offset forced to −1 ms | 11 | **0** | 5 starts | 0 … +8 ms (+16 ms on the first start after a speed change) |
+| 0.5× | latency offset forced to 0 | 4 | **0** | 1 | −35 … +21 ms, later clicks +45 … +82 ms (uncompensated) |
+
+¹ At 1.5× the synth plays the first beat, but the backing track's own first beep is clipped by
+Chrome's time-stretch start: one more click than beeps in 10/10 starts.
+
+- **Cause:** the start puts the synth at *media position + calibrated latency × speed*. When that
+  offset is positive (0.5×: +30 ms of song time; 1×: +0.2 ms) the synth starts just past a beat
+  that sits exactly at the start position, so the beat counts as already played while the backing
+  track plays it. Forcing the offset ≤ 0 removes every skip, but at 0.5× the clicks are then
+  ~60 ms late, so the real design must start the synth **at** the target and apply the offset
+  after the first beat, never by moving the start forward.
+- **Start lead L is one value for all speeds:** the first start after a speed change was 15–55 ms
+  off (or skipped) until L was re-learned. It needs one L per speed.
+- **Faster settle nudge:** at 1× it removes the start re-syncs (each one cuts sounding notes); at
+  1.5× it chases the time-stretch jitter (later clicks ±4–7 ms instead of ±1–3 ms), so 1× only.
 
 ## How to reproduce
 
