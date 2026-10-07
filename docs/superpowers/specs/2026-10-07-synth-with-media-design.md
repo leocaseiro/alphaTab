@@ -44,7 +44,7 @@ milliseconds, at any playback speed, with no cost when the feature is off.
 | Code home | Shared TS for the synth "follow media" part; web-only (`platform/javascript`) for the combined player, sync controller and probe |
 | Output mode | Mixing requires `PlayerOutputMode.WebAudioAudioWorklets` (default). ScriptProcessor → media only + warning |
 | Verification | Keep the spike's measurement page as a playground demo ("sync lab") |
-| Delivery | patch-package patch (tarball for a first try). **Target project open** (see §11) |
+| Delivery | patch-package patch (tarball for a first try), for **both** `alphaTabWebsite` and `notation-hero/web` (see §11) |
 
 ## 3. Architecture
 
@@ -252,8 +252,9 @@ must also recreate it when `enableSynthesizerWithMedia` changes (via `updateSett
 3. Then a patch-package patch: install the `1.9.0-alpha` build that is current at delivery time in
    the target project → replace its `node_modules/@coderline/alphatab/dist` with this branch's build →
    `npx patch-package @coderline/alphatab`. Regenerate the patch whenever the alpha is upgraded.
-4. **Open: target project** — `alphaTabWebsite` (rhythm game, already on patch-package, `^1.8.1`)
-   and/or `notation-hero/web` (Next.js, `1.8.4`, no patch-package yet). Both upgrade to the alpha first.
+4. **Target projects: both** — `alphaTabWebsite` (rhythm game, already on patch-package, `^1.8.1`)
+   and `notation-hero/web` (Next.js, `1.8.4`, needs patch-package added). Both upgrade to the alpha
+   first; the same patch file applies to both when they pin the same alpha version.
 5. Upstream PR: later and optional (would need C#/Kotlin-safe shared code, which §4 keeps, plus docs).
 
 ## 12. Out of scope / later
