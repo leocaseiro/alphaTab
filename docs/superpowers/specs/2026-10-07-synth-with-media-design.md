@@ -184,8 +184,15 @@ shorter probe is **untested**), played in a hidden `<audio>` at the target speed
 routed into the same `AudioContext` into a tap that is never audible. The probe records the onset
 frames, and the median of (`currentTime` reaching a beep − beep onset) is the latency for that speed.
 Runs in the background after load for 1, 0.5, 0.75, 1.25, 1.5×, other speeds on first use. Cached per
-session. If it fails, the latency is 0. Spike values (Chrome): 1×: 0, 0.5×: 60, 0.75×: 27, 1.25×: −4,
-1.5×: −4 ms.
+session. If it fails, the latency is 0. While the active speed has no measured value yet (not probed
+yet, or the `AudioContext` not running yet), use a straight-line guess between the nearest measured
+speeds (outside them, the nearest value; none measured: 0), and probe that speed next, ahead of the
+background list. A value that arrives during playback is applied like a speed change (re-sync,
+settle). Spike values (Chrome): 1×: 0, 0.5×: 60, 0.75×: 27, 1.25×: −4, 1.5×: −4 ms. Spike 5 at
+speeds outside the list (0.25×: 80, 0.6×: 54, 0.83×: 20, 0.9×: 18, 1.1×: −4, 2×: −6 ms): the guess
+was at most 7.3 ms off between 0.5× and 1.5× and 20 ms off at 0.25×; using 0 was 4–80 ms off. Chrome
+probably skips time-stretching at exactly 1×, so speeds near 1 keep most of the stretch latency
+(0.9×: 18 ms).
 
 ## 7. Public API
 
@@ -240,7 +247,7 @@ must also recreate it when `enableSynthesizerWithMedia` changes (via `updateSett
 | | Chunk stamps consistent (`mediaStart + frames × mediaPerFrame` = next `mediaStart`); `seekToMediaTime`; rate correction |
 | | `MediaSyncController` with fed readings: agreement rule, settle thresholds, nudge sign/limits, re-sync, lead learning, start handshake (media delay vs synth pre-roll, start at target never past it, one start lead per speed, media pre-roll above 1×), seek = restart, loop wrap, a jumpy-clock sequence that must not re-sync |
 | | Count-in: tempo from sync points / fallback, end reported, no freeze, no rewind |
-| Browser — sync lab | Playground demo (the spike page, cleaned up): generated beep track from the file's sync points, two taps, per-click offsets, "Run measurement", start test with a skip check (the first beat after Play must have its own click) at 0.5× / 1× / 1.5×, including the first Play after page load, that also seeks and changes speed during playback on a beat, loop test (a 2-bar range, ≥ 10 wraps per speed), a listening check with unmuted, sustained tracks (no cut notes or dropouts after Play, a seek or a speed change), live readout. Acceptance: S1–S5, S4b, S10 |
+| Browser — sync lab | Playground demo (the spike page, cleaned up): generated beep track from the file's sync points, two taps, per-click offsets, "Run measurement", start test with a skip check (the first beat after Play must have its own click) at 0.5× / 1× / 1.5×, including the first Play after page load, that also seeks and changes speed during playback on a beat, loop test (a 2-bar range, ≥ 10 wraps per speed), a listening check with unmuted, sustained tracks (no cut notes or dropouts after Play, a seek or a speed change), latency probe and click offsets also at 0.25× and 2×, live readout. Acceptance: S1–S5, S4b, S10 |
 | Browser — manual | Your real MP3 with drums/metronome by ear; YouTube demo with the metronome + offset (S9) |
 | Performance | S7: with the setting off, no worker/worklet is created (checked in sync lab). S8: compare main-thread message rate and CPU with synth mode |
 | Repo gates | `npm run lint`, `npm run typecheck`, `npm test` (packages/alphatab); playground typecheck |
