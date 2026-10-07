@@ -1,4 +1,4 @@
-# Spike 6 — Count-in hand-off to the backing track, and pre-roll below 1×
+# Spike 6 — Count-in hand-off (backing track and YouTube), and pre-roll below 1×
 
 > Part of the [CoderLine/alphaTab#2397](https://github.com/CoderLine/alphaTab/issues/2397) spike.
 > Throwaway code on branch `spike/2397-sync-options`. Run 2026-10-08 during the design review, on
@@ -73,6 +73,36 @@ synth where the media will be heard (position + latency offset). The offset is a
 time at the speeds measured in spike 5 (0.6×), so 60 ms keeps the start before the beat. "Start at
 target, never past it" remains the rule at exactly 1× (offset ≈ 0, no time-stretch).
 
+## YouTube: can a count-in hand off to a video?
+
+**Why.** With external media (YouTube) the app drives the video through the IFrame Player API and alphaTab
+only sees position updates. Review finding F-15: the start handshake and count-in assume alphaTab
+starts the media, but users often press play inside the YouTube player.
+
+**How.** Playground `youtube-sync` demo page, a second, muted, hidden `YT.Player` on the demo's video
+(`by8oyJztzwo`, 325 s), `controls: 0`. Per start: `seekTo(T)`, wait 1.5 s (batch 1) or 3 s (batch 2)
+paused, `playVideo()`, then `getCurrentTime()` sampled continuously for 1.5 s and a straight line fitted
+from 300 ms on; where the line crosses `T` is when the video's clock started. Then `pauseVideo()`.
+
+| Measure | Batch 1 (1.5 s wait) | Batch 2 (3 s wait) |
+|---|---|---|
+| Clock start after `playVideo()` | 43.7 … 46.4 ms in 8 / 10 | 42.8 … 48.2 ms in 9 / 10 |
+| Starts that stalled (buffering; fitted rate 0.3–0.6×) | 2 / 10 | 1 / 10 |
+| `getCurrentTime()` | smooth: new value every ~1.3 ms, within 1–3 ms of a straight line | same |
+| `BUFFERING` event after `playVideo()` | — | 2–5 ms |
+| `PLAYING` event after `playVideo()` | 260–273 ms (one 33 ms) | 256–277 ms |
+| Clock stops after `pauseVideo()` | 0–7 ms, ≤ 2 ms of drift | — |
+
+- **alphaTab can start YouTube on a downbeat**: when it calls `playVideo()`, the video's clock starts a
+  steady ~45 ms later (±3 ms in 17 of 20 starts), so a learned media-start latency works like it does for
+  the backing track. About 1 start in 7–10 stalls on buffering and starts late.
+- **A start inside the YouTube player is reported late**: the `PLAYING` event that apps use to call
+  `api.play()` arrives ~220 ms after the video's clock started. By then the downbeat (and a count-in)
+  is already past, so a media-initiated start can only be detected, not held.
+- **Not measurable here**: when the video's *audio* is heard. The iframe's audio never enters the page's
+  `AudioContext`, so these are the API's clock values, not taps (S9 stays best-effort with the manual
+  offset). A pre-roll ad, if the video has one, was not seen in these runs.
+
 ## What this means for the design
 
 - **The hand-off works**: one stream through the boundary, the boundary frame from the stamps and a
@@ -87,8 +117,8 @@ target, never past it" remains the rule at exactly 1× (offset ≈ 0, no time-st
   on the first start). Same as the per-speed start lead.
 
 Confidence: **High** at 1× (8 starts, ±1.3 ms) and 1.5× (8 starts); **Medium** at 0.5× (6 starts per
-setting, within the ±20 ms tolerance for other speeds). The real count-in MIDI, a count-in after a seek
-and external media (YouTube) were not tried here.
+setting, within the ±20 ms tolerance for other speeds). The real count-in MIDI and a count-in after a seek
+were not tried; for YouTube only the API's clock was measured (no count-in with sound).
 
 ## How to reproduce
 
