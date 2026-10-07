@@ -27,11 +27,13 @@ milliseconds, at any playback speed, with no cost when the feature is off.
 | S2 | Same at 1.25× / 1.5× | p95 ≤ 5 ms (spike: 3.0 ms) |
 | S3 | Same at 0.5× / 0.75× | within the media's own time-stretch wobble, p95 ≤ 20 ms (spike: 15.9 ms) |
 | S4 | First click after Play | ≤ 10 ms, never skipped (spike: 0–5 ms, 15/15 starts) |
+| S4b | First click after a seek or speed change during playback | within ±11 ms at 1×, the speed's own tolerance (S1–S3) elsewhere, never skipped |
 | S5 | One click per beat, no extra or missing clicks | 15/15 start cycles, plus a full song |
 | S6 | Count-in with media | plays N clicks at the media's tempo at the start position, then the media starts on the downbeat, no freeze, no rewind |
 | S7 | Mixing off | no synth worker or AudioWorklet created, no extra main-thread work |
 | S8 | Mixing on | CPU and main-thread cost comparable to plain synthesizer mode, no decoded audio in memory |
 | S9 | External media (YouTube) | best-effort: in sync after `mediaSyncOffsetInMilliseconds` tuning **(untested)** |
+| S10 | Loop wrap at 0.5× / 1× / 1.5× | the range's first beat clicks on every repetition within its speed's tolerance; no extra or missing clicks; ≤ 30 ms added per wrap (spike 4: 0 missing clicks at all three speeds, < 15 ms per wrap at 1×, ~24 ms at 0.5× / 1.5×) |
 
 ## 2. Decisions (made with the requester, in order)
 
@@ -71,7 +73,7 @@ milliseconds, at any playback speed, with no cost when the feature is off.
 | Synth follow-media mode | Render in the media's time axis via the sync points; tag output with media time | `synth/AlphaSynth.ts`, `synth/MidiFileSequencer.ts` | shared |
 | Worker protocol | New commands and the time-stamped sample message | `platform/worker/*` | web |
 | AudioWorklet output | Media-time stamps, warm keep-alive, request accounting fix | `platform/javascript/AlphaSynthAudioWorkletOutput.ts` | web |
-| `MediaSynthPlayer` | `IAlphaSynth` combining media player + worker synth | `platform/javascript/MediaSynthPlayer.ts` (new) | web |
+| `MediaSynthPlayer` | `IAlphaSynth` combining media player + worker synth; owns the loop wrap | `platform/javascript/MediaSynthPlayer.ts` (new) | web |
 | `MediaSyncController` | Start/seek handshakes, settle, nudge, re-sync, learning | `platform/javascript/MediaSyncController.ts` (new; pure logic, unit-testable) | web (logic is platform-neutral) |
 | Media clocks | Backing-track clock (routed `<audio>`) and external-media clock (fitted) | `platform/javascript/MediaClock.ts` (new) | web |
 | `MediaLatencyProbe` | Measures `<audio>` time-stretch latency per speed | `platform/javascript/MediaLatencyProbe.ts` (new) | web |
@@ -97,7 +99,8 @@ setRateCorrection(factor: number): void    // ~0.98..1.02, multiplies how fast m
 5. Each `addSamples` chunk carries `mediaStart` and `mediaPerFrame` (constant within a chunk).
 
 **Played position:** a FIFO of generated chunks advanced by `samplesPlayed` gives the media time
-actually played → `timePosition` / `checkForFinish` keep working. A position report every ~20 ms is
+actually played → `timePosition` / `checkForFinish` keep working (the synth's own loop / finish handling
+is off while following: the combined player owns the loop wrap, §6.2). A position report every ~20 ms is
 optional (diagnostics); the controller uses the worklet stamps.
 
 **Count-in while following** (decision: sync-point tempo, else score tempo): `generateCountInMidi`
@@ -137,7 +140,8 @@ AudioWorklet changes:
 | `midiEventsPlayed`, `soundFontLoaded/Failed`, `loadSoundFont`, `resetSoundFonts`, `setChannel*`, transposition, `metronomeVolume`, `countInVolume`, `playOneTimeMidiFile` | synth |
 | `masterVolume` | both (`masterGain`) |
 | `backingTrackVolume` (new) | `mediaGain` |
-| `play/pause/stop`, `playbackSpeed`, `playbackRange`, `isLooping`, `loadMidiFile`, `updateSyncPoints`, `loadBackingTrack` | both, through the controller |
+| `play/pause/stop`, `playbackSpeed`, `loadMidiFile`, `updateSyncPoints`, `loadBackingTrack` | both, through the controller |
+| `playbackRange`, `isLooping` | `MediaSynthPlayer` itself (loop wrap, §6.2); the inner players run without them |
 | `ready` / `readyForPlayback` | when both are ready (then warm up the worklet, start the background probe) |
 | `output` | the media output (keeps `output.audioElement` usable) |
 
@@ -158,8 +162,9 @@ Inputs: worklet stamps `(frame, synthMediaTime)`, a media clock giving `mediaTim
 | Re-sync threshold when locked | 120 ms |
 | Nudge | `correction = 1 − clamp(EMA(drift) / 3000 ms, ±2%)`, EMA factor 0.3 |
 | Re-sync lead | learned from the first agreed drift after each re-sync (clamped 0–100 ms) |
-| **Start handshake** | learned start lead L (median of the first 3 readings after Play). If the synth is slower (L > 0) the **media start is delayed by L**. If the media is slower, the synth starts L earlier in the song. A beat at the start position is never skipped |
-| **Seek handshake** | synth silent from the seek until the media's `seeked` event (or, for external media, the first position update after the jump), then re-sync. Fixes the early click after seeks at 0.5×/1.5× |
+| **Start handshake** | learned start lead L, **one per speed** (median of the first 3 readings after Play). If the synth is slower (L > 0) the **media start is delayed by L**. If the media is slower, the synth starts L earlier in the song. The synth starts **at** the target, never past it: a positive per-speed latency offset is caught up after the first beat by a faster nudge (≤ 8 %), never by moving the start forward. Above 1× the media starts ~60 ms before the target (Chrome drops the start of time-stretched audio). A beat at the start position is always rendered (spike 4: 0 skips at 0.5× / 1× / 1.5×) |
+| **Seek handshake** | Backing track: a seek while playing restarts through the start handshake (pause both, seek both, Play). External media (can't be held): synth silent until the first position update after the jump, then restarts at the target (same rule) |
+| **Loop wrap** | `MediaSynthPlayer` owns `playbackRange` and `isLooping`. Just before the range end it fires `finished` (as today), then pauses both, seeks both to the range start (~60 ms earlier above 1×) and restarts them through the start handshake, so the range's first beat plays on every repetition (spike 4: 0 missing clicks at 0.5× / 1× / 1.5×; the backing track owning the wrap added 29–50 ms per wrap at 1× and lost beats at 1.5×) |
 | Speed change | apply speed to both, use the probe's latency for the new speed, re-sync, settle |
 | Count-in | synth plays the count-in. At its reported end (context frame) the media is started via the start handshake. Cursor stays at the start position meanwhile |
 
@@ -205,7 +210,8 @@ Behaviour of existing calls when mixing is on:
 | `metronomeVolume`, `countInVolume` | work in media modes (synth) |
 | `changeTrackVolume/Mute/Solo`, transposition | synth tracks |
 | `playbackSpeed` | both (+ latency correction) |
-| `timePosition`, `tickPosition`, `playbackRange`, `isLooping` | media; synth follows |
+| `timePosition`, `tickPosition` | media; synth follows |
+| `playbackRange`, `isLooping` | the combined player owns the loop wrap (§6.2) |
 | `midiEventsPlayed` | fires (from the synth) |
 | `playerMode`, `actualPlayerMode` | unchanged values |
 
@@ -232,9 +238,9 @@ must also recreate it when `enableSynthesizerWithMedia` changes (via `updateSett
 |---|---|
 | Unit (vitest, Node) | Sequencer `fillMidiEventQueueUntil`; follow mode dispatches events at the right media times (sync points, tempo changes 135↔145 BPM, 0.5×/1.5×), using the repo's `syncpoints-testfile.gp` |
 | | Chunk stamps consistent (`mediaStart + frames × mediaPerFrame` = next `mediaStart`); `seekToMediaTime`; rate correction |
-| | `MediaSyncController` with fed readings: agreement rule, settle thresholds, nudge sign/limits, re-sync, lead learning, start handshake (media delay vs synth pre-roll), seek handshake, a jumpy-clock sequence that must not re-sync |
+| | `MediaSyncController` with fed readings: agreement rule, settle thresholds, nudge sign/limits, re-sync, lead learning, start handshake (media delay vs synth pre-roll, start at target never past it, one start lead per speed, media pre-roll above 1×), seek = restart, loop wrap, a jumpy-clock sequence that must not re-sync |
 | | Count-in: tempo from sync points / fallback, end reported, no freeze, no rewind |
-| Browser — sync lab | Playground demo (the spike page, cleaned up): generated beep track from the file's sync points, two taps, per-click offsets, "Run measurement", start test, live readout. Acceptance: S1–S5 |
+| Browser — sync lab | Playground demo (the spike page, cleaned up): generated beep track from the file's sync points, two taps, per-click offsets, "Run measurement", start test with a skip check (the first beat after Play must have its own click) that also seeks and changes speed during playback on a beat at 0.5× / 1× / 1.5×, loop test (a 2-bar range, ≥ 10 wraps per speed), live readout. Acceptance: S1–S5, S4b, S10 |
 | Browser — manual | Your real MP3 with drums/metronome by ear; YouTube demo with the metronome + offset (S9) |
 | Performance | S7: with the setting off, no worker/worklet is created (checked in sync lab). S8: compare main-thread message rate and CPU with synth mode |
 | Repo gates | `npm run lint`, `npm run typecheck`, `npm test` (packages/alphatab); playground typecheck |
