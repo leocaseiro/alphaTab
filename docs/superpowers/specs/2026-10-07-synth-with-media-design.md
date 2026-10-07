@@ -26,14 +26,14 @@ milliseconds, at any playback speed, with no cost when the feature is off.
 | S1 | Metronome click vs backing-track beat at 1.0× | p95 ≤ 3 ms (spike: 1.3 ms) |
 | S2 | Same at 1.25× / 1.5× | p95 ≤ 5 ms (spike: 3.0 ms) |
 | S3 | Same at 0.5× / 0.75× | within the media's own time-stretch wobble, p95 ≤ 20 ms (spike: 15.9 ms) |
-| S4 | First click after Play | ≤ 10 ms, never skipped (spike: 0–5 ms, 15/15 starts) |
-| S4b | First click after a seek or speed change during playback | within ±11 ms at 1×, the speed's own tolerance (S1–S3) elsewhere, never skipped |
+| S4 | First click after Play | within ±11 ms at 1× (two of Chrome's 5.3 ms `<audio>` start steps), ±20 ms at other speeds, never skipped (spike 4, start at target: 1× −5.3…+6.7 ms, 0.5× +2…+20 ms, 1.5× −12…+2.7 ms; 0 skips in 35 starts). The first Play at a speed with no learned start lead yet is still off (spike 4: 0.5× −29.6 ms) **(open)** |
+| S4b | First click after a seek or speed change during playback | within ±11 ms at 1×, ±20 ms at other speeds (as S4), never skipped |
 | S5 | One click per beat, no extra or missing clicks | 15/15 start cycles, plus a full song |
 | S6 | Count-in with media | plays N clicks at the media's tempo at the start position, then the media starts on the downbeat, no freeze, no rewind |
 | S7 | Mixing off | no synth worker or AudioWorklet created, no extra main-thread work |
 | S8 | Mixing on | CPU and main-thread cost comparable to plain synthesizer mode, no decoded audio in memory |
 | S9 | External media (YouTube) | best-effort: in sync after `mediaSyncOffsetInMilliseconds` tuning **(untested)** |
-| S10 | Loop wrap at 0.5× / 1× / 1.5× | the range's first beat clicks on every repetition within its speed's tolerance; no extra or missing clicks; ≤ 30 ms added per wrap (spike 4: 0 missing clicks at all three speeds, < 15 ms per wrap at 1×, ~24 ms at 0.5× / 1.5×) |
+| S10 | Loop wrap at 0.5× / 1× / 1.5× | the range's first beat clicks on every repetition within the first-click tolerance (S4b); no extra or missing clicks; ≤ 30 ms added per wrap (spike 4: 0 missing clicks at all three speeds, < 15 ms per wrap at 1×, ~24 ms at 0.5× / 1.5×) |
 
 ## 2. Decisions (made with the requester, in order)
 
@@ -158,7 +158,7 @@ Inputs: worklet stamps `(frame, synthMediaTime)`, a media clock giving `mediaTim
 |---|---|
 | Act only on **two consecutive readings that agree within 3 ms** (use their mean) | 3 ms |
 | Settling window after play/seek/speed change | 1.5 s |
-| Re-sync threshold while settling | 4 ms at 1×, 15 ms at other speeds (time-stretch jitter) |
+| Re-sync threshold while settling | 12 ms at 1× (above two of Chrome's 5.3 ms `<audio>` start steps), 15 ms at other speeds (time-stretch jitter). While settling at 1×, smaller offsets are closed by a faster nudge (gain 300 ms instead of 3000 ms, still ±2 %), not by a re-sync, so sounding notes aren't cut (spike 4: 0 re-syncs in 30 starts; at 4 ms, 10 re-syncs in 6 of 15 starts, and with unmuted drums each one cut them to silence) |
 | Re-sync threshold when locked | 120 ms |
 | Nudge | `correction = 1 − clamp(EMA(drift) / 3000 ms, ±2%)`, EMA factor 0.3 |
 | Re-sync lead | learned from the first agreed drift after each re-sync (clamped 0–100 ms) |
@@ -240,7 +240,7 @@ must also recreate it when `enableSynthesizerWithMedia` changes (via `updateSett
 | | Chunk stamps consistent (`mediaStart + frames × mediaPerFrame` = next `mediaStart`); `seekToMediaTime`; rate correction |
 | | `MediaSyncController` with fed readings: agreement rule, settle thresholds, nudge sign/limits, re-sync, lead learning, start handshake (media delay vs synth pre-roll, start at target never past it, one start lead per speed, media pre-roll above 1×), seek = restart, loop wrap, a jumpy-clock sequence that must not re-sync |
 | | Count-in: tempo from sync points / fallback, end reported, no freeze, no rewind |
-| Browser — sync lab | Playground demo (the spike page, cleaned up): generated beep track from the file's sync points, two taps, per-click offsets, "Run measurement", start test with a skip check (the first beat after Play must have its own click) that also seeks and changes speed during playback on a beat at 0.5× / 1× / 1.5×, loop test (a 2-bar range, ≥ 10 wraps per speed), live readout. Acceptance: S1–S5, S4b, S10 |
+| Browser — sync lab | Playground demo (the spike page, cleaned up): generated beep track from the file's sync points, two taps, per-click offsets, "Run measurement", start test with a skip check (the first beat after Play must have its own click) at 0.5× / 1× / 1.5×, including the first Play after page load, that also seeks and changes speed during playback on a beat, loop test (a 2-bar range, ≥ 10 wraps per speed), a listening check with unmuted, sustained tracks (no cut notes or dropouts after Play, a seek or a speed change), live readout. Acceptance: S1–S5, S4b, S10 |
 | Browser — manual | Your real MP3 with drums/metronome by ear; YouTube demo with the metronome + offset (S9) |
 | Performance | S7: with the setting off, no worker/worklet is created (checked in sync lab). S8: compare main-thread message rate and CPU with synth mode |
 | Repo gates | `npm run lint`, `npm run typecheck`, `npm test` (packages/alphatab); playground typecheck |
