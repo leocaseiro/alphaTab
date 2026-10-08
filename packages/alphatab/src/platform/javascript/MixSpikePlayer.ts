@@ -115,6 +115,14 @@ export class MixSpikePlayer implements IAlphaSynth {
         null;
     private _countInTimer: ReturnType<typeof setTimeout> | null = null;
     private _awaitingFirstDriftAfterCountIn: boolean = false;
+    /**
+     * lap-1 F-18 spike: playBeat / playNote (one-time MIDI) during mixed playback.
+     * synthOnly = as built (routed to the synth only); pauseBoth = pause media + synth, play the one-time
+     * MIDI on the synth's own clock, stay paused; pauseBothResume = the same, then Play again when it ends.
+     */
+    public oneTimeMidiMode: 'synthOnly' | 'pauseBoth' | 'pauseBothResume' = 'synthOnly';
+    public oneTimeLog: { at: number; wasPlaying: boolean; durationMs: number; resumeAt: number | null }[] = [];
+    private _oneTimeResumeTimer: ReturnType<typeof setTimeout> | null = null;
     private _loopTimer: ReturnType<typeof setTimeout> | null = null;
     private _playbackRange: PlaybackRange | null = null;
     private _isLooping: boolean = false;
@@ -846,6 +854,10 @@ export class MixSpikePlayer implements IAlphaSynth {
         }
         this._countIn = null;
         this._awaitingFirstDriftAfterCountIn = false;
+        if (this._oneTimeResumeTimer) {
+            clearTimeout(this._oneTimeResumeTimer);
+            this._oneTimeResumeTimer = null;
+        }
         if (this._loopTimer) {
             clearTimeout(this._loopTimer);
             this._loopTimer = null;
@@ -868,7 +880,35 @@ export class MixSpikePlayer implements IAlphaSynth {
     }
 
     public playOneTimeMidiFile(midi: MidiFile): void {
+        if (this.oneTimeMidiMode === 'synthOnly') {
+            this.synth.playOneTimeMidiFile(midi);
+            return;
+        }
+        const wasPlaying = this.state === PlayerState.Playing;
+        this.pause();
+        // follow mode would map the paused media's position onto the one-time MIDI and dispatch all of
+        // its events at once, so the synth plays it on its own clock (Play turns follow mode back on)
+        this.synth.spikeFollow(false, this._mediaDuration(), this._syncPoints);
         this.synth.playOneTimeMidiFile(midi);
+        let lastTick = 0;
+        let microSecondsPerQuarter = 500000;
+        for (const e of midi.events) {
+            lastTick = Math.max(lastTick, e.tick);
+            const tempo = (e as unknown as { microSecondsPerQuarterNote?: number }).microSecondsPerQuarterNote;
+            if (tempo !== undefined) {
+                microSecondsPerQuarter = tempo;
+            }
+        }
+        const durationMs = (lastTick / midi.division) * (microSecondsPerQuarter / 1000) / this.media.playbackSpeed;
+        const entry = { at: performance.now(), wasPlaying, durationMs: Math.round(durationMs), resumeAt: null as number | null };
+        this.oneTimeLog.push(entry);
+        if (this.oneTimeMidiMode === 'pauseBothResume' && wasPlaying) {
+            this._oneTimeResumeTimer = setTimeout(() => {
+                this._oneTimeResumeTimer = null;
+                entry.resumeAt = performance.now();
+                this.play();
+            }, durationMs + 50);
+        }
     }
     public loadSoundFont(data: Uint8Array, append: boolean): void {
         this.synth.loadSoundFont(data, append);

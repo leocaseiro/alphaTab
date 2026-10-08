@@ -616,6 +616,109 @@ async function countInTest(n: number, beats = 4, speed = 1) {
 (window as any).spikeCountInTest = countInTest;
 
 /**
+ * playBeat test (lap-1 F-18): plays, then calls api.playBeat (bar 13, track 1) while playing.
+ * audible: only the played beat's track is unmuted, to see whether the beat itself sounds;
+ * otherwise all tracks are muted and the clicks after Play (pauseBoth: pressed 1.5 s later) or after the
+ * automatic resume (pauseBothResume) are compared with the backing-track beeps.
+ */
+async function playBeatTest(
+    oneTimeMode: MixSpikePlayer['oneTimeMidiMode'] | 'pauseOnly',
+    n = 4,
+    speed = 1,
+    audible = true
+) {
+    const sr = player.audioContext.sampleRate;
+    const ms = (frames: number) => Math.round((frames / sr) * 1000 * 10) / 10;
+    player.masterGain.gain.value = 0;
+    api.metronomeVolume = 1;
+    player.setMix(1, 1);
+    api.playbackSpeed = speed;
+    // pauseOnly = baseline: api.pause() instead of playBeat, then Play after 1.5 s
+    player.oneTimeMidiMode = oneTimeMode === 'pauseOnly' ? 'synthOnly' : oneTimeMode;
+    const noteOn = alphaTab.midi.MidiEventType.NoteOn;
+    api.midiEventsPlayedFilter = [noteOn, alphaTab.midi.MidiEventType.NoteOff];
+    const played: string[] = [];
+    const unsubscribePlayed = api.midiEventsPlayed.on(e => {
+        for (const ev of e.events) {
+            played.push(`${ev.type === noteOn ? 'on' : 'off'}@${Math.round(performance.now() - beatT)}`);
+        }
+    });
+    const track = api.score!.tracks[0];
+    api.changeTrackMute(api.score!.tracks, true);
+    if (audible) {
+        api.changeTrackMute([track], false);
+    }
+    const beat = track.staves[0].bars[12].voices[0].beats[0];
+    const audio = player.mediaOutput.audioElement;
+    const states: string[] = [];
+    let beatT = 0;
+    const unsubscribe = api.playerStateChanged.on(e =>
+        states.push(`${e.state === alphaTab.synth.PlayerState.Playing ? 'Playing' : 'Paused'}@${Math.round(performance.now() - beatT)}`)
+    );
+    const rows: unknown[] = [];
+    for (let i = 0; i < n; i++) {
+        api.pause();
+        await sleep(400);
+        api.timePosition = alphaTabTimeForMedia(beatMediaTimes[40 + i * 23] - 500);
+        await sleep(300);
+        api.play();
+        await sleep(2500);
+        tapOnsets.media.length = 0;
+        tapOnsets.synth.length = 0;
+        states.length = 0;
+        const ctx = player.audioContext;
+        const beatFrame = ctx.currentTime * sr;
+        beatT = performance.now();
+        const mediaBefore = audio.currentTime;
+        played.length = 0;
+        if (oneTimeMode === 'pauseOnly') {
+            api.pause();
+        } else {
+            api.playBeat(beat);
+        }
+        await sleep(1500);
+        const log0 = oneTimeMode === 'pauseOnly' ? undefined : player.oneTimeLog[player.oneTimeLog.length - 1];
+        const row: Record<string, unknown> = {
+            states: [...states],
+            stateAt1500: api.playerState === alphaTab.synth.PlayerState.Playing ? 'Playing' : 'Paused',
+            mediaAdvancedMs: Math.round((audio.currentTime - mediaBefore) * 1000),
+            synthOnsetsMs: tapOnsets.synth.filter(f => f > beatFrame).map(f => ms(f - beatFrame)),
+            mediaBeeps: tapOnsets.media.filter(f => f > beatFrame).length,
+            beatMs: log0?.durationMs,
+            notesPlayed: played.filter(p => Number(p.split('@')[1]) < 450)
+        };
+        if (!audible && oneTimeMode !== 'synthOnly') {
+            let playFrame = ctx.currentTime * sr;
+            if (oneTimeMode === 'pauseBoth' || oneTimeMode === 'pauseOnly') {
+                api.play();
+            } else if (log0?.resumeAt) {
+                playFrame = beatFrame + ((log0.resumeAt - beatT) / 1000) * sr;
+                row.resumeAfterMs = Math.round(log0.resumeAt - beatT);
+            }
+            await sleep(2500);
+            const media = [...tapOnsets.media].sort((a, b) => a - b);
+            const synthAfter = tapOnsets.synth.filter(f => f > playFrame);
+            const mediaAfter = media.filter(f => f > playFrame);
+            row.firstGapMs = mediaAfter.length && synthAfter.length ? ms(synthAfter[0] - mediaAfter[0]) : null;
+            row.nextClicksMs = synthAfter.slice(0, 5).map(f => ms(f - nearest(media, f)));
+            row.counts = `${synthAfter.length}/${mediaAfter.length}`;
+        }
+        rows.push(row);
+    }
+    unsubscribe();
+    unsubscribePlayed();
+    api.midiEventsPlayedFilter = [];
+    api.pause();
+    player.oneTimeMidiMode = 'synthOnly';
+    applySound();
+    applyMix();
+    applyVolumes();
+    log({ playBeatTest: { oneTimeMode, speed, audible, rows } });
+    return rows;
+}
+(window as any).spikePlayBeatTest = playBeatTest;
+
+/**
  * Loop test (lap-1 F-4): loops `bars` bars from beat 40 for `wraps` repetitions and checks every beat:
  * each backing-track beep must have its own click. Reports offsets, missing/extra clicks and the gap at each wrap.
  */
