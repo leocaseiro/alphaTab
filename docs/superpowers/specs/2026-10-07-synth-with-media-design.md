@@ -10,7 +10,7 @@ last_applied: P1
 | Issue | [CoderLine/alphaTab#2397](https://github.com/CoderLine/alphaTab/issues/2397) — "External Media Sync / Backing Tracks - Allow mixing with Synthesizer" |
 | Status | Design approved section by section (2026-10-07). Spec awaiting review |
 | Base | `develop` @ `25ef76d3` (alphaTab 1.9.0 alpha) |
-| Evidence | Spike on branch `spike/2397-sync-options`: [comparison](../../spikes/issue-2397/comparison.md) · [Spike 1](../../spikes/issue-2397/spike-1-seek-on-drift.md) · [Spike 2/2b](../../spikes/issue-2397/spike-2-timestamp-nudge.md) · [Spike 3](../../spikes/issue-2397/spike-3-decode-and-mix.md) · [raw numbers](../../spikes/issue-2397/results.json) |
+| Evidence | Spike on branch `spike/2397-sync-options`: [comparison](../../spikes/issue-2397/comparison.md) · [Spike 1](../../spikes/issue-2397/spike-1-seek-on-drift.md) · [Spike 2/2b](../../spikes/issue-2397/spike-2-timestamp-nudge.md) · [Spike 3](../../spikes/issue-2397/spike-3-decode-and-mix.md) · [Spike 4](../../spikes/issue-2397/spike-4-first-beat-and-loops.md) · [Spike 5](../../spikes/issue-2397/spike-5-unprobed-speeds-and-playbeat.md) · [Spike 6](../../spikes/issue-2397/spike-6-count-in-hand-off.md) · [Spike 7](../../spikes/issue-2397/spike-7-play-beat-with-media.md) · raw numbers: [spikes 1–3](../../spikes/issue-2397/results.json), [spikes 4–7](../../spikes/issue-2397/results-2026-10-08.json) |
 
 ## 1. Goal
 
