@@ -258,6 +258,7 @@ must also recreate it when `enableSynthesizerWithMedia` changes (via `updateSett
 | Item | Handling |
 |---|---|
 | Count-in freeze / rewind in media modes | Mixed mode: solved by design (§4, §6). Non-mixed modes: separate session "Fix count-in freeze in backing-track/external-media modes" (task chip) — keep both changes mergeable. External media: count-in only when alphaTab starts the media (§6.2) |
+| `playNote` / `playBeat` during playback | Mixed mode: pauses both and plays on the synth's own clock (§6.1). Non-mixed modes (spike 7): the media jumps to the song start and plays ~0.4 s, then returns, to the right place at 1× and to the old position ÷ speed otherwise (2×: 43.9 s → 22.0 s). Out of scope here; tracked separately (task chip "Investigate playNote/playBeat rewinding backing tracks"). Near the song start the same path can freeze the page; the count-in freeze fix ([CoderLine/alphaTab#2932](https://github.com/CoderLine/alphaTab/pull/2932)) covers that loop |
 | `midiEventsPlayed` silent in media modes | Fixed when mixing is on (real synth events). Non-mixed modes unchanged (out of scope) |
 | Worklet request accounting | Fixed for all modes (§5) |
 
