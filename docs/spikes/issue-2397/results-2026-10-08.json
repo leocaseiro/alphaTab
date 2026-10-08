@@ -2165,5 +2165,238 @@
         "stateAfter": "Paused"
       }
     ]
+  },
+  "spike8Limiter": {
+    "what": "Output limiter settings (spec section 3; review lap 2, finding F-13). Offline Web Audio render (OfflineAudioContext) in the playground page, Chromium 152, macOS, 48 kHz, no alphaTab code. Worst case for clipping: a 20 ms 1 kHz click burst peaking at -11.4 dBFS x synthVolume, its crest on a crest of a 100 Hz 'recording' sine peaking at -2.3 dBFS (both levels from spike 5), clicks at 1 s and 2 s. Per run: peak = output peak (dBFS), over0 = samples over 0 dBFS, recordingOnly = the recording's own peak between clicks (0.5-0.9 s). hotRecording-0.3 = recording peaks at -0.3 dBFS. Script: spike-8-limiter-console.js.",
+    "inputPeakDbfs": {
+      "synthVolume1": 0.31,
+      "synthVolume2": 2.32,
+      "synthVolume3": 3.94
+    },
+    "makeupGainDb": {
+      "note": "Web Audio's automatic make-up gain, knee 0, ratio 20: 0.6 x the gain reduction at 0 dBFS input",
+      "threshold-1": 0.57,
+      "threshold-2": 1.14,
+      "threshold-3": 1.71
+    },
+    "configs": {
+      "none": null,
+      "asSpecified": {
+        "threshold": -1,
+        "ratio": 20,
+        "knee": 30,
+        "attack": 0.003,
+        "release": 0.25,
+        "note": "knee, attack and release are the node's defaults (not set by the spec)"
+      },
+      "proposedHardKnee": {
+        "threshold": -1,
+        "ratio": 20,
+        "knee": 0,
+        "attack": 0.001,
+        "release": 0.1
+      },
+      "spikeOriginal": {
+        "threshold": -3,
+        "ratio": 20,
+        "knee": 0,
+        "attack": 0.001,
+        "release": 0.1,
+        "note": "the spike's limiter (AlphaSynthAudioWorkletOutput.ts)"
+      },
+      "hardKneeTrim": {
+        "threshold": -1,
+        "ratio": 20,
+        "knee": 0,
+        "attack": 0.001,
+        "release": 0.1,
+        "trimDb": -0.57
+      },
+      "minus2": {
+        "threshold": -2,
+        "ratio": 20,
+        "knee": 0,
+        "attack": 0.001,
+        "release": 0.1
+      },
+      "minus2Trim": {
+        "threshold": -2,
+        "ratio": 20,
+        "knee": 0,
+        "attack": 0.001,
+        "release": 0.1,
+        "trimDb": -1.14
+      },
+      "minus3Trim": {
+        "threshold": -3,
+        "ratio": 20,
+        "knee": 0,
+        "attack": 0.001,
+        "release": 0.1,
+        "trimDb": -1.71
+      }
+    },
+    "results": {
+      "none/synthVolume1": {
+        "peak": 0.31,
+        "over0": 14,
+        "recordingOnly": -2.3
+      },
+      "none/synthVolume2": {
+        "peak": 2.32,
+        "over0": 254,
+        "recordingOnly": -2.3
+      },
+      "none/synthVolume3": {
+        "peak": 3.94,
+        "over0": 454,
+        "recordingOnly": -2.3
+      },
+      "none/hotRecording-0.3/synthVolume1": {
+        "peak": 1.83,
+        "over0": 270,
+        "recordingOnly": -0.3
+      },
+      "asSpecified/synthVolume1": {
+        "peak": 0.31,
+        "over0": 14,
+        "recordingOnly": -2.3
+      },
+      "asSpecified/synthVolume2": {
+        "peak": 2.26,
+        "over0": 254,
+        "recordingOnly": -2.3
+      },
+      "asSpecified/synthVolume3": {
+        "peak": 3.79,
+        "over0": 434,
+        "recordingOnly": -2.3
+      },
+      "asSpecified/hotRecording-0.3/synthVolume1": {
+        "peak": 1.79,
+        "over0": 270,
+        "recordingOnly": -0.3
+      },
+      "proposedHardKnee/synthVolume1": {
+        "peak": -0.1,
+        "over0": 0,
+        "recordingOnly": -1.73
+      },
+      "proposedHardKnee/synthVolume2": {
+        "peak": 0.1,
+        "over0": 16,
+        "recordingOnly": -1.73
+      },
+      "proposedHardKnee/synthVolume3": {
+        "peak": 0.26,
+        "over0": 30,
+        "recordingOnly": -1.73
+      },
+      "proposedHardKnee/hotRecording-0.3/synthVolume1": {
+        "peak": 0.07,
+        "over0": 10,
+        "recordingOnly": -0.3
+      },
+      "spikeOriginal/synthVolume1": {
+        "peak": -0.75,
+        "over0": 0,
+        "recordingOnly": -1.16
+      },
+      "spikeOriginal/synthVolume2": {
+        "peak": -0.58,
+        "over0": 0,
+        "recordingOnly": -1.16
+      },
+      "spikeOriginal/synthVolume3": {
+        "peak": -0.38,
+        "over0": 0,
+        "recordingOnly": -1.16
+      },
+      "spikeOriginal/hotRecording-0.3/synthVolume1": {
+        "peak": -0.62,
+        "over0": 0,
+        "recordingOnly": -1.01
+      },
+      "hardKneeTrim/synthVolume1": {
+        "peak": -0.67,
+        "over0": 0,
+        "recordingOnly": -2.3
+      },
+      "hardKneeTrim/synthVolume2": {
+        "peak": -0.47,
+        "over0": 0,
+        "recordingOnly": -2.3
+      },
+      "hardKneeTrim/synthVolume3": {
+        "peak": -0.31,
+        "over0": 0,
+        "recordingOnly": -2.3
+      },
+      "hardKneeTrim/hotRecording-0.3/synthVolume1": {
+        "peak": -0.5,
+        "over0": 0,
+        "recordingOnly": -0.87
+      },
+      "minus2/synthVolume1": {
+        "peak": -0.41,
+        "over0": 0,
+        "recordingOnly": -1.16
+      },
+      "minus2/synthVolume2": {
+        "peak": -0.24,
+        "over0": 0,
+        "recordingOnly": -1.16
+      },
+      "minus2/synthVolume3": {
+        "peak": -0.07,
+        "over0": 0,
+        "recordingOnly": -1.16
+      },
+      "minus2/hotRecording-0.3/synthVolume1": {
+        "peak": -0.27,
+        "over0": 0,
+        "recordingOnly": -0.64
+      },
+      "minus2Trim/synthVolume1": {
+        "peak": -1.55,
+        "over0": 0,
+        "recordingOnly": -2.3
+      },
+      "minus2Trim/synthVolume2": {
+        "peak": -1.38,
+        "over0": 0,
+        "recordingOnly": -2.3
+      },
+      "minus2Trim/synthVolume3": {
+        "peak": -1.21,
+        "over0": 0,
+        "recordingOnly": -2.3
+      },
+      "minus2Trim/hotRecording-0.3/synthVolume1": {
+        "peak": -1.41,
+        "over0": 0,
+        "recordingOnly": -1.78
+      },
+      "minus3Trim/synthVolume1": {
+        "peak": -2.46,
+        "over0": 0,
+        "recordingOnly": -2.87
+      },
+      "minus3Trim/synthVolume2": {
+        "peak": -2.29,
+        "over0": 0,
+        "recordingOnly": -2.87
+      },
+      "minus3Trim/synthVolume3": {
+        "peak": -2.09,
+        "over0": 0,
+        "recordingOnly": -2.87
+      },
+      "minus3Trim/hotRecording-0.3/synthVolume1": {
+        "peak": -2.33,
+        "over0": 0,
+        "recordingOnly": -2.72
+      }
+    }
   }
 }
