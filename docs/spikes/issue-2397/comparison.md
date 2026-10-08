@@ -9,7 +9,8 @@
 > [Spike 5: unprobed speeds, playBeat during mixed playback, click level](./spike-5-unprobed-speeds-and-playbeat.md) ·
 > [Spike 6: count-in hand-off (backing track and YouTube), pre-roll below 1×](./spike-6-count-in-hand-off.md) ·
 > [Spike 7: playBeat / playNote with a backing track (mixed and non-mixed)](./spike-7-play-beat-with-media.md) ·
-> [Spike 8: output limiter settings](./spike-8-limiter-settings.md).
+> [Spike 8: output limiter settings](./spike-8-limiter-settings.md) ·
+> [Spike 9: code checks from the second review lap](./spike-9-review-lap-2-checks.md).
 > Raw numbers: [results.json](./results.json) · [results-2026-10-08.json](./results-2026-10-08.json).
 
 ## TL;DR
