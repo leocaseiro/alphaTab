@@ -142,11 +142,12 @@ AudioWorklet changes:
 | `IAlphaSynth` member | Goes to |
 |---|---|
 | `positionChanged`, `stateChanged`, `finished`, `midiLoaded`, `playbackRangeChanged`, `loadedMidiInfo`, `currentPosition`, `timePosition`, `tickPosition` | media player (the clock) |
-| `midiEventsPlayed`, `soundFontLoaded/Failed`, `loadSoundFont`, `resetSoundFonts`, `setChannel*`, transposition, `metronomeVolume`, `countInVolume`, `playOneTimeMidiFile` | synth |
+| `midiEventsPlayed`, `soundFontLoaded/Failed`, `loadSoundFont`, `resetSoundFonts`, `setChannel*`, transposition, `metronomeVolume`, `countInVolume` | synth |
 | `masterVolume` | backing track: `masterGain` (covers media and synth; the inner players' own volumes stay at 1) · external media: forwarded to the inner `ExternalMediaPlayer` (its handler gets `masterVolume × backingTrackVolume`, §7) and applied to the synth through `masterGain` |
 | `backingTrackVolume` (new) | backing track: `mediaGain` · external media: forwarded to the inner `ExternalMediaPlayer` (§7) |
 | `synthVolume` (new) | `synthGain` |
 | `play/pause/stop`, `playbackSpeed`, `loadMidiFile`, `updateSyncPoints`, `loadBackingTrack` | both, through the controller |
+| `playOneTimeMidiFile` (`playBeat` / `playNote`) | both, through the controller: if playing, pause the media and the synth (the app sees `Paused`, as with today's synth-only player and the API docs: "This will stop the any other current ongoing playback"); the synth leaves follow mode (`followMedia(false)`, §4) and plays it on its own clock; the next Play follows the media again through the start handshake (§6.2). Following would map the media's position onto the one-time MIDI, fire all of it at once and pause the synth. Spike 7: `Paused` 0–1 ms after the click, the beat 8–12 ms after it, the next Play in sync in 11 of 12 starts |
 | `playbackRange`, `isLooping` | `MediaSynthPlayer` itself (loop wrap, §6.2); the inner players run without them |
 | `ready` / `readyForPlayback` | when both are ready (then warm up the worklet, start the background probe). If the synth can't run — worker or worklet creation fails, no `player.soundFont` is set, or `soundFontLoadFailed` fires — readiness follows the media player alone and playback is media-only, with a warning (as for ScriptProcessor, §2) |
 | `output` | the media output (keeps `output.audioElement` usable) |
