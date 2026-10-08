@@ -2596,5 +2596,310 @@
         "note": "the spike's local song, git-ignored"
       }
     }
+  },
+  "spike10BatchOneChecks": {
+    "about": "Spike 10: browser checks for review lap 2, batch 1 (findings F-8, F-12, FYI-4), on today's code (develop @ 25ef76d3 plus the spike code), in the playground control page. Local date 2026-10-09; the timestamp below is UTC.",
+    "script": "docs/spikes/issue-2397/spike-10-batch-1-console.js",
+    "countInHandOffLatenessFromSpike6": {
+      "source": "spike6CountIn rows, playLateMs",
+      "n": 34,
+      "minMs": 0.2,
+      "medianMs": 1.4,
+      "maxMs": 4.8
+    },
+    "raw": {
+      "date": "2026-10-08T13:30:07.635Z",
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/2.19675.0 Chrome/152.0.7977.130 Safari/537.36",
+      "f8WorkerFails": {
+        "instanceClass": "AlphaSynthWebWorkerApi",
+        "workerEvents": [
+          {
+            "type": "error",
+            "message": null
+          }
+        ],
+        "apiEvents": [
+          {
+            "t": 0,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          }
+        ],
+        "isReadyForPlayback": false
+      },
+      "f8WorkletFails": {
+        "control": false,
+        "instanceClass": "AlphaSynthWebWorkerApi",
+        "readyAfterMs": 135,
+        "stateAfterPlay": "Playing",
+        "timePositionMsAfter3s": 0,
+        "errorsLogged": [
+          "[AlphaTab][WebAudio] Audio Worklet operation failed: reason=Error: spike 10: worklet module failed"
+        ],
+        "apiEvents": [
+          {
+            "t": 0,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 107,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 108,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 108,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 110,
+            "event": "api.soundFontLoaded"
+          },
+          {
+            "t": 113,
+            "event": "api.playerReady"
+          },
+          {
+            "t": 113,
+            "event": "wrapper.readyForPlayback"
+          },
+          {
+            "t": 135,
+            "event": "api.playerStateChanged",
+            "detail": "Playing"
+          },
+          {
+            "t": 3137,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          }
+        ]
+      },
+      "f8WorkletControl": {
+        "control": true,
+        "instanceClass": "AlphaSynthWebWorkerApi",
+        "readyAfterMs": 136,
+        "stateAfterPlay": "Playing",
+        "timePositionMsAfter3s": 2896,
+        "errorsLogged": [],
+        "apiEvents": [
+          {
+            "t": 0,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 108,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 109,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 109,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 112,
+            "event": "api.soundFontLoaded"
+          },
+          {
+            "t": 114,
+            "event": "api.playerReady"
+          },
+          {
+            "t": 114,
+            "event": "wrapper.readyForPlayback"
+          },
+          {
+            "t": 136,
+            "event": "api.playerStateChanged",
+            "detail": "Playing"
+          },
+          {
+            "t": 3136,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          }
+        ]
+      },
+      "f8SoundFontNetworkError": {
+        "url": "http://127.0.0.1:1/spike-10.sf2",
+        "instanceClass": "AlphaSynthWebWorkerApi",
+        "apiEvents": [
+          {
+            "t": 0,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 103,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 104,
+            "event": "api.error",
+            "detail": ""
+          },
+          {
+            "t": 104,
+            "event": "wrapper.soundFontLoadFailed",
+            "detail": ""
+          },
+          {
+            "t": 104,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 104,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 4037,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          }
+        ],
+        "isReadyForPlayback": false
+      },
+      "f8SoundFontHttp404": {
+        "url": "/font/sonivox/spike-10-missing.sf2",
+        "instanceClass": "AlphaSynthWebWorkerApi",
+        "apiEvents": [
+          {
+            "t": 0,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 112,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 113,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 113,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 114,
+            "event": "api.error",
+            "detail": "Soundfont is not a valid Soundfont2 file"
+          },
+          {
+            "t": 114,
+            "event": "wrapper.soundFontLoadFailed",
+            "detail": "Soundfont is not a valid Soundfont2 file"
+          },
+          {
+            "t": 114,
+            "event": "instance.soundFontLoadFailed",
+            "detail": "Soundfont is not a valid Soundfont2 file"
+          },
+          {
+            "t": 4044,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          }
+        ],
+        "isReadyForPlayback": false
+      },
+      "f12DeviceCalls": {
+        "audioContextHasSetSinkId": true,
+        "externalMedia": {
+          "instanceClass": "ExternalMediaPlayer",
+          "enumerate": [],
+          "setResolves": true,
+          "getAfterSet": null
+        },
+        "synth": {
+          "instanceClass": "AlphaSynthWebWorkerApi",
+          "getOutputDevice": null,
+          "setDefaultResolves": true
+        },
+        "capturedElement": {
+          "setSinkIdResolves": true,
+          "sinkId": ""
+        }
+      },
+      "fyi4LateSoundFont": {
+        "instanceClass": "BackingTrackPlayer",
+        "readyWithoutSoundFontAfterMs": 45,
+        "soundFontSettingAfterApiLoad": null,
+        "instanceLoadSoundFontCalls": [
+          {
+            "bytes": 1351896,
+            "append": false
+          }
+        ],
+        "apiEvents": [
+          {
+            "t": 0,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 39,
+            "event": "api.soundFontLoaded"
+          },
+          {
+            "t": 39,
+            "event": "api.playerReady"
+          },
+          {
+            "t": 39,
+            "event": "wrapper.readyForPlayback"
+          },
+          {
+            "t": 40,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          },
+          {
+            "t": 40,
+            "event": "api.playerReady"
+          },
+          {
+            "t": 40,
+            "event": "wrapper.readyForPlayback"
+          },
+          {
+            "t": 50,
+            "event": "api.soundFontLoaded"
+          },
+          {
+            "t": 50,
+            "event": "api.playerReady"
+          },
+          {
+            "t": 50,
+            "event": "wrapper.readyForPlayback"
+          },
+          {
+            "t": 1552,
+            "event": "api.playerStateChanged",
+            "detail": "Paused"
+          }
+        ]
+      }
+    }
   }
 }
