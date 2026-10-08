@@ -80,6 +80,7 @@ milliseconds, at any playback speed, with no cost when the feature is off.
 | Media clocks | Backing-track clock (routed `<audio>`) and external-media clock (fitted) | `platform/javascript/MediaClock.ts` (new) | web |
 | `MediaLatencyProbe` | Measures `<audio>` time-stretch latency per speed | `platform/javascript/MediaLatencyProbe.ts` (new) | web |
 | Wiring | Create `MediaSynthPlayer` when the setting is on | `AlphaTabApiBase.ts`, `IUiFacade`, `BrowserUiFacade.ts` | shared + web |
+| Sync-lab diagnostics | `@internal` surface on `MediaSynthPlayer` for the sync lab (§9): the `AudioContext`, tap points (the media source node and the synth worklet node), controller stats (re-sync times, learned start leads and media-start latencies per speed, probe latencies) and a drift log that stays off unless the lab turns it on. Not public API (§7). The spike's lab read ~20 spike-player internals for spikes 4–7, and its drift log grew on every reading | `platform/javascript/MediaSynthPlayer.ts` | web |
 
 ## 4. Synth "follow media" mode (worker, shared code)
 
