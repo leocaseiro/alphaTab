@@ -1556,5 +1556,614 @@
       "225 | 44.7 | 0.9987 | 2.4 | 3@4,1@265"
     ],
     "batch2_columns": "T | fittedStartMs | rate | maxDevMs | state events (3=buffering,1=playing,2=paused @ ms after playVideo)"
+  },
+  "spike7PlayBeat": {
+    "what": "api.playBeat (bar 13 beat 1, track 1, 2 notes, 333 ms) clicked 2.5 s after Play. Mixed: sync lab nudgecal, beeps, 1x, settle 12 ms / gain 300; MixSpikePlayer.oneTimeMidiMode = synthOnly (as built) / pauseBoth (option 1) / pauseBothResume (option 2); pauseOnly = baseline api.pause(). audible = beat's track unmuted; otherwise tracks muted, metronome on, and the clicks after Play (pressed 1.5 s later) or after the automatic resume are matched to the media beeps (ms, click - beep). Non-mixed: control demo.",
+    "mixed": {
+      "synthOnlyAudible": [
+        {
+          "states": [],
+          "stateAt1500": "Playing",
+          "mediaAdvancedMs": 1503,
+          "synthOnsetsMs": [
+            10.7
+          ],
+          "mediaBeeps": 3
+        },
+        {
+          "states": [],
+          "stateAt1500": "Playing",
+          "mediaAdvancedMs": 1501,
+          "synthOnsetsMs": [],
+          "mediaBeeps": 3
+        },
+        {
+          "states": [],
+          "stateAt1500": "Playing",
+          "mediaAdvancedMs": 1504,
+          "synthOnsetsMs": [
+            5.4
+          ],
+          "mediaBeeps": 3
+        },
+        {
+          "states": [],
+          "stateAt1500": "Playing",
+          "mediaAdvancedMs": 1499,
+          "synthOnsetsMs": [],
+          "mediaBeeps": 3
+        }
+      ],
+      "synthOnlyNotes": [
+        {
+          "states": [],
+          "stateAt1500": "Playing",
+          "mediaAdvancedMs": 1502,
+          "synthOnsetsMs": [
+            5.3
+          ],
+          "notesPlayed": [
+            "on@6",
+            "on@6"
+          ]
+        },
+        {
+          "states": [],
+          "stateAt1500": "Playing",
+          "mediaAdvancedMs": 1501,
+          "synthOnsetsMs": [],
+          "notesPlayed": []
+        },
+        {
+          "states": [],
+          "stateAt1500": "Playing",
+          "mediaAdvancedMs": 1502,
+          "synthOnsetsMs": [
+            5.4
+          ],
+          "notesPlayed": [
+            "on@8",
+            "on@8"
+          ]
+        }
+      ],
+      "pauseBothAudible": [
+        {
+          "states": [
+            "Paused@0"
+          ],
+          "stateAt1500": "Paused",
+          "mediaAdvancedMs": 0,
+          "synthOnsetsMs": [
+            5.4
+          ]
+        },
+        {
+          "states": [
+            "Paused@1"
+          ],
+          "stateAt1500": "Paused",
+          "mediaAdvancedMs": 0,
+          "synthOnsetsMs": [
+            5.4
+          ]
+        },
+        {
+          "states": [
+            "Paused@0"
+          ],
+          "stateAt1500": "Paused",
+          "mediaAdvancedMs": 0,
+          "synthOnsetsMs": [
+            5.4
+          ]
+        },
+        {
+          "states": [
+            "Paused@1"
+          ],
+          "stateAt1500": "Paused",
+          "mediaAdvancedMs": 0,
+          "synthOnsetsMs": []
+        }
+      ],
+      "pauseBothNotes": [
+        {
+          "states": [
+            "Paused@0"
+          ],
+          "stateAt1500": "Paused",
+          "mediaAdvancedMs": 0,
+          "synthOnsetsMs": [
+            5.4
+          ],
+          "notesPlayed": [
+            "on@11",
+            "on@11"
+          ]
+        },
+        {
+          "states": [
+            "Paused@0"
+          ],
+          "stateAt1500": "Paused",
+          "mediaAdvancedMs": 0,
+          "synthOnsetsMs": [
+            5.4
+          ],
+          "notesPlayed": [
+            "on@8",
+            "on@8"
+          ]
+        },
+        {
+          "states": [
+            "Paused@0"
+          ],
+          "stateAt1500": "Paused",
+          "mediaAdvancedMs": 0,
+          "synthOnsetsMs": [
+            10.7
+          ],
+          "notesPlayed": [
+            "on@12",
+            "on@12"
+          ]
+        }
+      ],
+      "pauseBothClicks": [
+        {
+          "firstGapMs": -3.3,
+          "nextClicksMs": [
+            -3.3,
+            0.3,
+            3.8,
+            2,
+            1.6
+          ],
+          "counts": "6/6",
+          "synthOnsetsMs": [
+            10.7
+          ]
+        },
+        {
+          "firstGapMs": 2,
+          "nextClicksMs": [
+            2,
+            1.5,
+            1.1,
+            0.6,
+            1.3
+          ],
+          "counts": "6/6",
+          "synthOnsetsMs": [
+            5.4
+          ]
+        },
+        {
+          "firstGapMs": -6.2,
+          "nextClicksMs": [
+            -6.2,
+            -0.3,
+            4.6,
+            1.5,
+            1.1
+          ],
+          "counts": "6/6",
+          "synthOnsetsMs": [
+            5.4
+          ]
+        },
+        {
+          "firstGapMs": -1.3,
+          "nextClicksMs": [
+            -1.3,
+            2.2,
+            2,
+            1.5,
+            1
+          ],
+          "counts": "6/6",
+          "synthOnsetsMs": [
+            5.4
+          ]
+        },
+        {
+          "firstGapMs": 4.5,
+          "nextClicksMs": [
+            4.5,
+            1.4,
+            1,
+            2.1,
+            1.7
+          ],
+          "counts": "6/6",
+          "synthOnsetsMs": [
+            5.4
+          ]
+        },
+        {
+          "firstGapMs": 55.4,
+          "nextClicksMs": [
+            55.4,
+            2.5,
+            0.5,
+            1.3,
+            2
+          ],
+          "counts": "7/7",
+          "synthOnsetsMs": [
+            5.4
+          ]
+        },
+        {
+          "firstGapMs": -0.6,
+          "nextClicksMs": [
+            -0.6,
+            1.6,
+            2.5,
+            0.6,
+            1.6
+          ],
+          "counts": "6/6",
+          "synthOnsetsMs": [
+            5.4
+          ]
+        },
+        {
+          "firstGapMs": 2,
+          "nextClicksMs": [
+            2,
+            1.5,
+            1.1,
+            0.6,
+            1.3
+          ],
+          "counts": "6/6",
+          "synthOnsetsMs": [
+            5.4
+          ]
+        },
+        {
+          "firstGapMs": -0.9,
+          "nextClicksMs": [
+            -0.9,
+            1,
+            0.6,
+            0.2,
+            1.1
+          ],
+          "counts": "6/6",
+          "synthOnsetsMs": [
+            5.4
+          ]
+        },
+        {
+          "firstGapMs": 14.7,
+          "nextClicksMs": [
+            14.7,
+            2.2,
+            2,
+            1.5,
+            1
+          ],
+          "counts": "6/6",
+          "synthOnsetsMs": [
+            10.7
+          ]
+        },
+        {
+          "firstGapMs": -6.2,
+          "nextClicksMs": [
+            -6.2,
+            0.1,
+            3.7,
+            0.8,
+            0.3
+          ],
+          "counts": "6/6",
+          "synthOnsetsMs": [
+            5.4
+          ]
+        },
+        {
+          "firstGapMs": 11.8,
+          "nextClicksMs": [
+            11.8,
+            8.5,
+            1.3,
+            -4.6,
+            -0.9
+          ],
+          "counts": "6/6",
+          "synthOnsetsMs": [
+            5.4
+          ]
+        }
+      ],
+      "pauseBothResumeAudible": [
+        {
+          "states": [
+            "Paused@0",
+            "Playing@394"
+          ],
+          "mediaAdvancedMs": 1109,
+          "synthOnsetsMs": [
+            10.7,
+            512.9,
+            622.7,
+            844.5,
+            1066.7
+          ]
+        },
+        {
+          "states": [
+            "Paused@0",
+            "Playing@392"
+          ],
+          "mediaAdvancedMs": 1112,
+          "synthOnsetsMs": [
+            5.4,
+            404.4,
+            626.7,
+            955.6,
+            1062.7,
+            1281.9
+          ]
+        },
+        {
+          "states": [
+            "Paused@0",
+            "Playing@391"
+          ],
+          "mediaAdvancedMs": 1112,
+          "synthOnsetsMs": [
+            5.4,
+            593.4,
+            813.7,
+            1032,
+            1367.6,
+            1477.4
+          ]
+        },
+        {
+          "states": [
+            "Paused@0",
+            "Playing@391"
+          ],
+          "mediaAdvancedMs": 1108,
+          "synthOnsetsMs": [
+            584,
+            1028,
+            1249.7,
+            1468
+          ]
+        }
+      ],
+      "pauseBothResumeClicks": [
+        {
+          "resumeAfterMs": 386,
+          "firstGapMs": 1.5,
+          "nextClicksMs": [
+            1.5,
+            1.2,
+            0.7,
+            1.6,
+            1.2
+          ],
+          "counts": "8/8"
+        },
+        {
+          "resumeAfterMs": 385,
+          "firstGapMs": 2,
+          "nextClicksMs": [
+            2,
+            1.5,
+            1.1,
+            1.9,
+            1.3
+          ],
+          "counts": "8/8"
+        },
+        {
+          "resumeAfterMs": 385,
+          "firstGapMs": 0.4,
+          "nextClicksMs": [
+            0.4,
+            1,
+            1.9,
+            1.5,
+            1.1
+          ],
+          "counts": "8/8"
+        },
+        {
+          "resumeAfterMs": 385,
+          "firstGapMs": 6.7,
+          "nextClicksMs": [
+            6.7,
+            2.2,
+            -0.7,
+            1.5,
+            1
+          ],
+          "counts": "8/8"
+        },
+        {
+          "resumeAfterMs": 385,
+          "firstGapMs": -0.8,
+          "nextClicksMs": [
+            -0.8,
+            2.8,
+            2.4,
+            0.8,
+            1.7
+          ],
+          "counts": "8/8"
+        },
+        {
+          "resumeAfterMs": 385,
+          "firstGapMs": -0.2,
+          "nextClicksMs": [
+            -0.2,
+            0.5,
+            2.6,
+            2,
+            1.8
+          ],
+          "counts": "9/9"
+        }
+      ],
+      "baselinePauseThenPlay": [
+        {
+          "firstGapMs": 0.7,
+          "nextClicksMs": [
+            0.7,
+            1.6,
+            1.2,
+            2,
+            1.6
+          ],
+          "counts": "6/6"
+        },
+        {
+          "firstGapMs": -0.7,
+          "nextClicksMs": [
+            -0.7,
+            1.5,
+            2.4,
+            1.9,
+            1.3
+          ],
+          "counts": "6/6"
+        },
+        {
+          "firstGapMs": 1.8,
+          "nextClicksMs": [
+            1.8,
+            1,
+            0.6,
+            0.2,
+            1.1
+          ],
+          "counts": "6/6"
+        },
+        {
+          "firstGapMs": 0,
+          "nextClicksMs": [
+            0,
+            0.9,
+            2,
+            1.5,
+            1
+          ],
+          "counts": "6/6"
+        },
+        {
+          "firstGapMs": 12.5,
+          "nextClicksMs": [
+            12.5,
+            -2.6,
+            3.7,
+            2.1,
+            1.7
+          ],
+          "counts": "6/6"
+        },
+        {
+          "firstGapMs": -1.5,
+          "nextClicksMs": [
+            -1.5,
+            -0.8,
+            1.3,
+            2,
+            1.8
+          ],
+          "counts": "6/6"
+        }
+      ]
+    },
+    "nonMixedSynthOnly": [
+      {
+        "mode": "EnabledSynthesizer",
+        "posBeforeMs": 21867,
+        "states": [
+          "Paused@2"
+        ],
+        "stateAt1500": "Paused",
+        "posAt1500Ms": 21963,
+        "posAfterPlay1sMs": 22949,
+        "stateAfterPlay": "Playing"
+      },
+      {
+        "mode": "EnabledSynthesizer",
+        "posBeforeMs": 21989,
+        "states": [
+          "Paused@2"
+        ],
+        "stateAt1500": "Paused",
+        "posAt1500Ms": 22133,
+        "posAfterPlay1sMs": 23125,
+        "stateAfterPlay": "Playing"
+      }
+    ],
+    "nonMixedBackingTrack": [
+      {
+        "speed": 1,
+        "mediaBeforeMs": 22046,
+        "posBeforeMs": 21966,
+        "states": [
+          "Paused@1"
+        ],
+        "mediaSegments": [
+          "160->503 ms (t 13-402)",
+          "22046 ms, paused (t 412-3002)"
+        ],
+        "posAfterMs": 21966,
+        "stateAfter": "Paused"
+      },
+      {
+        "speed": 1,
+        "mediaBeforeMs": 22046,
+        "posBeforeMs": 21966,
+        "states": [
+          "Paused@0"
+        ],
+        "mediaSegments": [
+          "161->506 ms (t 13-402)",
+          "22046 ms, paused (t 412-3003)"
+        ],
+        "posAfterMs": 21966,
+        "stateAfter": "Paused"
+      },
+      {
+        "speed": 2,
+        "mediaBeforeMs": 43906,
+        "posBeforeMs": 21938,
+        "states": [
+          "Paused@0"
+        ],
+        "mediaSegments": [
+          "165->527 ms (t 12-251)",
+          "22018 ms, paused (t 261-3001)"
+        ],
+        "posAfterMs": 10969,
+        "stateAfter": "Paused"
+      },
+      {
+        "speed": 2,
+        "mediaBeforeMs": 43905,
+        "posBeforeMs": 21937,
+        "states": [
+          "Paused@1"
+        ],
+        "mediaSegments": [
+          "165->538 ms (t 13-253)",
+          "22017 ms, paused (t 262-3001)"
+        ],
+        "posAfterMs": 10969,
+        "stateAfter": "Paused"
+      }
+    ]
   }
 }
