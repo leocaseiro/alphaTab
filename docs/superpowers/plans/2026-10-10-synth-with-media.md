@@ -1,3 +1,7 @@
+---
+lap: 1
+---
+
 # Synthesizer + backing track / external media mixing — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or
