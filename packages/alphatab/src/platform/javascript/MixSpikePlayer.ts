@@ -86,6 +86,24 @@ export class MixSpikePlayer implements IAlphaSynth {
      */
     public startAtTarget: boolean = false;
     public catchUpMaxCorrection: number = 0.08;
+    /**
+     * lap-2 F-9 spike: what a speed change during playback does. 'always' = re-sync (as built);
+     * 'ifDrift' = settle only, the drift rules re-sync if the agreed drift exceeds the settle threshold.
+     */
+    public speedChangeRule: 'always' | 'ifDrift' = 'always';
+    /**
+     * lap-2 F-9 spike: values for a speed with none learned / probed yet (start lead, media-start latency,
+     * media latency). 'zero' = as built; 'line' = straight line between the nearest known speeds,
+     * outside them the nearest value.
+     */
+    public unlearnedGuess: 'zero' | 'line' = 'zero';
+    /** lap-2 F-9 spike: learn the compensated start's lead per speed (the spec's rule) instead of one value */
+    public compensatedLeadPerSpeed: boolean = false;
+    private _compLeadBySpeed: Map<number, number> = new Map<number, number>();
+    private _learnCompLead(speed: number, offsetMs: number) {
+        const cur = this._lineGuess(this._compLeadBySpeed, speed, 0);
+        this._compLeadBySpeed.set(speed, Math.max(-50, Math.min(150, cur - offsetMs / speed)));
+    }
     public catchUpGainMillis: number = 300;
     private _startLeadBySpeed: Map<number, number> = new Map<number, number>();
     private _catchUpUntil: number = 0;
@@ -247,13 +265,37 @@ export class MixSpikePlayer implements IAlphaSynth {
         return this.mediaOutput.audioElement.currentTime * 1000;
     }
 
+    private _lineGuess(map: Map<number, number>, speed: number, fallback: number): number {
+        const known = map.get(speed);
+        if (known !== undefined) {
+            return known;
+        }
+        if (this.unlearnedGuess !== 'line' || map.size === 0) {
+            return fallback;
+        }
+        const keys = [...map.keys()].sort((a, b) => a - b);
+        if (speed <= keys[0]) {
+            return map.get(keys[0])!;
+        }
+        if (speed >= keys[keys.length - 1]) {
+            return map.get(keys[keys.length - 1])!;
+        }
+        let i = 0;
+        while (keys[i + 1] < speed) {
+            i++;
+        }
+        const a = keys[i];
+        const b = keys[i + 1];
+        return map.get(a)! + ((speed - a) / (b - a)) * (map.get(b)! - map.get(a)!);
+    }
+
     /** 2b: how far (in media ms) the audible <audio> output is ahead of its currentTime */
     private _latencyInMedia(): number {
         if (this.mode !== 'nudgecal') {
             return 0;
         }
         const speed = this.media.playbackSpeed;
-        return (this._mediaLatency.get(speed) ?? 0) * speed;
+        return this._lineGuess(this._mediaLatency, speed, 0) * speed;
     }
 
     private _mediaDuration(): number {
@@ -317,7 +359,7 @@ export class MixSpikePlayer implements IAlphaSynth {
         }
         const ctx = this.audioContext;
         const speed = this.media.playbackSpeed;
-        const latency = this.mode === 'nudgecal' ? (this._mediaLatency.get(speed) ?? 0) : 0;
+        const latency = this.mode === 'nudgecal' ? this._lineGuess(this._mediaLatency, speed, 0) : 0;
         const mediaAtFrame =
             el.currentTime * 1000 - (ctx.currentTime - frame / ctx.sampleRate) * 1000 * speed + latency * speed;
         const drift = synthMediaTime - mediaAtFrame;
@@ -339,7 +381,7 @@ export class MixSpikePlayer implements IAlphaSynth {
         if (this._awaitingFirstDriftAfterCountIn && agreed !== null) {
             // count-in: the media started `agreed / speed` ms late (synth ahead) -> issue play() that much earlier
             this._awaitingFirstDriftAfterCountIn = false;
-            const cur = this._mediaStartLatencyBySpeed.get(speed) ?? this.countInStartGuess;
+            const cur = this._lineGuess(this._mediaStartLatencyBySpeed, speed, this.countInStartGuess);
             const next = Math.max(-50, Math.min(250, cur + agreed / speed));
             this._mediaStartLatencyBySpeed.set(speed, next);
             this.stats.mediaStartLatency[String(speed)] = Math.round(next * 10) / 10;
@@ -355,12 +397,15 @@ export class MixSpikePlayer implements IAlphaSynth {
             const median = [...window].sort((a, b) => a - b)[1];
             if (this.startAtTarget) {
                 // the synth is intentionally behind by the start gap: learn only the rest, per speed
-                const cur = this._startLeadBySpeed.get(speed) ?? 0;
+                const cur = this._lineGuess(this._startLeadBySpeed, speed, 0);
                 const next = Math.max(-50, Math.min(150, cur - (median + this._startGap) / speed));
                 this._startLeadBySpeed.set(speed, next);
                 this.stats.startLead = Math.round(next * 10) / 10;
             } else {
                 this._startLead = Math.max(-50, Math.min(150, this._startLead - median / speed));
+                if (this.compensatedLeadPerSpeed) {
+                    this._learnCompLead(speed, median);
+                }
                 this.stats.startLead = Math.round(this._startLead * 10) / 10;
             }
         }
@@ -385,6 +430,9 @@ export class MixSpikePlayer implements IAlphaSynth {
                 // the start itself was off by `agreed`: learn it before the re-sync clears the window
                 this._awaitingFirstDriftAfterStart = false;
                 this._startLead = Math.max(-50, Math.min(150, this._startLead - agreed / speed));
+                if (this.compensatedLeadPerSpeed && !this.startAtTarget) {
+                    this._learnCompLead(speed, agreed);
+                }
                 this.stats.startLead = Math.round(this._startLead * 10) / 10;
             }
             this._resyncTo(this._mediaTimeNow() + latency * speed, this._resyncLead);
@@ -604,6 +652,12 @@ export class MixSpikePlayer implements IAlphaSynth {
         this.synth.playbackSpeed = value;
         if (wasPlaying && this.mode !== 'decode') {
             this._settleUntil = performance.now() + this.settleDuration;
+            if (this.speedChangeRule === 'ifDrift') {
+                // lap-2 F-9 spike: no forced re-sync; fresh readings decide (nudge, or re-sync above the threshold)
+                this._driftWindow = [];
+                this._driftEma = null;
+                return;
+            }
             this._resyncTo(
                 this._mediaTimeNow() + this._latencyInMedia(),
                 this.mode === 'nudge' || this.mode === 'nudgecal' ? this._resyncLead : 0
@@ -687,9 +741,12 @@ export class MixSpikePlayer implements IAlphaSynth {
         // (startLead > 0) the media start is delayed instead; if the media is slower the synth
         // starts a bit earlier in the song (a few ms of pre-roll).
         let lead = nudging ? this._startLead : 0;
+        if (nudging && this.compensatedLeadPerSpeed) {
+            lead = this._lineGuess(this._compLeadBySpeed, speed, 0);
+        }
         if (this.startAtTarget) {
             // never start past the target: a positive latency offset is caught up after the first beat
-            lead = nudging ? (this._startLeadBySpeed.get(speed) ?? 0) : 0;
+            lead = nudging ? this._lineGuess(this._startLeadBySpeed, speed, 0) : 0;
             mediaTime = this._mediaTimeNow() + Math.min(0, latency);
             this._startGap = Math.max(0, latency);
             this._catchUpUntil = this._startGap > 0 ? performance.now() + this.settleDuration : 0;
@@ -739,7 +796,7 @@ export class MixSpikePlayer implements IAlphaSynth {
         const ctx = this.audioContext;
         // the context frame where the synth reaches the target (refined on every stamp until the media starts)
         c.frameT = frame + ((c.target - synthMediaTime) / c.speed / 1000) * ctx.sampleRate;
-        const dm = this._mediaStartLatencyBySpeed.get(c.speed) ?? this.countInStartGuess;
+        const dm = this._lineGuess(this._mediaStartLatencyBySpeed, c.speed, this.countInStartGuess);
         c.playAt = c.frameT / ctx.sampleRate - (dm + c.pre / c.speed) / 1000;
         if (this._countInTimer) {
             return;

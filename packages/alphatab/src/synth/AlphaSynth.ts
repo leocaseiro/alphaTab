@@ -149,8 +149,15 @@ export class AlphaSynthBase implements IAlphaSynth {
     protected updatePlaybackSpeed(value: number) {
         const oldSpeed: number = this.sequencer.playbackSpeed;
         this.sequencer.playbackSpeed = value;
+        if (this._spikeFollow && this.spikeKeepPositionOnSpeedChange) {
+            // lap-2 F-9 spike: in follow mode the position is the media time, which a speed change does
+            // not move; rescaling + seeking here would jump the synth (and drop the buffered audio)
+            return;
+        }
         this.timePosition = this.timePosition * (oldSpeed / value);
     }
+    /** lap-2 F-9 spike: false = as built (rescale and seek on a speed change, also in follow mode) */
+    public spikeKeepPositionOnSpeedChange: boolean = true;
 
     public get loadedMidiInfo(): PositionChangedEventArgs | undefined {
         return this._loadedMidiInfo;

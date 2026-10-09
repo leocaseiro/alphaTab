@@ -809,6 +809,98 @@ async function loopTest(owner: 'combined' | 'media', speed: number, bars = 2, wr
     return result;
 }
 (window as any).spikeLoopTest = loopTest;
+
+/**
+ * lap-2 F-9 spike: a held tempo sweep during playback (notation-hero's tempo button, one step per
+ * `stepMs`). Compare `spikePlayer.speedChangeRule` 'always' (re-sync on every change, as built) with
+ * 'ifDrift' (settle; re-sync only if the agreed drift exceeds the settle threshold).
+ */
+async function sweepTest(fromSpeed: number, steps: number, stepSpeed: number, stepMs = 250) {
+    const sr = player.audioContext.sampleRate;
+    player.masterGain.gain.value = 0;
+    api.metronomeVolume = 1;
+    api.changeTrackMute(api.score!.tracks, true);
+    player.setMix(1, 1);
+    api.pause();
+    api.playbackSpeed = fromSpeed;
+    await sleep(400);
+    api.timePosition = alphaTabTimeForMedia(beatMediaTimes[40]);
+    await sleep(300);
+    api.play();
+    await sleep(3000);
+    tapOnsets.media.length = 0;
+    tapOnsets.synth.length = 0;
+    const f0 = player.audioContext.currentTime * sr;
+    const t0 = performance.now();
+    let speed = fromSpeed;
+    for (let i = 0; i < steps; i++) {
+        speed = Math.round((speed + stepSpeed) * 10000) / 10000;
+        api.playbackSpeed = speed;
+        await sleep(stepMs);
+    }
+    await sleep(2000);
+    const f1 = player.audioContext.currentTime * sr;
+    api.pause();
+    // every re-sync (forced by a speed change, or decided by the drift rules)
+    const resyncs = player.stats.resyncTimes.filter(t => t > t0).length;
+    const driftResyncs = player.stats.driftLog.filter(e => e.t > t0 && e.action === 'resync').length;
+    const media = [...tapOnsets.media].sort((a, b) => a - b);
+    const clicks = tapOnsets.synth.filter(f => f > f0 && f < f1);
+    const beeps = media.filter(f => f > f0 && f < f1);
+    const abs = clicks.map(f => Math.abs(((f - nearest(media, f)) / sr) * 1000)).sort((a, b) => a - b);
+    const round = (x: number | undefined) => (x === undefined ? null : Math.round(x * 10) / 10);
+    const row = {
+        rule: player.speedChangeRule,
+        guess: player.unlearnedGuess,
+        fromSpeed,
+        toSpeed: speed,
+        steps,
+        stepMs,
+        resyncs,
+        driftResyncs,
+        counts: `${clicks.length}/${beeps.length}`,
+        p95Ms: round(abs[Math.floor(abs.length * 0.95)]),
+        maxMs: round(abs[abs.length - 1]),
+        over20: abs.filter(x => x > 20).length
+    };
+    applySound();
+    applyMix();
+    applyVolumes();
+    log({ sweepTest: row });
+    return row;
+}
+(window as any).spikeSweepTest = sweepTest;
+
+/**
+ * lap-2 F-9 spike: the first start at a speed whose start lead was never learned. Compare
+ * `spikePlayer.unlearnedGuess` 'zero' (as built) with 'line' (straight line between learned speeds).
+ * Probe the test speeds first (spikePlayer.spikeCalibrate) so only the start lead differs.
+ */
+async function unlearnedStartTest(speeds: number[], repeats: number, beforeBeatMs = 30) {
+    const map = (player as any)._startLeadBySpeed as Map<number, number>;
+    const rows: unknown[] = [];
+    for (const speed of speeds) {
+        for (let r = 0; r < repeats; r++) {
+            map.delete(speed);
+            const usedLead = (player as any)._lineGuess(map, speed, 0) as number;
+            const [row] = await startTest(1, beforeBeatMs, speed);
+            rows.push({
+                speed,
+                guess: player.unlearnedGuess,
+                usedLead: Math.round(usedLead * 10) / 10,
+                firstGap: row.firstGap,
+                first: row.first,
+                resyncs: row.resyncs,
+                skipped: row.skipped,
+                learnedAfter: map.has(speed) ? Math.round(map.get(speed)! * 10) / 10 : null
+            });
+        }
+        map.delete(speed);
+    }
+    log({ unlearnedStartTest: rows });
+    return rows;
+}
+(window as any).spikeUnlearnedStartTest = unlearnedStartTest;
 (window as any).spikeTaps = tapOnsets;
 (window as any).spikeDebug = {
     get beatMediaTimes() {

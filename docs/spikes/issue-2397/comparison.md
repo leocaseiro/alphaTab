@@ -11,7 +11,8 @@
 > [Spike 7: playBeat / playNote with a backing track (mixed and non-mixed)](./spike-7-play-beat-with-media.md) ·
 > [Spike 8: output limiter settings](./spike-8-limiter-settings.md) ·
 > [Spike 9: code checks from the second review lap](./spike-9-review-lap-2-checks.md) ·
-> [Spike 10: failure signals, output devices, a late SoundFont](./spike-10-batch-1-checks.md).
+> [Spike 10: failure signals, output devices, a late SoundFont](./spike-10-batch-1-checks.md) ·
+> [Spike 11: speed changes during playback, starts at unlearned speeds](./spike-11-speed-changes.md).
 > Raw numbers: [results.json](./results.json) · [results-2026-10-08.json](./results-2026-10-08.json).
 
 ## TL;DR
