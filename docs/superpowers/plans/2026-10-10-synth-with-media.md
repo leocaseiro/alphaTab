@@ -518,9 +518,10 @@ function createSequencer(midi: MidiFile, syncPoints: BackingTrackSyncPoint[], sp
 }
 
 function noteOnTimes(synthesizer: RecordingAudioSynthesizer): number[] {
+    // rounded: the generator's times carry float error (the second quarter at 120 BPM is at 500.00000000000006 ms)
     return synthesizer.events
         .filter(e => !e.synthEvent.isMetronome && e.synthEvent.event?.type === MidiEventType.NoteOn)
-        .map(e => e.synthEvent.time);
+        .map(e => Math.round(e.synthEvent.time));
 }
 
 describe('FollowMediaTests', () => {
@@ -1164,8 +1165,11 @@ Add the fields and the internal API to `AlphaSynthBase` (next to `_notPlayedSamp
         this.synthesizer.noteOffAll(true);
         const midiTime = this.sequencer.mainMidiTimeFromMediaTime(mediaTime, this._followMediaDuration);
         this.timePosition = Math.max(0, midiTime) / this.sequencer.playbackSpeed;
-        this._notPlayedSamples = 0;
-        this.output.resetSamples();
+        if (!this.sequencer.isPlayingMain) {
+            // the timePosition setter resets the output only while the main song plays
+            this._notPlayedSamples = 0;
+            this.output.resetSamples();
+        }
     }
 
     /**
@@ -1817,9 +1821,8 @@ Expected: FAIL (typecheck errors on the new message shapes, missing `followMedia
 
 - [ ] **Step 4: Extend the protocol**
 
-In `packages/alphatab/src/platform/worker/AlphaTabWorkerProtocol.ts` add
-`import type { BackingTrackSyncPoint } from '@coderline/alphatab/synth/IAlphaSynth';` and extend the union and
-the worker interface:
+In `packages/alphatab/src/platform/worker/AlphaTabWorkerProtocol.ts` (it already imports `BackingTrackSyncPoint`)
+extend the union and the worker interface:
 
 ```diff
      | { cmd: 'alphaSynth.applyTranspositionPitches'; transpositionPitches: Map<number, number> }
@@ -2003,7 +2006,8 @@ In `handleWorkerMessage`:
 ```
 
 Imports: `MediaSampleChunk, type IMediaSampleOutput` from `@coderline/alphatab/synth/MediaSampleOutput`;
-`type IMediaSynth` from `@coderline/alphatab/platform/javascript/MediaSynthTypes`.
+`type IMediaSynth` from `@coderline/alphatab/platform/javascript/MediaSynthTypes`. `IAlphaSynth` is no longer used
+here: change its import to `import type { BackingTrackSyncPoint } from '@coderline/alphatab/synth/IAlphaSynth';`.
 
 - [ ] **Step 7: Run the tests to see them pass**
 
@@ -3619,7 +3623,7 @@ real count-in.
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `MediaSyncController.test.ts` (import `MediaStartPlan` too):
+Add to `MediaSyncController.test.ts`:
 
 ```ts
 describe('MediaSyncControllerStartTests', () => {
@@ -4123,12 +4127,13 @@ describe('ExternalMediaClockTests', () => {
         const time = new FakeHeardTime();
         const clock = new ExternalMediaClock(time, () => 0);
         clock.setPlaying(true);
-        feed(clock, time, 0, 1, t => t * 1000);
+        // whole milliseconds: `t += 0.05` accumulates float error (the ramp would end at 1000.0000000000002)
+        feed(clock, time, 0, 1, t => Math.round(t * 1000));
         expect(clock.isStalled).toBe(false);
-        feed(clock, time, 1.05, 1.1, () => 1000); // frozen for 100 ms
+        feed(clock, time, 1.05, 1.15, () => 1000); // frozen since t = 1: 150 ms, clear of the 100 ms limit
         expect(clock.isStalled).toBe(true);
         expect(clock.mediaTimeNow()).toBeNaN();
-        time.heard = 1.15;
+        time.heard = 1.2;
         clock.addSample(1050);
         expect(clock.isStalled).toBe(false);
     });
@@ -4564,6 +4569,15 @@ In `docs/superpowers/specs/2026-10-07-synth-with-media-design.md` §6.3, replace
 > positive value makes the synth play later, in milliseconds of real time at any speed (F-11). The external clock
 > stamps each `updatePosition()` sample with the context time being heard (`getOutputTimestamp()`) and is read at
 > frame time `F / sampleRate`; that is the moment frame F is heard, so `outputLatency` is not added again.
+
+Then remove the offset from the table's External media cell, so the sentence under the table is the only place
+that states it.
+
+**Before:**
+> … **heard** (frame time + `outputLatency`), plus `mediaSyncOffsetInMilliseconds` **(untested)**
+
+**After:**
+> … **heard** (frame time + `outputLatency`) **(untested)**
 
 - [ ] **Step 6: Run the repo gates and commit**
 
@@ -5413,7 +5427,7 @@ git push
 §3: `<audio> → mediaGain ┐ ├→ masterGain → limiter → destination; worklet → synthGain ┘`, mixing mode only.
 **F-13** (both; our design's problem; spiked in spike 8; High): a limiter at −1 dBFS, ratio 20, knee 0, attack 1 ms,
 release 100 ms, followed by a fixed −0.57 dB trim that cancels Web Audio's automatic make-up gain. Spike 8: the worst
-case peaked at −0.31 dBFS with `synthVolume` 3, and the recording keeps its own level. The spec's −3 dBFS would
+case peaked at −0.31 dBFS with `synthVolume` 3, and the recording keeps its own level. The spike's −3 dBFS would
 squash a mastered recording's own peaks (spike 5: −2.3 dBFS).
 
 - [ ] **Step 1: Write the failing tests**
@@ -6386,6 +6400,7 @@ export class MediaSynthHarness {
         this.player.stateChanged.on(e =>
             this.states.push(e.state === PlayerState.Playing ? 'Playing' : e.stopped ? 'Stopped' : 'Paused')
         );
+        this.states.length = 0; // on() replays the current state at once (fire-on-register)
         this.player.positionChanged.on(e => this.positions.push(e.currentTime));
         this.player.finished.on(() => this.finished++);
     }
@@ -8973,7 +8988,8 @@ Expected: `packages/alphatab/src/generated/PlayerSettingsJson.ts` and the serial
 
 - [ ] **Step 4: The UI facade member**
 
-`IUiFacade.ts`, after `createBackingTrackPlayer()`:
+`IUiFacade.ts`, after `createBackingTrackPlayer()` (and add
+`import type { PlayerMode } from '@coderline/alphatab/PlayerSettings';` to its imports):
 
 ```ts
     /**
@@ -8985,7 +9001,7 @@ Expected: `packages/alphatab/src/generated/PlayerSettingsJson.ts` and the serial
     createMediaSynthPlayer(mode: PlayerMode): IAlphaSynth | null;
 ```
 
-`TestUiFacade.ts`:
+`TestUiFacade.ts` (and the same `PlayerMode` import):
 
 ```ts
     public createMediaSynthPlayer(_mode: PlayerMode): IAlphaSynth | null {
