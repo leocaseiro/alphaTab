@@ -32,7 +32,7 @@ wrap.
   reference; its `MixSpikePlayer` and `_spike*` code is never copied (§4: "written fresh, with tests").
 - **Each task ends green and pushed.** Run the gates named in the task, commit, `git push`. Never
   `git commit --no-verify` / `git push --no-verify`. Never a bare `git stash` (the stash is shared across
-  worktrees). Tracked files never contain absolute `/Users/...` paths.
+  worktrees). Tracked files never contain absolute home-directory paths: use repo-relative paths.
 - **Decision gates (D-1 … D-8)** are marked **STOP — decision gate**. The main session runs them, never a task
   subagent: run the measurement named in the gate first, then put the choice to the person as an
   `AskUserQuestion` picker tagged `[Q-D<n>]`, following `spec-triage-loop:triage` (load it before the first picker):
@@ -88,8 +88,8 @@ that owns the code.
    Task 17 (`pause-during-count-in-cancels-the-hand-off`, `seek-during-count-in-restarts-without-count-in`).
 3. **Play before the background probe is done, or while the `AudioContext` is still suspended** (autoplay policy).
    Expected: the start uses the straight-line guess, the probe waits for a running context, and a value that
-   lands mid-playback settles without cutting notes (D-1). Tests: Task 10 (`latency-change-settles-without-resync`)
-   and Task 15 (`probe-waits-for-a-running-context`, `probe-value-during-playback-settles`).
+   lands mid-playback settles without cutting notes (D-1). Tests: Task 10 (`latency-change-settles-without-resync`),
+   Task 15 (`probe-waits-for-a-running-context`) and Task 16 (`a-probe-value-during-playback-settles`).
 4. **Changing `enableSynthesizerWithMedia` or `playerMode` at runtime** through `updateSettings()`. Expected: the
    old player is destroyed, the new one is created, and volumes, speed and looping are restored. Test: Task 20
    (`flag-change-recreates-the-player`, `wrapper-restores-media-volumes`).
@@ -2010,6 +2010,2912 @@ copy in Node, compare `cmd`, `enabled` and `mediaDuration` field by field instea
 npm run lint && npm run typecheck && npm test
 git add packages/alphatab/src/platform packages/alphatab/test/audio/MediaWorkerProtocol.test.ts
 git commit -m "feat(worker): protocol for following a media clock; report a failing synth worker (#2397)"
+git push
+```
+
+---
+
+## Phase 2 — AudioWorklet output
+
+### Task 6: Chunk markers (pure)
+
+**Files:**
+- Create: `packages/alphatab/src/platform/javascript/MediaChunkMarkers.ts`
+- Create: `packages/alphatab/test/audio/MediaChunkMarkers.test.ts`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces (used by Task 7's processor): `MediaChunkMarkers` with `push(frames, mediaStart, mediaPerFrame, countInEnd)`,
+  `mediaTimeAtReadPosition(): number` (−1 = not stamped), `consume(frames): boolean` (true = every consumed frame was
+  stamped), `framesUntilCountInEnd(): number` (−1 = none buffered), `bufferedFrames`, `clear()`.
+
+§5: one marker per **written** chunk, stamped or not, so the markers stay aligned with the circular buffer. (The
+spike's version only kept stamped chunks, which drifts out of line as soon as the unstamped count-in samples sit in
+the buffer.)
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `packages/alphatab/test/audio/MediaChunkMarkers.test.ts`:
+
+```ts
+/**
+ * @target web
+ */
+import { describe, expect, it } from 'vitest';
+import { MediaChunkMarkers } from '@coderline/alphatab/platform/javascript/MediaChunkMarkers';
+
+describe('MediaChunkMarkersTests', () => {
+    it('media-time-at-the-read-position-moves-with-consumed-frames', () => {
+        const markers = new MediaChunkMarkers();
+        markers.push(100, 1000, 0.5, false);
+        markers.push(100, 1050, 0.5, false);
+        expect(markers.mediaTimeAtReadPosition()).toBe(1000);
+        expect(markers.consume(40)).toBe(true);
+        expect(markers.mediaTimeAtReadPosition()).toBe(1020);
+        expect(markers.consume(80)).toBe(true); // crosses into the second chunk
+        expect(markers.mediaTimeAtReadPosition()).toBe(1060);
+        expect(markers.bufferedFrames).toBe(80);
+    });
+
+    it('unstamped-chunks-keep-the-markers-aligned', () => {
+        const markers = new MediaChunkMarkers();
+        markers.push(128, -1, 0, false); // count-in
+        markers.push(128, 2000, 0.25, true); // the song, from the count-in's end
+        expect(markers.mediaTimeAtReadPosition()).toBe(-1);
+        expect(markers.consume(128)).toBe(false);
+        expect(markers.mediaTimeAtReadPosition()).toBe(2000);
+        expect(markers.consume(64)).toBe(true);
+        expect(markers.mediaTimeAtReadPosition()).toBe(2016);
+    });
+
+    it('a-block-across-an-unstamped-chunk-is-not-stamped', () => {
+        const markers = new MediaChunkMarkers();
+        markers.push(64, -1, 0, false);
+        markers.push(64, 500, 1, true);
+        expect(markers.consume(128)).toBe(false);
+    });
+
+    it('frames-until-the-count-in-end', () => {
+        const markers = new MediaChunkMarkers();
+        expect(markers.framesUntilCountInEnd()).toBe(-1);
+        markers.push(300, -1, 0, false);
+        markers.push(200, 1000, 0.5, true);
+        expect(markers.framesUntilCountInEnd()).toBe(300);
+        markers.consume(128);
+        expect(markers.framesUntilCountInEnd()).toBe(172);
+        markers.consume(200); // the boundary has been read
+        expect(markers.framesUntilCountInEnd()).toBe(-1);
+    });
+
+    it('clear-forgets-everything', () => {
+        const markers = new MediaChunkMarkers();
+        markers.push(100, 1000, 0.5, true);
+        markers.clear();
+        expect(markers.bufferedFrames).toBe(0);
+        expect(markers.mediaTimeAtReadPosition()).toBe(-1);
+        expect(markers.framesUntilCountInEnd()).toBe(-1);
+    });
+});
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `npx vitest run test/audio/MediaChunkMarkers.test.ts`
+Expected: FAIL — cannot resolve `MediaChunkMarkers`.
+
+- [ ] **Step 3: Implement**
+
+Create `packages/alphatab/src/platform/javascript/MediaChunkMarkers.ts`:
+
+```ts
+/**
+ * @target web
+ * @internal
+ */
+class MediaChunkMarker {
+    public readonly frames: number;
+    public consumed: number = 0;
+    public readonly mediaStart: number;
+    public readonly mediaPerFrame: number;
+    public readonly countInEnd: boolean;
+
+    public constructor(frames: number, mediaStart: number, mediaPerFrame: number, countInEnd: boolean) {
+        this.frames = frames;
+        this.mediaStart = mediaStart;
+        this.mediaPerFrame = mediaPerFrame;
+        this.countInEnd = countInEnd;
+    }
+}
+
+/**
+ * The media time of the samples buffered in the AudioWorklet: one marker per written chunk, in write order, so
+ * the markers stay aligned with the circular sample buffer (spec §5).
+ * @target web
+ * @internal
+ */
+export class MediaChunkMarkers {
+    private _markers: MediaChunkMarker[] = [];
+
+    public get bufferedFrames(): number {
+        let frames = 0;
+        for (const marker of this._markers) {
+            frames += marker.frames - marker.consumed;
+        }
+        return frames;
+    }
+
+    /**
+     * Records a written chunk. A negative `mediaStart` marks samples that are not on the media's time axis.
+     */
+    public push(frames: number, mediaStart: number, mediaPerFrame: number, countInEnd: boolean): void {
+        if (frames > 0) {
+            this._markers.push(new MediaChunkMarker(frames, mediaStart, mediaPerFrame, countInEnd));
+        }
+    }
+
+    /**
+     * The media time of the next frame to be read, or -1 when it is not stamped or nothing is buffered.
+     */
+    public mediaTimeAtReadPosition(): number {
+        if (this._markers.length === 0) {
+            return -1;
+        }
+        const marker = this._markers[0];
+        return marker.mediaStart < 0 ? -1 : marker.mediaStart + marker.consumed * marker.mediaPerFrame;
+    }
+
+    /**
+     * The frames until the first frame of the chunk that starts after the count-in, or -1 when none is buffered.
+     */
+    public framesUntilCountInEnd(): number {
+        let frames = 0;
+        for (const marker of this._markers) {
+            if (marker.countInEnd && marker.consumed === 0) {
+                return frames;
+            }
+            frames += marker.frames - marker.consumed;
+        }
+        return -1;
+    }
+
+    /**
+     * Consumes read frames.
+     * @returns Whether every consumed frame came from a stamped chunk.
+     */
+    public consume(frames: number): boolean {
+        let remaining = frames;
+        let allStamped = true;
+        while (remaining > 0 && this._markers.length > 0) {
+            const marker = this._markers[0];
+            const take = Math.min(remaining, marker.frames - marker.consumed);
+            if (marker.mediaStart < 0) {
+                allStamped = false;
+            }
+            marker.consumed += take;
+            remaining -= take;
+            if (marker.consumed >= marker.frames) {
+                this._markers.shift();
+            }
+        }
+        return allStamped && remaining === 0;
+    }
+
+    public clear(): void {
+        this._markers = [];
+    }
+}
+```
+
+- [ ] **Step 4: Run the tests to see them pass**
+
+Run: `npx vitest run test/audio/MediaChunkMarkers.test.ts`
+Expected: PASS (5 tests).
+
+- [ ] **Step 5: Run the repo gates and commit**
+
+```bash
+npm run lint && npm run typecheck && npm test
+git add packages/alphatab/src/platform/javascript/MediaChunkMarkers.ts packages/alphatab/test/audio/MediaChunkMarkers.test.ts
+git commit -m "feat(web): media-time markers aligned with the worklet's sample buffer (#2397)"
+git push
+```
+
+---
+
+### Task 7: Worklet — stamps, count-in end, keep-alive, request accounting, failure event
+
+**Files:**
+- Modify: `packages/alphatab/src/platform/javascript/AlphaSynthAudioWorkletOutput.ts` (the processor in
+  `AlphaSynthWebWorklet.init()` and the `AlphaSynthAudioWorkletOutput` class)
+- Create: `packages/alphatab/test/audio/AudioWorkletOutputMedia.test.ts`
+
+**Interfaces:**
+- Consumes: `MediaChunkMarkers` (Task 6); `MediaSampleChunk` (Task 3); `MediaTimestampEventArgs`,
+  `IMediaFollowingOutput` (Task 5); the protocol messages (Task 5).
+- Produces (used by Tasks 15–20): `AlphaSynthAudioWorkletOutput implements IMediaFollowingOutput`, plus
+  `audioContext: AudioContext | null` (internal getter).
+
+§5's three AudioWorklet changes, plus F-8's failure event:
+
+| Change | Why |
+|---|---|
+| Chunk markers record written frames; a `mediaTimestamp` about every 50 ms, only when the block came entirely from stamped chunks; `countInEnd` when the boundary chunk is written, refined every ~50 ms until it is read | exact "media time at `currentFrame`"; the media start is scheduled before the count-in ends |
+| Keep-alive (mixing only): `hold` = silent, no requests, buffer and markers cleared, incoming samples dropped; `resume`; `warmUp()` creates the node early | rebuilding the worklet on every Play made the first click 100–117 ms late (spike finding F7) |
+| `requestedBufferCount` never below 0, **all modes** | a negative count made the worklet over-request forever: overflow dropped, the synth ran ~1.8× fast (finding F8) |
+| `workletFailed` when a worklet operation fails (module load, node creation) | spike 10 §2: today the app hears nothing, the player shows Playing and nothing moves |
+
+`currentFrame` in the AudioWorklet scope: inside `process()` it is the first frame of the block being rendered;
+between blocks (in a message handler) it is the first frame of the next block. That is why the count-in end's
+base frame differs between the two call sites below.
+
+Today's output reports ready before its worklet loads (spike 10 §2). That is **today's bug**: out of scope, don't
+change it. The new `workletFailed` event is only acted on by the combined player.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `packages/alphatab/test/audio/AudioWorkletOutputMedia.test.ts`:
+
+```ts
+/**
+ * The AudioWorklet output while mixing with media: keep-alive, destination, stamps, failures (spec §5).
+ * Web Audio is faked: these tests check the output's own logic, the sync lab checks the real audio.
+ * @target web
+ */
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { AlphaSynthAudioWorkletOutput } from '@coderline/alphatab/platform/javascript/AlphaSynthAudioWorkletOutput';
+import { BrowserUiFacade } from '@coderline/alphatab/platform/javascript/BrowserUiFacade';
+import type { MediaTimestampEventArgs } from '@coderline/alphatab/platform/javascript/MediaSynthTypes';
+import { Settings } from '@coderline/alphatab/Settings';
+import { MediaSampleChunk } from '@coderline/alphatab/synth/MediaSampleOutput';
+
+class FakePort {
+    public readonly posted: { cmd: string }[] = [];
+    private readonly _listeners: ((e: MessageEvent) => void)[] = [];
+    public postMessage(message: { cmd: string }): void {
+        this.posted.push(message);
+    }
+    public addEventListener(_type: string, listener: (e: MessageEvent) => void): void {
+        this._listeners.push(listener);
+    }
+    public removeEventListener(_type: string, listener: (e: MessageEvent) => void): void {
+        const index = this._listeners.indexOf(listener);
+        if (index >= 0) {
+            this._listeners.splice(index, 1);
+        }
+    }
+    public start(): void {}
+    public emit(data: unknown): void {
+        for (const listener of [...this._listeners]) {
+            listener({ data } as MessageEvent);
+        }
+    }
+    public commands(): string[] {
+        return this.posted.map(m => m.cmd);
+    }
+}
+
+class FakeWorkletNode {
+    public static created: FakeWorkletNode[] = [];
+    public readonly port: FakePort = new FakePort();
+    public readonly connectedTo: unknown[] = [];
+    public disconnected: boolean = false;
+    public constructor(_context: unknown, _name: string, _options: unknown) {
+        FakeWorkletNode.created.push(this);
+    }
+    public connect(node: unknown): void {
+        this.connectedTo.push(node);
+    }
+    public disconnect(): void {
+        this.disconnected = true;
+    }
+}
+
+class FakeAudioContext {
+    public state: string = 'running';
+    public sampleRate: number = 48000;
+    public currentTime: number = 0;
+    public readonly destination = { name: 'destination' };
+    public createBuffer(): unknown {
+        return {};
+    }
+    public createBufferSource(): unknown {
+        return { buffer: null, loop: false, start() {}, stop() {}, connect() {}, disconnect() {} };
+    }
+    public resume(): Promise<void> {
+        return Promise.resolve();
+    }
+    public close(): Promise<void> {
+        return Promise.resolve();
+    }
+}
+
+const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+const globals = globalThis as unknown as Record<string, unknown>;
+
+function setGlobal(name: string, value: unknown) {
+    if (value === undefined) {
+        delete globals[name];
+    } else {
+        globals[name] = value;
+    }
+}
+
+describe('AudioWorkletOutputMediaTests', () => {
+    let savedContext: unknown;
+    let savedNode: unknown;
+    let savedLoad: typeof BrowserUiFacade.createAlphaSynthAudioWorklet;
+
+    beforeEach(() => {
+        savedContext = globals.AudioContext;
+        savedNode = globals.AudioWorkletNode;
+        savedLoad = BrowserUiFacade.createAlphaSynthAudioWorklet;
+        setGlobal('AudioContext', FakeAudioContext);
+        setGlobal('AudioWorkletNode', FakeWorkletNode);
+        BrowserUiFacade.createAlphaSynthAudioWorklet = () => Promise.resolve();
+        FakeWorkletNode.created = [];
+    });
+
+    afterEach(() => {
+        setGlobal('AudioContext', savedContext);
+        setGlobal('AudioWorkletNode', savedNode);
+        BrowserUiFacade.createAlphaSynthAudioWorklet = savedLoad;
+    });
+
+    function openOutput(): AlphaSynthAudioWorkletOutput {
+        const output = new AlphaSynthAudioWorkletOutput(new Settings());
+        output.open(500);
+        return output;
+    }
+
+    it('keep-alive-holds-and-resumes-one-node', async () => {
+        const output = openOutput();
+        output.keepAlive = true;
+        output.warmUp();
+        await flush();
+        expect(FakeWorkletNode.created.length).toBe(1);
+        const port = FakeWorkletNode.created[0].port;
+
+        output.play();
+        await flush();
+        output.pause();
+        await flush();
+        output.play();
+        await flush();
+
+        expect(FakeWorkletNode.created.length).toBe(1);
+        expect(port.commands()).toEqual([
+            'alphaSynth.output.hold',
+            'alphaSynth.output.resume',
+            'alphaSynth.output.hold',
+            'alphaSynth.output.resume'
+        ]);
+    });
+
+    it('without-keep-alive-pause-tears-the-node-down-as-today', async () => {
+        const output = openOutput();
+        output.play();
+        await flush();
+        output.pause();
+        await flush();
+        expect(FakeWorkletNode.created[0].disconnected).toBe(true);
+        expect(FakeWorkletNode.created[0].port.commands()).toContain('alphaSynth.output.stop');
+        output.play();
+        await flush();
+        expect(FakeWorkletNode.created.length).toBe(2);
+    });
+
+    it('connects-to-the-destination-node', async () => {
+        const output = openOutput();
+        const synthGain = { name: 'synthGain' } as unknown as AudioNode;
+        output.destinationNode = synthGain;
+        output.keepAlive = true;
+        output.warmUp();
+        await flush();
+        expect(FakeWorkletNode.created[0].connectedTo).toEqual([synthGain]);
+        expect(output.workletNode).toBe(FakeWorkletNode.created[0]);
+    });
+
+    it('worklet-messages-become-events', async () => {
+        const output = openOutput();
+        output.keepAlive = true;
+        output.warmUp();
+        await flush();
+        const stamps: MediaTimestampEventArgs[] = [];
+        const ends: number[] = [];
+        output.mediaTimestamp.on(e => stamps.push(e));
+        output.countInEnd.on(f => ends.push(f));
+        const port = FakeWorkletNode.created[0].port;
+        port.emit({ cmd: 'alphaSynth.output.mediaTimestamp', frame: 4800, mediaTime: 1234.5 });
+        port.emit({ cmd: 'alphaSynth.output.countInEnd', frame: 96000 });
+        expect(stamps.map(s => [s.frame, s.mediaTime])).toEqual([[4800, 1234.5]]);
+        expect(ends).toEqual([96000]);
+    });
+
+    it('stamped-samples-carry-their-media-time', async () => {
+        const output = openOutput();
+        output.play();
+        await flush();
+        const chunk = new MediaSampleChunk();
+        chunk.mediaStart = 100;
+        chunk.mediaPerFrame = 0.02;
+        output.addMediaSamples(new Float32Array(8), chunk);
+        const posted = FakeWorkletNode.created[0].port.posted;
+        expect(posted[posted.length - 1]).toMatchObject({
+            cmd: 'alphaSynth.output.addSamples',
+            mediaStart: 100,
+            mediaPerFrame: 0.02,
+            countInEnd: false
+        });
+    });
+
+    it('a-failed-module-load-raises-worklet-failed', async () => {
+        BrowserUiFacade.createAlphaSynthAudioWorklet = () => Promise.reject(new Error('worklet module 404'));
+        const output = openOutput();
+        const errors: Error[] = [];
+        output.workletFailed.on(e => errors.push(e));
+        output.play();
+        await flush();
+        expect(errors.length).toBe(1);
+        expect(errors[0].message).toContain('404');
+    });
+});
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `npx vitest run test/audio/AudioWorkletOutputMedia.test.ts`
+Expected: FAIL — `keepAlive`, `warmUp`, `mediaTimestamp`, `workletFailed` don't exist.
+
+- [ ] **Step 3: The processor**
+
+In `AlphaSynthWebWorklet.init()` (top of `AlphaSynthAudioWorkletOutput.ts`), declare the scope global next to
+`sampleRate`:
+
+```ts
+/**
+ * @target web
+ * @internal
+ */
+declare let currentFrame: number;
+```
+
+Import `MediaChunkMarkers` at the top of the file. In the processor class add the fields:
+
+```diff
+                 private _requestedBufferCount: number = 0;
+                 private _isStopped = false;
++                private _markers: MediaChunkMarkers = new MediaChunkMarkers();
++                private _framesSinceReport: number = 0;
++                private _isHeld: boolean = false;
+```
+
+Replace the processor's `_handleMessage`:
+
+```ts
+                private _handleMessage(e: MessageEvent<IAlphaSynthWorkerMessage>) {
+                    const data = e.data;
+                    const cmd = data.cmd;
+                    switch (cmd) {
+                        case 'alphaSynth.output.addSamples': {
+                            // never below 0: a negative count over-requests forever, the overflow is dropped
+                            // and the synth runs fast (spike finding F8)
+                            this._requestedBufferCount = Math.max(0, this._requestedBufferCount - 1);
+                            if (this._isHeld) {
+                                break;
+                            }
+                            const f: Float32Array = data.samples;
+                            const written = this._circularBuffer.write(f, 0, f.length);
+                            this._markers.push(
+                                written / SynthConstants.AudioChannels,
+                                data.mediaStart ?? -1,
+                                data.mediaPerFrame ?? 0,
+                                data.countInEnd === true
+                            );
+                            if (data.countInEnd === true) {
+                                // between blocks currentFrame is the next block's first frame
+                                this._reportCountInEnd(currentFrame);
+                            }
+                            break;
+                        }
+                        case 'alphaSynth.output.resetSamples':
+                            this._circularBuffer.clear();
+                            this._markers.clear();
+                            break;
+                        case 'alphaSynth.output.stop':
+                            this._isStopped = true;
+                            break;
+                        case 'alphaSynth.output.hold':
+                            // kept alive while paused (mixing mode): silent, no requests
+                            this._isHeld = true;
+                            this._circularBuffer.clear();
+                            this._markers.clear();
+                            break;
+                        case 'alphaSynth.output.resume':
+                            this._isHeld = false;
+                            break;
+                    }
+                }
+```
+
+In `process()`, after the `if (!left || !right)` check, hold:
+
+```ts
+                    if (this._isHeld) {
+                        left.fill(0);
+                        right.fill(0);
+                        return true;
+                    }
+```
+
+and around the buffer read:
+
+```diff
++                    const mediaTime = this._markers.mediaTimeAtReadPosition();
+                     const samplesFromBuffer = this._circularBuffer.read(
+                         buffer,
+                         0,
+                         Math.min(buffer.length, this._circularBuffer.count)
+                     );
++                    const frames = samplesFromBuffer / SynthConstants.AudioChannels;
++                    const blockStamped = this._markers.consume(frames) && frames === left.length;
+@@
+                     this.port.postMessage({
+                         cmd: 'alphaSynth.output.samplesPlayed',
+                         samples: samplesFromBuffer / SynthConstants.AudioChannels
+                     });
++                    this._reportMediaTime(mediaTime, blockStamped, left.length);
+                     this._requestBuffers();
+```
+
+New processor methods:
+
+```ts
+                private _reportMediaTime(mediaTime: number, blockStamped: boolean, blockFrames: number): void {
+                    // about every 50 ms: "at this context frame I output this media time" (spec §5)
+                    this._framesSinceReport += blockFrames;
+                    if (this._framesSinceReport < sampleRate / 20) {
+                        return;
+                    }
+                    this._framesSinceReport = 0;
+                    if (mediaTime >= 0 && blockStamped) {
+                        this.port.postMessage({
+                            cmd: 'alphaSynth.output.mediaTimestamp',
+                            frame: currentFrame,
+                            mediaTime: mediaTime
+                        });
+                    }
+                    // refine the count-in end while it is still buffered (an underrun moves it);
+                    // in process() the next block starts after this one
+                    this._reportCountInEnd(currentFrame + blockFrames);
+                }
+
+                private _reportCountInEnd(nextBlockFrame: number): void {
+                    const frames = this._markers.framesUntilCountInEnd();
+                    if (frames >= 0) {
+                        this.port.postMessage({ cmd: 'alphaSynth.output.countInEnd', frame: nextBlockFrame + frames });
+                    }
+                }
+```
+
+- [ ] **Step 4: The output class**
+
+```diff
+-export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase {
++export class AlphaSynthAudioWorkletOutput extends AlphaSynthWebAudioOutputBase implements IMediaFollowingOutput {
+     private _worklet: AudioWorkletNode<IAlphaSynthWorkerMessage> | null = null;
++    private _isWarm: boolean = false;
++
++    /**
++     * Keep the worklet between plays (mixing mode): pause holds it silently, play resumes it.
++     * @internal
++     */
++    public keepAlive: boolean = false;
++
++    /**
++     * Where the worklet's output goes (mixing mode: the synth's gain); the context's destination when null.
++     * @internal
++     */
++    public destinationNode: AudioNode | null = null;
++
++    /** @internal */
++    public readonly mediaTimestamp: IEventEmitterOfT<MediaTimestampEventArgs> =
++        new EventEmitterOfT<MediaTimestampEventArgs>();
++    /** @internal */
++    public readonly countInEnd: IEventEmitterOfT<number> = new EventEmitterOfT<number>();
++    /** @internal */
++    public readonly workletFailed: IEventEmitterOfT<Error> = new EventEmitterOfT<Error>();
++
++    /** @internal */
++    public get workletNode(): AudioNode | null {
++        return this._worklet;
++    }
++
++    /**
++     * The AudioContext the synthesizer plays into; the combined player routes the media into it too.
++     * @internal
++     */
++    public get audioContext(): AudioContext | null {
++        return this.context;
++    }
++
++    /**
++     * Creates the worklet now and holds it silent until the first play (warm start, spike finding F7).
++     * @internal
++     */
++    public warmUp(): void {
++        const ctx = this.context;
++        if (!ctx || this._isWarm) {
++            return;
++        }
++        this._isWarm = true;
++        this._enqueue(async () => {
++            if (this._worklet) {
++                return;
++            }
++            await this._start(ctx, []);
++            // _start() assigned it; re-read past the narrowing above
++            const worklet = this._worklet as AudioWorkletNode<IAlphaSynthWorkerMessage> | null;
++            worklet?.port.postMessage({ cmd: 'alphaSynth.output.hold' });
++        });
++    }
+```
+
+`pause()` and `destroy()`:
+
+```diff
+     public override pause(): void {
+         this._pendingEvents = undefined;
++        if (this.keepAlive) {
++            this._enqueue(() => {
++                this._worklet?.port.postMessage({ cmd: 'alphaSynth.output.hold' });
++            });
++            return;
++        }
+         this._enqueue(() => this._stop());
+     }
+ 
+     public override destroy(): void {
++        this.keepAlive = false;
+         // a pending worklet load must not delay the destroy
+         this._destroyed.abort();
+```
+
+`_enqueue` raises the failure:
+
+```diff
+     private _enqueue(operation: () => void | Promise<void>): void {
+         this._operations = this._operations.then(operation).catch(e => {
+             Logger.error('WebAudio', `Audio Worklet operation failed: reason=${e}`);
++            // only the combined player acts on this (F-8); synth-only mode keeps today's behavior
++            (this.workletFailed as EventEmitterOfT<Error>).trigger(e instanceof Error ? e : new Error(String(e)));
+         });
+     }
+```
+
+`_start` resumes a kept node instead of building a second one, and connects to the destination node:
+
+```ts
+    private async _start(ctx: AudioContext, pendingEvents: IAlphaSynthWorkerMessage[]): Promise<void> {
+        let worklet = this._worklet;
+        if (worklet) {
+            // kept alive while paused (mixing mode): resume it before the samples arrive
+            worklet.port.postMessage({ cmd: 'alphaSynth.output.resume' });
+        } else {
+            if (!(await this._loadWorklet(ctx))) {
+                // destroyed while loading
+                return;
+            }
+
+            // create a worklet node which will replace the silence with the generated audio
+            worklet = new AudioWorkletNode(ctx, 'alphatab', {
+                numberOfOutputs: 1,
+                outputChannelCount: [2],
+                processorOptions: {
+                    bufferTimeInMilliseconds: this._bufferTimeInMilliseconds
+                }
+            }) as AudioWorkletNode<IAlphaSynthWorkerMessage>;
+            this._worklet = worklet;
+            worklet.port.addEventListener('message', this._boundHandleMessage);
+            worklet.port.start();
+
+            // created and started together: base pause() must only ever see a started source
+            this.createSource(ctx);
+            this.source!.start(0);
+            this.source!.connect(worklet);
+            worklet.connect(this.destinationNode ?? ctx.destination);
+        }
+
+        for (const e of pendingEvents) {
+            worklet.port.postMessage(e);
+        }
+        if (this._pendingEvents === pendingEvents) {
+            this._pendingEvents = undefined;
+        }
+    }
+```
+
+New messages in the main-side `_handleMessage`, and the stamped samples:
+
+```diff
+             case 'alphaSynth.output.sampleRequest':
+                 this.onSampleRequest();
+                 break;
++            case 'alphaSynth.output.mediaTimestamp':
++                (this.mediaTimestamp as EventEmitterOfT<MediaTimestampEventArgs>).trigger(
++                    new MediaTimestampEventArgs(data.frame, data.mediaTime)
++                );
++                break;
++            case 'alphaSynth.output.countInEnd':
++                (this.countInEnd as EventEmitterOfT<number>).trigger(data.frame);
++                break;
+         }
+```
+
+```ts
+    public addMediaSamples(samples: Float32Array, chunk: MediaSampleChunk): void {
+        this._postWorkerMessage({
+            cmd: 'alphaSynth.output.addSamples',
+            samples: Environment.prepareForPostMessage(samples),
+            mediaStart: chunk.mediaStart,
+            mediaPerFrame: chunk.mediaPerFrame,
+            countInEnd: chunk.countInEnd
+        });
+    }
+```
+
+Imports: `EventEmitterOfT, type IEventEmitterOfT` from `@coderline/alphatab/EventEmitter`; `MediaChunkMarkers`;
+`MediaTimestampEventArgs, type IMediaFollowingOutput` from `MediaSynthTypes`; `type MediaSampleChunk` from
+`@coderline/alphatab/synth/MediaSampleOutput`.
+
+- [ ] **Step 5: Run the tests to see them pass**
+
+Run: `npx vitest run test/audio/AudioWorkletOutputMedia.test.ts`
+Expected: PASS (6 tests).
+
+- [ ] **Step 6: Run the repo gates and commit**
+
+```bash
+npm run lint && npm run typecheck && npm test
+git add packages/alphatab/src/platform/javascript/AlphaSynthAudioWorkletOutput.ts packages/alphatab/test/audio/AudioWorkletOutputMedia.test.ts
+git commit -m "feat(web): worklet media stamps, count-in end, keep-alive; request count never negative (#2397)"
+git push
+```
+
+---
+
+## Phase 3 — Sync logic (pure, web)
+
+### Task 8: `PerSpeedValues` — the straight-line guess (F-9a)
+
+**Files:**
+- Create: `packages/alphatab/src/platform/javascript/PerSpeedValues.ts`
+- Create: `packages/alphatab/test/audio/PerSpeedValues.test.ts`
+
+**Interfaces:**
+- Produces (used by Tasks 9–12, 15): `PerSpeedValues` with `get(speed)`, `set(speed, value)`, `has(speed)`,
+  `delete(speed)`, `size`, `toRecord()`, static `key(speed)`.
+
+F-9a (both apps; our design's problem; spiked: spike 11 §2; confidence Medium): a speed with no value of its own
+(no learned start lead, media-start latency or probe value yet) uses a straight line between the nearest speeds that
+have one. Spike 11: the first start re-synced in 0 of 6 starts with the guess, against 5 of 6 with 0.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `packages/alphatab/test/audio/PerSpeedValues.test.ts`:
+
+```ts
+/**
+ * @target web
+ */
+import { describe, expect, it } from 'vitest';
+import { PerSpeedValues } from '@coderline/alphatab/platform/javascript/PerSpeedValues';
+
+describe('PerSpeedValuesTests', () => {
+    it('nothing-learned-is-0', () => {
+        expect(new PerSpeedValues().get(0.8)).toBe(0);
+    });
+
+    it('a-speed-own-value-wins', () => {
+        const values = new PerSpeedValues();
+        values.set(0.5, -36);
+        values.set(1, 5.7);
+        expect(values.get(0.5)).toBe(-36);
+    });
+
+    it('straight-line-between-learned-speeds', () => {
+        // spike 11 §2: learned start leads 0.5x -36, 0.75x -25.4, 1x +5.7 ms
+        const values = new PerSpeedValues();
+        values.set(0.5, -36);
+        values.set(0.75, -25.4);
+        values.set(1, 5.7);
+        expect(values.get(0.625)).toBeCloseTo(-30.7, 6);
+        expect(values.get(0.875)).toBeCloseTo(-9.85, 6);
+    });
+
+    it('nearest-value-outside-the-learned-speeds', () => {
+        const values = new PerSpeedValues();
+        values.set(0.5, -36);
+        values.set(1, 5.7);
+        expect(values.get(0.25)).toBe(-36);
+        expect(values.get(1.5)).toBe(5.7);
+    });
+
+    it('guess-stays-within-spike-5-error-for-probe-values', () => {
+        // spec §6.4: probe values 1x 0, 0.5x 60, 0.75x 27, 1.25x -4, 1.5x -4 ms; measured at unprobed speeds
+        const values = new PerSpeedValues();
+        values.set(1, 0);
+        values.set(0.5, 60);
+        values.set(0.75, 27);
+        values.set(1.25, -4);
+        values.set(1.5, -4);
+        const measured: [number, number][] = [
+            [0.6, 54],
+            [0.83, 20],
+            [0.9, 18],
+            [1.1, -4]
+        ];
+        for (const [speed, latency] of measured) {
+            expect(Math.abs(values.get(speed) - latency)).toBeLessThanOrEqual(7.3);
+        }
+    });
+
+    it('speed-keys-ignore-float-noise', () => {
+        const values = new PerSpeedValues();
+        values.set(0.1 + 0.2, 5);
+        expect(values.has(0.3)).toBe(true);
+        expect(values.get(0.3)).toBe(5);
+        values.delete(0.3);
+        expect(values.size).toBe(0);
+    });
+});
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `npx vitest run test/audio/PerSpeedValues.test.ts`
+Expected: FAIL — cannot resolve `PerSpeedValues`.
+
+- [ ] **Step 3: Implement**
+
+Create `packages/alphatab/src/platform/javascript/PerSpeedValues.ts`:
+
+```ts
+/**
+ * A value per playback speed (a start lead, a media-start latency, a media latency). A speed without a value of
+ * its own gets a straight-line guess between the nearest speeds that have one; outside them, the nearest value;
+ * with none, 0 (spec §6.4, F-9a).
+ * @target web
+ * @internal
+ */
+export class PerSpeedValues {
+    private _values: Map<number, number> = new Map<number, number>();
+
+    /**
+     * Speeds are keyed to 4 decimals: 1-BPM steps (about 0.007x) stay apart, float noise doesn't.
+     */
+    public static key(speed: number): number {
+        return Math.round(speed * 10000) / 10000;
+    }
+
+    public get size(): number {
+        return this._values.size;
+    }
+
+    public has(speed: number): boolean {
+        return this._values.has(PerSpeedValues.key(speed));
+    }
+
+    public set(speed: number, value: number): void {
+        this._values.set(PerSpeedValues.key(speed), value);
+    }
+
+    public delete(speed: number): void {
+        this._values.delete(PerSpeedValues.key(speed));
+    }
+
+    public get(speed: number): number {
+        const key = PerSpeedValues.key(speed);
+        const own = this._values.get(key);
+        if (own !== undefined) {
+            return own;
+        }
+        if (this._values.size === 0) {
+            return 0;
+        }
+        const speeds = Array.from(this._values.keys()).sort((a, b) => a - b);
+        if (key <= speeds[0]) {
+            return this._values.get(speeds[0])!;
+        }
+        const last = speeds[speeds.length - 1];
+        if (key >= last) {
+            return this._values.get(last)!;
+        }
+        let i = 0;
+        while (speeds[i + 1] < key) {
+            i++;
+        }
+        const a = speeds[i];
+        const b = speeds[i + 1];
+        const valueA = this._values.get(a)!;
+        const valueB = this._values.get(b)!;
+        return valueA + ((key - a) / (b - a)) * (valueB - valueA);
+    }
+
+    /**
+     * The values by speed, rounded to 0.1 (diagnostics).
+     */
+    public toRecord(): Record<string, number> {
+        const record: Record<string, number> = {};
+        for (const [speed, value] of this._values) {
+            record[String(speed)] = Math.round(value * 10) / 10;
+        }
+        return record;
+    }
+}
+```
+
+- [ ] **Step 4: Run the tests to see them pass**
+
+Run: `npx vitest run test/audio/PerSpeedValues.test.ts`
+Expected: PASS (6 tests).
+
+- [ ] **Step 5: Run the repo gates and commit**
+
+```bash
+npm run lint && npm run typecheck && npm test
+git add packages/alphatab/src/platform/javascript/PerSpeedValues.ts packages/alphatab/test/audio/PerSpeedValues.test.ts
+git commit -m "feat(web): per-speed values with a straight-line guess for unlearned speeds (#2397, F-9a)"
+git push
+```
+
+---
+
+### Task 9: `MediaSyncController` — readings, nudge, re-sync, thresholds (F-3)
+
+**Files:**
+- Create: `packages/alphatab/src/platform/javascript/MediaSyncController.ts`
+- Create: `packages/alphatab/test/audio/MediaSyncController.test.ts`
+
+**Interfaces:**
+- Consumes: `PerSpeedValues` (Task 8).
+- Produces (used by Tasks 10, 15–19): `MediaSyncConstants`, `IMediaSyncSynth`, `IMediaSyncClock`, `IMediaSyncTime`,
+  `MediaSyncStats` (`resyncTimes`, `driftLog`, `resyncLeadMs`), `MediaSyncDriftEntry`, `MediaSyncController` with
+  `startedAfterHandOff(speed, learnMediaStartLatency)`, `stopped()`, `resync()`, `speedChanged(speed)`,
+  `latencyChanged()`, `onStamp(frame, synthMediaTime)`, `settleThreshold(speed)`, `baseLatencyMs`, `speed`,
+  `correction`, `isActive`, `isSettling`, `startLeads`, `mediaStartLatencies`.
+
+The rules (§6.2): act only on two consecutive readings that agree within 3 ms (their mean). Settle for 1.5 s after
+a play, seek or speed change. Re-sync while settling above 12 ms at 1× and 15 ms elsewhere, and above 120 ms once
+locked. Nudge `correction = 1 − clamp(EMA(drift) / 3000 ms, ±2 %)` with EMA factor 0.3; while settling at 1× the
+gain is 300 ms (spike 4: 0 re-syncs in 30 starts). Re-sync lead learned from the first agreed reading after each
+re-sync (0–100 ms). **F-3** (both; our design's problem; not spiked; Low): the 1× settle threshold is
+max(12 ms, 2 × `baseLatency` + 1 ms). That equals 12 ms on every machine measured so far (Chrome on macOS:
+`baseLatency` ≤ 5.3 ms); Task 23 runs a higher one (D-2). **G-2:** stamps are ignored for 200 ms after a re-sync.
+**Speed change** (§6.2, spike 11 §1, High): always re-sync, because every change puts Chrome's media 15–43 ms behind
+the synth.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `packages/alphatab/test/audio/MediaSyncController.test.ts`:
+
+```ts
+/**
+ * The sync rules (spec §6.2), fed with readings.
+ * @target web
+ */
+import { describe, expect, it } from 'vitest';
+import {
+    type IMediaSyncClock,
+    type IMediaSyncSynth,
+    type IMediaSyncTime,
+    MediaSyncController
+} from '@coderline/alphatab/platform/javascript/MediaSyncController';
+
+class FakeSyncSynth implements IMediaSyncSynth {
+    public readonly seeks: number[] = [];
+    public readonly corrections: number[] = [];
+    public seekToMediaTime(mediaTime: number): void {
+        this.seeks.push(mediaTime);
+    }
+    public setRateCorrection(factor: number): void {
+        this.corrections.push(factor);
+    }
+}
+
+/**
+ * Media time 10000 ms at frame 0, 48 frames per ms; "now" is 12345 ms.
+ */
+class FakeSyncClock implements IMediaSyncClock {
+    public valid: boolean = true;
+    public now: number = 12345;
+    public mediaTimeAt(frame: number): number {
+        return this.valid ? 10000 + frame / 48 : Number.NaN;
+    }
+    public mediaTimeNow(): number {
+        return this.valid ? this.now : Number.NaN;
+    }
+}
+
+class FakeSyncTime implements IMediaSyncTime {
+    public t: number = 0;
+    public now(): number {
+        return this.t;
+    }
+}
+
+function setup() {
+    const synth = new FakeSyncSynth();
+    const clock = new FakeSyncClock();
+    const time = new FakeSyncTime();
+    const controller = new MediaSyncController(synth, clock, time);
+    let frame = 0;
+    // one worklet stamp every 50 ms whose synth media time is `drift` ms off the media
+    const stamp = (drift: number) => {
+        time.t += 50;
+        frame += 2400;
+        controller.onStamp(frame, clock.mediaTimeAt(frame) + drift);
+    };
+    return { synth, clock, time, controller, stamp };
+}
+
+function settled(speed = 1) {
+    const s = setup();
+    s.controller.startedAfterHandOff(speed, false);
+    s.time.t += 2000;
+    return s;
+}
+
+describe('MediaSyncControllerTests', () => {
+    it('acts-only-on-two-readings-that-agree', () => {
+        const s = settled();
+        s.stamp(200);
+        s.stamp(150);
+        expect(s.synth.seeks).toEqual([]);
+        s.stamp(151); // 150 and 151 agree: mean 150.5 > 120
+        expect(s.synth.seeks).toEqual([12345 + 10]); // the media now + the initial re-sync lead
+    });
+
+    it('settle-threshold-is-12-ms-at-1x-and-15-elsewhere', () => {
+        const { controller } = setup();
+        expect(controller.settleThreshold(1)).toBe(12);
+        expect(controller.settleThreshold(0.5)).toBe(15);
+        expect(controller.settleThreshold(1.5)).toBe(15);
+    });
+
+    it('settle-threshold-at-1x-grows-with-the-base-latency', () => {
+        // F-3: max(12, 2 x baseLatency + 1)
+        const { controller } = setup();
+        controller.baseLatencyMs = 2.7;
+        expect(controller.settleThreshold(1)).toBe(12);
+        controller.baseLatencyMs = 8;
+        expect(controller.settleThreshold(1)).toBe(17);
+        expect(controller.settleThreshold(0.5)).toBe(15);
+    });
+
+    it('re-syncs-above-the-settle-threshold-while-settling', () => {
+        const atOne = setup();
+        atOne.controller.startedAfterHandOff(1, false);
+        atOne.stamp(13);
+        atOne.stamp(13.5); // 13.25 > 12
+        expect(atOne.synth.seeks.length).toBe(1);
+
+        const atHalf = setup();
+        atHalf.controller.startedAfterHandOff(0.5, false);
+        atHalf.stamp(14);
+        atHalf.stamp(14.5); // 14.25 < 15
+        expect(atHalf.synth.seeks.length).toBe(0);
+    });
+
+    it('locked-threshold-is-120-ms', () => {
+        const s = settled();
+        s.stamp(100);
+        s.stamp(101);
+        expect(s.synth.seeks.length).toBe(0);
+    });
+
+    it('nudge-slows-a-synth-that-is-ahead', () => {
+        const s = settled();
+        s.stamp(30);
+        expect(s.synth.corrections[s.synth.corrections.length - 1]).toBeCloseTo(1 - 30 / 3000, 9);
+        expect(s.controller.correction).toBeCloseTo(0.99, 9);
+    });
+
+    it('nudge-is-clamped-to-2-percent', () => {
+        const s = settled();
+        s.stamp(100);
+        expect(s.controller.correction).toBeCloseTo(0.98, 9);
+        const behind = settled();
+        behind.stamp(-100);
+        expect(behind.controller.correction).toBeCloseTo(1.02, 9);
+    });
+
+    it('settling-nudge-at-1x-is-faster', () => {
+        const atOne = setup();
+        atOne.controller.startedAfterHandOff(1, false);
+        atOne.stamp(3); // one reading while settling: wait
+        expect(atOne.synth.corrections).toEqual([]);
+        atOne.stamp(3);
+        expect(atOne.controller.correction).toBeCloseTo(1 - 3 / 300, 9);
+
+        const atHalf = setup();
+        atHalf.controller.startedAfterHandOff(0.5, false);
+        atHalf.stamp(3);
+        atHalf.stamp(3);
+        expect(atHalf.controller.correction).toBeCloseTo(1 - 3 / 3000, 9);
+    });
+
+    it('ignores-readings-for-200-ms-after-a-re-sync', () => {
+        // G-2: stamps rendered before the jump can still arrive
+        const s = settled();
+        s.controller.resync();
+        const corrections = s.synth.corrections.length;
+        s.stamp(500);
+        s.stamp(500);
+        s.stamp(500);
+        expect(s.synth.seeks.length).toBe(1);
+        expect(s.synth.corrections.length).toBe(corrections);
+    });
+
+    it('learns-the-re-sync-lead-from-the-first-agreed-reading', () => {
+        const s = settled();
+        s.controller.resync();
+        s.time.t += 150;
+        s.stamp(4); // t = resync + 200: read again
+        s.stamp(4); // agreed +4: the synth came out 4 ms ahead
+        expect(s.controller.stats.resyncLeadMs).toBe(6);
+        s.controller.resync();
+        expect(s.synth.seeks[s.synth.seeks.length - 1]).toBe(12345 + 6);
+    });
+
+    it('a-jumpy-clock-must-not-re-sync', () => {
+        const s = settled();
+        for (let i = 0; i < 6; i++) {
+            s.stamp(i % 2 === 0 ? 130 : 10);
+        }
+        expect(s.synth.seeks).toEqual([]);
+    });
+
+    it('re-syncs-later-when-the-media-gives-no-time', () => {
+        const s = settled();
+        s.clock.valid = false;
+        s.controller.resync();
+        expect(s.synth.seeks).toEqual([]);
+        s.clock.valid = true;
+        s.stamp(0);
+        expect(s.synth.seeks).toEqual([12345 + 10]);
+    });
+
+    it('speed-change-re-syncs-and-settles', () => {
+        // spike 11 §1: every change puts Chrome's media 15-43 ms behind the synth
+        const s = settled();
+        s.controller.speedChanged(0.75);
+        expect(s.synth.seeks).toEqual([12345 + 10 * 0.75]);
+        expect(s.controller.isSettling).toBe(true);
+        expect(s.controller.speed).toBe(0.75);
+    });
+
+    it('stopped-ignores-stamps', () => {
+        const s = settled();
+        s.controller.stopped();
+        s.stamp(500);
+        s.stamp(500);
+        expect(s.synth.seeks).toEqual([]);
+        expect(s.controller.isActive).toBe(false);
+    });
+
+    it('drift-log-stays-off-unless-turned-on', () => {
+        const s = settled();
+        s.stamp(5);
+        expect(s.controller.stats.driftLog).toBe(null);
+        s.controller.stats.driftLog = [];
+        s.stamp(5);
+        expect(s.controller.stats.driftLog.length).toBe(1);
+    });
+});
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `npx vitest run test/audio/MediaSyncController.test.ts`
+Expected: FAIL — cannot resolve `MediaSyncController`.
+
+- [ ] **Step 3: Implement**
+
+Create `packages/alphatab/src/platform/javascript/MediaSyncController.ts`:
+
+```ts
+import { PerSpeedValues } from '@coderline/alphatab/platform/javascript/PerSpeedValues';
+
+/**
+ * The sync rules' values (spec §6.2) and the spike values the spec doesn't list (gaps G-2 to G-5).
+ * @target web
+ * @internal
+ */
+export class MediaSyncConstants {
+    /** Act only on two consecutive readings that agree within this (their mean is used). */
+    public static readonly AgreementMs: number = 3;
+    public static readonly SettleDurationMs: number = 1500;
+    /** At 1×: above two of Chrome's 5.3 ms <audio> start steps. F-3 raises it with the base latency. */
+    public static readonly SettleResyncThresholdAt1xMs: number = 12;
+    /** At other speeds: the time-stretch jitter. */
+    public static readonly SettleResyncThresholdMs: number = 15;
+    public static readonly LockedResyncThresholdMs: number = 120;
+    public static readonly NudgeGainMs: number = 3000;
+    /** While settling at 1×: small offsets are closed by a faster nudge, not a re-sync (spike 4). */
+    public static readonly SettleNudgeGainAt1xMs: number = 300;
+    public static readonly NudgeMaxCorrection: number = 0.02;
+    public static readonly NudgeEmaFactor: number = 0.3;
+    public static readonly MinCorrectionChange: number = 0.0002;
+    public static readonly ResyncLeadInitialMs: number = 10;
+    public static readonly ResyncLeadMaxMs: number = 100;
+    /** G-2: stamps rendered before a re-sync can still arrive; ignore them for this long. */
+    public static readonly IgnoreAfterResyncMs: number = 200;
+    /** G-4: the clamps of the learned values. */
+    public static readonly StartLeadMinMs: number = -50;
+    public static readonly StartLeadMaxMs: number = 150;
+    public static readonly MediaStartLatencyMinMs: number = -50;
+    public static readonly MediaStartLatencyMaxMs: number = 250;
+    /** At speeds other than 1× both start this much media time before the target (spikes 4 and 6). */
+    public static readonly PreRollMs: number = 60;
+    /** F-14 (decision D-3): the count-in's media pre-roll below 1× (spike 6). */
+    public static readonly CountInPreRollBelow1xMs: number = 120;
+    /** The media starts anyway when the count-in's end hasn't come by its length plus this (§6.2). */
+    public static readonly CountInTimeLimitExtraMs: number = 250;
+    /** G-5: the hand-off timer fires this early, then waits on the audio clock for at most HandOffSpinMaxMs. */
+    public static readonly HandOffEarlyMs: number = 12;
+    public static readonly HandOffSpinMaxMs: number = 30;
+    /** G-3: the loop-wrap timer fires this much media time before the range end. */
+    public static readonly LoopWrapLeadMs: number = 15;
+    /** R-2 safety net: after its play() the media must run within this. */
+    public static readonly MediaStartCheckMs: number = 500;
+}
+
+/**
+ * What the controller tells the synthesizer.
+ * @target web
+ * @internal
+ */
+export interface IMediaSyncSynth {
+    seekToMediaTime(mediaTime: number): void;
+    setRateCorrection(factor: number): void;
+}
+
+/**
+ * The media clock as the controller reads it (spec §6.3).
+ * @target web
+ * @internal
+ */
+export interface IMediaSyncClock {
+    /**
+     * The media time (ms) heard at the given context frame, or NaN while the media gives no reliable time
+     * (paused, seeking, stalled).
+     */
+    mediaTimeAt(frame: number): number;
+    /**
+     * The media time (ms) heard now, or NaN (as above).
+     */
+    mediaTimeNow(): number;
+}
+
+/**
+ * @target web
+ * @internal
+ */
+export interface IMediaSyncTime {
+    /**
+     * Milliseconds, monotonic.
+     */
+    now(): number;
+}
+
+/**
+ * One reading, for the sync lab.
+ * @target web
+ * @internal
+ */
+export class MediaSyncDriftEntry {
+    public readonly time: number;
+    public readonly drift: number;
+    public readonly correction: number;
+    public readonly action: string;
+
+    public constructor(time: number, drift: number, correction: number, action: string) {
+        this.time = time;
+        this.drift = drift;
+        this.correction = correction;
+        this.action = action;
+    }
+}
+
+/**
+ * @target web
+ * @internal
+ */
+export class MediaSyncStats {
+    public readonly resyncTimes: number[] = [];
+    /**
+     * Off (null) unless the sync lab turns it on: it grows with every reading.
+     */
+    public driftLog: MediaSyncDriftEntry[] | null = null;
+    public resyncLeadMs: number = MediaSyncConstants.ResyncLeadInitialMs;
+}
+
+/**
+ * Keeps the synthesizer on the media's clock (spec §6.2): compares the worklet's stamps with the media clock,
+ * nudges the synthesizer's rate, re-syncs above a threshold, learns the start values, and plans the handshakes.
+ * Pure logic.
+ * @target web
+ * @internal
+ */
+export class MediaSyncController {
+    public readonly startLeads: PerSpeedValues = new PerSpeedValues();
+    public readonly mediaStartLatencies: PerSpeedValues = new PerSpeedValues();
+    public readonly stats: MediaSyncStats = new MediaSyncStats();
+
+    /**
+     * The AudioContext's base latency in ms; the settle threshold at 1× grows with it (F-3).
+     */
+    public baseLatencyMs: number = 0;
+
+    private readonly _synth: IMediaSyncSynth;
+    private readonly _clock: IMediaSyncClock;
+    private readonly _time: IMediaSyncTime;
+    private _speed: number = 1;
+    private _active: boolean = false;
+    private _window: number[] = [];
+    private _ema: number = Number.NaN;
+    private _correction: number = 1;
+    private _resyncLead: number = MediaSyncConstants.ResyncLeadInitialMs;
+    private _settleUntil: number = 0;
+    private _ignoreUntil: number = 0;
+    private _resyncPending: boolean = false;
+    private _learnResyncLead: boolean = false;
+    private _learnMediaStartLatency: boolean = false;
+
+    public constructor(synth: IMediaSyncSynth, clock: IMediaSyncClock, time: IMediaSyncTime) {
+        this._synth = synth;
+        this._clock = clock;
+        this._time = time;
+    }
+
+    public get speed(): number {
+        return this._speed;
+    }
+
+    public get correction(): number {
+        return this._correction;
+    }
+
+    public get isActive(): boolean {
+        return this._active;
+    }
+
+    public get isSettling(): boolean {
+        return this._time.now() < this._settleUntil;
+    }
+
+    /**
+     * The re-sync threshold while settling (ms).
+     */
+    public settleThreshold(speed: number): number {
+        if (speed === 1) {
+            return Math.max(MediaSyncConstants.SettleResyncThresholdAt1xMs, 2 * this.baseLatencyMs + 1);
+        }
+        return MediaSyncConstants.SettleResyncThresholdMs;
+    }
+
+    /**
+     * The media started after a count-in, by itself (external media) or after an external seek: act on the
+     * stamps, settling first. With `learnMediaStartLatency` the first agreed reading tunes when the media's
+     * play() is issued next time at this speed.
+     */
+    public startedAfterHandOff(speed: number, learnMediaStartLatency: boolean): void {
+        this._begin(speed);
+        this._learnMediaStartLatency = learnMediaStartLatency;
+    }
+
+    public stopped(): void {
+        this._active = false;
+        this._clearReadings();
+        this._resyncPending = false;
+    }
+
+    /**
+     * Speed change while playing: re-sync and settle (§6.2).
+     */
+    public speedChanged(speed: number): void {
+        this._speed = speed;
+        if (!this._active) {
+            return;
+        }
+        this._settleUntil = this._time.now() + MediaSyncConstants.SettleDurationMs;
+        this.resync();
+    }
+
+    /**
+     * A measured media latency replaced the guess for the current speed while playing (F-9a, decision D-1):
+     * settle; the drift rules re-sync only if the agreed drift then exceeds the settle threshold.
+     */
+    public latencyChanged(): void {
+        if (!this._active) {
+            return;
+        }
+        this._settleUntil = this._time.now() + MediaSyncConstants.SettleDurationMs;
+        this._clearReadings();
+    }
+
+    /**
+     * Moves the synthesizer to the media's time now (plus the learned re-sync lead). Waits for the next reading
+     * when the media gives no time yet.
+     */
+    public resync(): void {
+        const mediaTime = this._clock.mediaTimeNow();
+        if (Number.isNaN(mediaTime)) {
+            this._resyncPending = true;
+            return;
+        }
+        this._resyncPending = false;
+        this._clearReadings();
+        this._synth.seekToMediaTime(mediaTime + this._resyncLead * this._speed);
+        const now = this._time.now();
+        this._ignoreUntil = now + MediaSyncConstants.IgnoreAfterResyncMs;
+        this._learnResyncLead = true;
+        this.stats.resyncTimes.push(now);
+    }
+
+    /**
+     * A worklet stamp: at context frame `frame` the synthesizer outputs media time `synthMediaTime`.
+     */
+    public onStamp(frame: number, synthMediaTime: number): void {
+        if (!this._active) {
+            return;
+        }
+        const now = this._time.now();
+        if (now < this._ignoreUntil) {
+            return;
+        }
+        const mediaAtFrame = this._clock.mediaTimeAt(frame);
+        if (Number.isNaN(mediaAtFrame)) {
+            return;
+        }
+        if (this._resyncPending) {
+            this.resync();
+            return;
+        }
+
+        const speed = this._speed;
+        const drift = synthMediaTime - mediaAtFrame;
+        const settling = now < this._settleUntil;
+        const window = this._window;
+        window.push(drift);
+        if (window.length > 3) {
+            window.shift();
+        }
+        const agreed = this._agreed();
+        const hasAgreed = !Number.isNaN(agreed);
+        let action = '';
+
+        if (this._learnResyncLead && hasAgreed) {
+            this._learnResyncLead = false;
+            this._resyncLead = MediaSyncController._clamp(
+                this._resyncLead - agreed / speed,
+                0,
+                MediaSyncConstants.ResyncLeadMaxMs
+            );
+            this.stats.resyncLeadMs = this._resyncLead;
+        }
+
+        const threshold = settling ? this.settleThreshold(speed) : MediaSyncConstants.LockedResyncThresholdMs;
+        if (hasAgreed && Math.abs(agreed) > threshold) {
+            action = 'resync';
+            this.resync();
+        } else if (!hasAgreed && settling) {
+            action = 'wait';
+        } else {
+            action = this._nudge(drift, settling && speed === 1);
+        }
+        this.stats.driftLog?.push(new MediaSyncDriftEntry(now, drift, this._correction, action));
+    }
+
+    private _begin(speed: number): void {
+        this._speed = speed;
+        this._active = true;
+        this._clearReadings();
+        this._resyncPending = false;
+        this._learnResyncLead = false;
+        this._learnMediaStartLatency = false;
+        this._ignoreUntil = 0;
+        this._settleUntil = this._time.now() + MediaSyncConstants.SettleDurationMs;
+        // followMedia() resets the synthesizer's correction at every start
+        this._correction = 1;
+    }
+
+    private _clearReadings(): void {
+        this._window = [];
+        this._ema = Number.NaN;
+    }
+
+    private _agreed(): number {
+        const window = this._window;
+        const n = window.length;
+        if (n < 2 || Math.abs(window[n - 1] - window[n - 2]) >= MediaSyncConstants.AgreementMs) {
+            return Number.NaN;
+        }
+        return (window[n - 1] + window[n - 2]) / 2;
+    }
+
+    private _nudge(drift: number, fast: boolean): string {
+        this._ema = Number.isNaN(this._ema)
+            ? drift
+            : this._ema + (drift - this._ema) * MediaSyncConstants.NudgeEmaFactor;
+        const gain = fast ? MediaSyncConstants.SettleNudgeGainAt1xMs : MediaSyncConstants.NudgeGainMs;
+        const max = MediaSyncConstants.NudgeMaxCorrection;
+        const correction = 1 - MediaSyncController._clamp(this._ema / gain, -max, max);
+        if (Math.abs(correction - this._correction) <= MediaSyncConstants.MinCorrectionChange) {
+            return '';
+        }
+        this._correction = correction;
+        this._synth.setRateCorrection(correction);
+        return 'nudge';
+    }
+
+    private static _clamp(value: number, min: number, max: number): number {
+        return Math.max(min, Math.min(max, value));
+    }
+}
+```
+
+- [ ] **Step 4: Run the tests to see them pass**
+
+Run: `npx vitest run test/audio/MediaSyncController.test.ts`
+Expected: PASS (15 tests).
+
+- [ ] **Step 5: Run the repo gates and commit**
+
+```bash
+npm run lint && npm run typecheck && npm test
+git add packages/alphatab/src/platform/javascript/MediaSyncController.ts packages/alphatab/test/audio/MediaSyncController.test.ts
+git commit -m "feat(web): media sync controller: agreement, nudge, re-sync, thresholds (#2397)"
+git push
+```
+
+---
+
+### Task 10: `MediaSyncController` — start handshake, learning, count-in hand-off (F-9a, F-14)
+
+**Files:**
+- Modify: `packages/alphatab/src/platform/javascript/MediaSyncController.ts`
+- Modify: `packages/alphatab/test/audio/MediaSyncController.test.ts`
+
+**Interfaces:**
+- Consumes: Task 9's controller and constants; `PerSpeedValues`.
+- Produces (used by Tasks 16–19): `MediaStartPlan` (`speed`, `target`, `mediaSeekTo`, `synthSeekTo`, `mediaDelayMs`,
+  `catchUpGapMs`); `planStart(target, speed, mediaLatencyMs)`; `started(plan, learnStartLead)`;
+  `handOffPlayTime(countInEndFrame, sampleRate, speed, preRollMediaMs)`; `static preRoll(speed, countIn)`.
+
+The start handshake (§6.2), one learned start lead L per speed (the straight-line guess before it is learned, F-9a).
+L > 0 means the synth is the slower one, so the media start is delayed by L. L < 0 means the synth starts |L|
+earlier in the song.
+
+- At 1×, the synth starts **at** the target and never past it. A positive media latency is caught up by the settle
+  nudge, so the threshold allows that gap until the drift is within 2 ms.
+- At other speeds both start 60 ms of media time early, and the synth starts where the media will be heard
+  (latency applied).
+- L is learned from the median of the first three readings after Play. If a re-sync comes first, it is learned from
+  that reading instead.
+- Count-in hand-off: `play()` at `countInEndFrame / sampleRate − (mediaStartLatency(speed) + preRoll / speed)`. The
+  media-start latency is learned from the first agreed reading.
+
+**F-14** (both; our design's problem; spiked in spike 6 with an emulated count-in; Medium): the count-in pre-roll
+below 1× is 120 ms (0.5× downbeat +4.5…+13.9 ms; 60 ms gave +7.2…+20.5 ms). Decision D-3 re-measures it with the
+real count-in.
+
+- [ ] **Step 1: Write the failing tests**
+
+Add to `MediaSyncController.test.ts` (import `MediaStartPlan` too):
+
+```ts
+describe('MediaSyncControllerStartTests', () => {
+    it('start-at-1x-is-at-the-target-never-past-it', () => {
+        const { controller } = setup();
+        let plan = controller.planStart(5000, 1, 0);
+        expect([plan.mediaSeekTo, plan.synthSeekTo, plan.mediaDelayMs, plan.catchUpGapMs]).toEqual([5000, 5000, 0, 0]);
+
+        plan = controller.planStart(5000, 1, 3); // a positive latency at 1x: caught up, never pre-rolled past
+        expect([plan.synthSeekTo, plan.catchUpGapMs]).toEqual([5000, 3]);
+
+        controller.startLeads.set(1, 8); // the synth is slower: delay the media
+        plan = controller.planStart(5000, 1, 0);
+        expect([plan.synthSeekTo, plan.mediaDelayMs]).toEqual([5000, 8]);
+
+        controller.startLeads.set(1, -6); // the media is slower: the synth starts earlier in the song
+        plan = controller.planStart(5000, 1, 0);
+        expect([plan.synthSeekTo, plan.mediaDelayMs]).toEqual([4994, 0]);
+    });
+
+    it('start-at-other-speeds-pre-rolls-and-starts-the-synth-where-the-media-is-heard', () => {
+        const { controller } = setup();
+        let plan = controller.planStart(5000, 0.5, 60); // spec §6.4: 0.5x latency 60 ms
+        expect(plan.mediaSeekTo).toBe(4940);
+        expect(plan.synthSeekTo).toBe(4940 + 60 * 0.5);
+        expect(plan.synthSeekTo).toBeLessThan(5000);
+        plan = controller.planStart(5000, 1.5, -4);
+        expect(plan.mediaSeekTo).toBe(4940);
+        expect(plan.synthSeekTo).toBeCloseTo(4940 - 6, 9);
+    });
+
+    it('an-unlearned-speed-uses-the-straight-line-guess', () => {
+        // F-9a, spike 11 §2
+        const { controller } = setup();
+        controller.startLeads.set(0.5, -36);
+        controller.startLeads.set(0.75, -25.4);
+        controller.startLeads.set(1, 5.7);
+        const plan = controller.planStart(5000, 0.625, 0);
+        expect(plan.synthSeekTo).toBeCloseTo(4940 - 30.7 * 0.625, 6);
+        expect(plan.mediaDelayMs).toBe(0);
+    });
+
+    it('learns-the-start-lead-from-the-median-of-the-first-three-readings', () => {
+        const s = setup();
+        s.controller.started(s.controller.planStart(5000, 1, 0), true);
+        s.stamp(-4);
+        s.stamp(-6);
+        expect(s.synth.corrections).toEqual([]); // waiting for three readings
+        s.stamp(-5); // median -5: the synth started 5 ms behind
+        expect(s.controller.startLeads.get(1)).toBe(5);
+    });
+
+    it('start-lead-is-per-speed-and-clamped', () => {
+        const s = setup();
+        s.controller.started(s.controller.planStart(5000, 0.5, 0), true);
+        s.stamp(-14);
+        s.stamp(-14.5);
+        s.stamp(-14.2);
+        expect(s.controller.startLeads.get(0.5)).toBeCloseTo(14.2 / 0.5, 9);
+        expect(s.controller.startLeads.has(1)).toBe(false);
+
+        const far = setup();
+        far.controller.started(far.controller.planStart(5000, 0.5, 0), true);
+        far.stamp(-200);
+        far.stamp(-201);
+        expect(far.controller.startLeads.get(0.5)).toBe(150); // G-4 clamp
+    });
+
+    it('a-re-sync-before-three-readings-learns-from-the-agreed-offset', () => {
+        const s = setup();
+        s.controller.started(s.controller.planStart(5000, 1, 0), true);
+        s.stamp(20);
+        s.stamp(21); // 20.5 > 12 while settling
+        expect(s.synth.seeks.length).toBe(1);
+        expect(s.controller.startLeads.get(1)).toBeCloseTo(-20.5, 9);
+    });
+
+    it('the-catch-up-gap-raises-the-settle-threshold-until-caught-up', () => {
+        const s = setup();
+        s.controller.started(s.controller.planStart(5000, 1, 10), false); // gap 10 ms
+        s.stamp(-15);
+        s.stamp(-15.5); // |-15.25| < 12 + 10: nudge (speed up), no re-sync
+        expect(s.synth.seeks).toEqual([]);
+        expect(s.controller.correction).toBeGreaterThan(1);
+        s.stamp(-1);
+        s.stamp(-1.5); // caught up (within 2 ms): the gap no longer counts
+        s.stamp(-13);
+        s.stamp(-13.5); // 13.25 > 12
+        expect(s.synth.seeks.length).toBe(1);
+    });
+
+    it('the-media-delay-is-ignored-until-the-media-starts', () => {
+        const s = setup();
+        s.controller.startLeads.set(1, 100);
+        s.controller.started(s.controller.planStart(5000, 1, 0), false);
+        s.stamp(500);
+        s.stamp(500); // within the 100 ms media delay
+        expect(s.synth.seeks).toEqual([]);
+    });
+
+    it('learns-the-media-start-latency-after-a-hand-off', () => {
+        const s = setup();
+        s.controller.startedAfterHandOff(1, true);
+        s.stamp(7);
+        s.stamp(8); // the media started 7.5 ms late: issue play() earlier next time
+        expect(s.controller.mediaStartLatencies.get(1)).toBe(7.5);
+
+        const fast = setup();
+        fast.controller.startedAfterHandOff(1.5, true);
+        fast.stamp(3);
+        fast.stamp(3);
+        expect(fast.controller.mediaStartLatencies.get(1.5)).toBeCloseTo(2, 9);
+    });
+
+    it('hand-off-play-time-subtracts-the-latency-and-the-pre-roll', () => {
+        const { controller } = setup();
+        controller.mediaStartLatencies.set(0.5, 20);
+        expect(controller.handOffPlayTime(96000, 48000, 0.5, 120)).toBeCloseTo(2 - (20 + 240) / 1000, 12);
+    });
+
+    it('pre-roll-rules', () => {
+        expect(MediaSyncController.preRoll(1, true)).toBe(0);
+        expect(MediaSyncController.preRoll(1, false)).toBe(0);
+        expect(MediaSyncController.preRoll(1.5, true)).toBe(60);
+        expect(MediaSyncController.preRoll(1.25, false)).toBe(60);
+        expect(MediaSyncController.preRoll(0.5, false)).toBe(60);
+        expect(MediaSyncController.preRoll(0.5, true)).toBe(120); // F-14 (D-3)
+    });
+
+    it('latency-change-settles-without-resync', () => {
+        // F-9a probe part (D-1)
+        const s = settled();
+        s.controller.latencyChanged();
+        expect(s.controller.isSettling).toBe(true);
+        expect(s.synth.seeks).toEqual([]);
+    });
+
+    it('a-start-resets-the-correction', () => {
+        const s = settled();
+        s.stamp(30);
+        expect(s.controller.correction).toBeLessThan(1);
+        s.controller.started(s.controller.planStart(5000, 1, 0), false);
+        expect(s.controller.correction).toBe(1);
+    });
+});
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `npx vitest run test/audio/MediaSyncController.test.ts`
+Expected: FAIL — `planStart is not a function`.
+
+- [ ] **Step 3: Implement**
+
+Add the plan class to `MediaSyncController.ts`:
+
+```ts
+/**
+ * Where to start the media and the synthesizer so that a start at `target` is heard together (§6.2).
+ * @target web
+ * @internal
+ */
+export class MediaStartPlan {
+    public speed: number = 1;
+    /** Where playback is meant to be heard from (media ms). */
+    public target: number = 0;
+    /** Where the media starts: the target, or PreRollMs earlier at speeds other than 1×. */
+    public mediaSeekTo: number = 0;
+    /** Where the synthesizer starts (media ms). */
+    public synthSeekTo: number = 0;
+    /** Delay the media's play() by this: the synthesizer is the slower one. */
+    public mediaDelayMs: number = 0;
+    /** At 1×: the synthesizer starts this far behind (a positive media latency); the settle nudge catches up. */
+    public catchUpGapMs: number = 0;
+}
+```
+
+New fields in `MediaSyncController`:
+
+```ts
+    private _learnStartLead: boolean = false;
+    private _catchUpGap: number = 0;
+    private _catchUpUntil: number = 0;
+```
+
+New methods:
+
+```ts
+    /**
+     * Plans a start at media time `target` (§6.2 start handshake).
+     * @param mediaLatencyMs The media's time-stretch latency at this speed (probe value or guess), real ms.
+     */
+    public planStart(target: number, speed: number, mediaLatencyMs: number): MediaStartPlan {
+        const plan = new MediaStartPlan();
+        plan.speed = speed;
+        plan.target = target;
+        const latency = mediaLatencyMs * speed;
+        let synthBase: number;
+        if (speed === 1) {
+            // the synth starts at the target, never past it: a positive latency is caught up by the settle nudge
+            plan.mediaSeekTo = target;
+            synthBase = target + Math.min(0, latency);
+            plan.catchUpGapMs = Math.max(0, latency);
+        } else {
+            // Chrome's time-stretch distorts the first tens of ms above and below 1×: both start early, and the
+            // synth where the media will be heard (spikes 4 and 6)
+            plan.mediaSeekTo = target - MediaSyncConstants.PreRollMs;
+            synthBase = plan.mediaSeekTo + latency;
+        }
+        // learned per speed; the straight-line guess before that (F-9a)
+        const lead = this.startLeads.get(speed);
+        plan.synthSeekTo = synthBase + Math.min(0, lead) * speed;
+        plan.mediaDelayMs = Math.max(0, lead);
+        return plan;
+    }
+
+    /**
+     * Both were told to play as planned: settle, and learn this speed's start lead from the first readings.
+     */
+    public started(plan: MediaStartPlan, learnStartLead: boolean): void {
+        this._begin(plan.speed);
+        this._learnStartLead = learnStartLead;
+        this._catchUpGap = plan.catchUpGapMs;
+        this._catchUpUntil = plan.catchUpGapMs > 0 ? this._settleUntil : 0;
+        // while the media start is delayed its readings mean nothing
+        this._ignoreUntil = this._time.now() + plan.mediaDelayMs;
+    }
+
+    /**
+     * The context time (s) at which to issue the media's play() so it is heard from the count-in's end (§6.2).
+     */
+    public handOffPlayTime(countInEndFrame: number, sampleRate: number, speed: number, preRollMediaMs: number): number {
+        return countInEndFrame / sampleRate - (this.mediaStartLatencies.get(speed) + preRollMediaMs / speed) / 1000;
+    }
+
+    /**
+     * The media pre-roll (media ms) for a start at `speed`.
+     */
+    public static preRoll(speed: number, countIn: boolean): number {
+        if (speed === 1) {
+            return 0;
+        }
+        if (countIn && speed < 1) {
+            return MediaSyncConstants.CountInPreRollBelow1xMs;
+        }
+        return MediaSyncConstants.PreRollMs;
+    }
+
+    private _learnStart(speed: number, offset: number): void {
+        const current = this.startLeads.get(speed);
+        this.startLeads.set(
+            speed,
+            MediaSyncController._clamp(
+                current - (offset + this._catchUpGap) / speed,
+                MediaSyncConstants.StartLeadMinMs,
+                MediaSyncConstants.StartLeadMaxMs
+            )
+        );
+    }
+```
+
+`_begin` resets the new state:
+
+```diff
+         this._learnMediaStartLatency = false;
++        this._learnStartLead = false;
++        this._catchUpGap = 0;
++        this._catchUpUntil = 0;
+         this._ignoreUntil = 0;
+```
+
+`onStamp` learns and honors the catch-up gap:
+
+```diff
+         let action = '';
+ 
++        if (this._learnMediaStartLatency && hasAgreed) {
++            // the media started agreed/speed ms late (synth ahead): issue its play() that much earlier next time
++            this._learnMediaStartLatency = false;
++            this.mediaStartLatencies.set(
++                speed,
++                MediaSyncController._clamp(
++                    this.mediaStartLatencies.get(speed) + agreed / speed,
++                    MediaSyncConstants.MediaStartLatencyMinMs,
++                    MediaSyncConstants.MediaStartLatencyMaxMs
++                )
++            );
++        }
++        if (this._learnStartLead && window.length >= 3) {
++            // this speed's start lead: the median of the first three readings after Play
++            this._learnStartLead = false;
++            this._learnStart(speed, [...window].sort((a, b) => a - b)[1]);
++        }
+         if (this._learnResyncLead && hasAgreed) {
+@@
+-        const threshold = settling ? this.settleThreshold(speed) : MediaSyncConstants.LockedResyncThresholdMs;
++        const catchingUp = this._catchUpGap > 0 && now < this._catchUpUntil;
++        if (catchingUp && hasAgreed && Math.abs(agreed) < 2) {
++            this._catchUpUntil = 0;
++        }
++        const threshold = settling
++            ? this.settleThreshold(speed) + (catchingUp ? this._catchUpGap : 0)
++            : MediaSyncConstants.LockedResyncThresholdMs;
+         if (hasAgreed && Math.abs(agreed) > threshold) {
++            if (this._learnStartLead) {
++                // the start itself was off: learn it before the re-sync clears the readings
++                this._learnStartLead = false;
++                this._learnStart(speed, agreed);
++            }
+             action = 'resync';
+             this.resync();
+         } else if (!hasAgreed && settling) {
+             action = 'wait';
++        } else if (this._learnStartLead) {
++            action = 'wait';
+         } else {
+```
+
+- [ ] **Step 4: Run the tests to see them pass**
+
+Run: `npx vitest run test/audio/MediaSyncController.test.ts`
+Expected: PASS (both describes).
+
+- [ ] **Step 5: Run the repo gates and commit**
+
+```bash
+npm run lint && npm run typecheck && npm test
+git add packages/alphatab/src/platform/javascript/MediaSyncController.ts packages/alphatab/test/audio/MediaSyncController.test.ts
+git commit -m "feat(web): start handshake planning, per-speed learning, count-in hand-off timing (#2397, F-9a, F-14)"
+git push
+```
+
+---
+
+### Task 11: Media clocks (F-11 offset, F-17 stall, F-6 started-by-media)
+
+**Files:**
+- Create: `packages/alphatab/src/platform/javascript/MediaClock.ts`
+- Create: `packages/alphatab/test/audio/MediaClock.test.ts`
+- Modify: `docs/superpowers/specs/2026-10-07-synth-with-media-design.md` (§6.3: sign and unit of the offset, F-11;
+  the external clock's time axis, G-6)
+
+**Interfaces:**
+- Consumes: `IMediaSyncClock` (Task 9), `PerSpeedValues` (Task 8).
+- Produces (used by Tasks 15–20): `IMediaClock` (see "Shared interfaces"); `IBackingTrackClockSource`,
+  `AudioElementClockSource`, `BackingTrackMediaClock(source, latencies, offsetMs: () => number)`;
+  `IExternalClockSource`, `ExternalMediaClock(source, offsetMs)` with `addSample(positionMs)`,
+  `setPlaying(playing)`, `notePausedPosition(position)`, `restartFit()`, `expectJumpTo(target)`, `isStalled`,
+  `movedSincePause()`.
+
+§6.3: backing track `mediaTimeAt(frame) = currentTime·1000 − (ctx.currentTime − frame/sampleRate)·1000·speed +
+latency(speed)·speed`. External media: a robust line over the last ~2 s of `updatePosition()` calls. Theil–Sen, as
+spike 9 §4 measured: it gave one re-sync after a stall, where least squares gave a second one the other way. Both
+clocks then subtract the offset.
+
+- **F-11** (alphaTabWebsite; our design's problem; arithmetic only; High): the offset is
+  `mediaSyncOffsetInMilliseconds × speed`. A positive value makes the synth play later, and the unit is ms of real
+  time.
+- **F-17** (alphaTabWebsite; modeled in spike 9 §4; Medium): the same position for ≥ 100 ms after the media has
+  moved is a stall. A trigger on the raw samples doesn't lag (a trigger on the fitted line fired 0.3–0.6 s late).
+- **F-6** (alphaTabWebsite; not spiked; Low): an update ≤ 100 ms old whose position differs from the paused
+  position means the media started itself. **G-6:** samples are stamped with the context time being heard, and
+  the clock is read at `frame / sampleRate`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `packages/alphatab/test/audio/MediaClock.test.ts`:
+
+```ts
+/**
+ * The media clocks (spec §6.3).
+ * @target web
+ */
+import { describe, expect, it } from 'vitest';
+import {
+    BackingTrackMediaClock,
+    ExternalMediaClock,
+    type IBackingTrackClockSource,
+    type IExternalClockSource
+} from '@coderline/alphatab/platform/javascript/MediaClock';
+import { PerSpeedValues } from '@coderline/alphatab/platform/javascript/PerSpeedValues';
+
+class FakeElementSource implements IBackingTrackClockSource {
+    public mediaCurrentTime: number = 10; // s
+    public mediaPaused: boolean = false;
+    public mediaSeeking: boolean = false;
+    public contextTime: number = 2; // s
+    public sampleRate: number = 48000;
+    private _seeked: (() => void)[] = [];
+    public onceSeeked(action: () => void): void {
+        this._seeked.push(action);
+    }
+    public finishSeek(): void {
+        this.mediaSeeking = false;
+        for (const action of this._seeked.splice(0)) {
+            action();
+        }
+    }
+}
+
+class FakeHeardTime implements IExternalClockSource {
+    public heard: number = 0; // s
+    public sampleRate: number = 48000;
+    public heardContextTime(): number {
+        return this.heard;
+    }
+}
+
+describe('BackingTrackMediaClockTests', () => {
+    it('media-time-at-a-frame', () => {
+        const source = new FakeElementSource();
+        const clock = new BackingTrackMediaClock(source, new PerSpeedValues(), () => 0);
+        // the frame 0.1 s before the context's current time, at 1x
+        expect(clock.mediaTimeAt((2 - 0.1) * 48000)).toBeCloseTo(10000 - 100, 9);
+        clock.speed = 0.5;
+        expect(clock.mediaTimeAt((2 - 0.1) * 48000)).toBeCloseTo(10000 - 50, 9);
+        expect(clock.mediaTimeNow()).toBeCloseTo(10000, 9);
+    });
+
+    it('adds-the-latency-times-the-speed', () => {
+        const latencies = new PerSpeedValues();
+        latencies.set(0.5, 60);
+        const clock = new BackingTrackMediaClock(new FakeElementSource(), latencies, () => 0);
+        clock.speed = 0.5;
+        expect(clock.mediaTimeNow()).toBeCloseTo(10000 + 30, 9);
+    });
+
+    it('subtracts-the-offset-times-the-speed', () => {
+        // F-11: + = the synth plays later; ms of real time at any speed
+        let offset = 20;
+        const clock = new BackingTrackMediaClock(new FakeElementSource(), new PerSpeedValues(), () => offset);
+        expect(clock.mediaTimeNow()).toBeCloseTo(10000 - 20, 9);
+        clock.speed = 2;
+        expect(clock.mediaTimeNow()).toBeCloseTo(10000 - 40, 9);
+        offset = -10;
+        expect(clock.mediaTimeNow()).toBeCloseTo(10000 + 20, 9);
+    });
+
+    it('no-time-while-paused-or-seeking', () => {
+        const source = new FakeElementSource();
+        const clock = new BackingTrackMediaClock(source, new PerSpeedValues(), () => 0);
+        source.mediaPaused = true;
+        expect(clock.mediaTimeNow()).toBeNaN();
+        source.mediaPaused = false;
+        source.mediaSeeking = true;
+        expect(clock.mediaTimeNow()).toBeNaN();
+        expect(clock.isSeeking).toBe(true);
+        expect(clock.position).toBe(10000);
+    });
+
+    it('when-seeked-runs-now-or-after-the-seek', () => {
+        const source = new FakeElementSource();
+        const clock = new BackingTrackMediaClock(source, new PerSpeedValues(), () => 0);
+        const ran: string[] = [];
+        clock.whenSeeked(() => ran.push('now'));
+        source.mediaSeeking = true;
+        clock.whenSeeked(() => ran.push('later'));
+        expect(ran).toEqual(['now']);
+        source.finishSeek();
+        expect(ran).toEqual(['now', 'later']);
+    });
+});
+
+describe('ExternalMediaClockTests', () => {
+    function feed(clock: ExternalMediaClock, time: FakeHeardTime, from: number, to: number, position: (t: number) => number) {
+        for (let t = from; t <= to + 1e-9; t += 0.05) {
+            time.heard = t;
+            clock.addSample(position(t));
+        }
+    }
+
+    it('fits-a-line-that-one-late-update-does-not-bend', () => {
+        const time = new FakeHeardTime();
+        const clock = new ExternalMediaClock(time, () => 0);
+        clock.setPlaying(true);
+        feed(clock, time, 0, 1, t => 5000 + (Math.abs(t - 0.5) < 1e-6 ? t * 1000 - 40 : t * 1000));
+        expect(clock.mediaTimeAt(1.05 * 48000)).toBeCloseTo(5000 + 1050, 0);
+    });
+
+    it('no-time-before-three-samples-over-100-ms', () => {
+        const time = new FakeHeardTime();
+        const clock = new ExternalMediaClock(time, () => 0);
+        clock.setPlaying(true);
+        feed(clock, time, 0, 0.05, t => t * 1000);
+        expect(clock.mediaTimeNow()).toBeNaN();
+        feed(clock, time, 0.1, 0.1, t => t * 1000);
+        expect(clock.mediaTimeNow()).toBeCloseTo(100, 6);
+    });
+
+    it('no-time-while-the-media-does-not-move', () => {
+        const time = new FakeHeardTime();
+        const clock = new ExternalMediaClock(time, () => 0);
+        clock.setPlaying(true);
+        feed(clock, time, 0, 0.5, () => 3000); // play() issued, the video hasn't started yet
+        expect(clock.mediaTimeNow()).toBeNaN();
+        expect(clock.isStalled).toBe(false); // no stall before it has moved
+    });
+
+    it('a-stall-is-the-same-position-for-100-ms-after-moving', () => {
+        // F-17
+        const time = new FakeHeardTime();
+        const clock = new ExternalMediaClock(time, () => 0);
+        clock.setPlaying(true);
+        feed(clock, time, 0, 1, t => t * 1000);
+        expect(clock.isStalled).toBe(false);
+        feed(clock, time, 1.05, 1.1, () => 1000); // frozen for 100 ms
+        expect(clock.isStalled).toBe(true);
+        expect(clock.mediaTimeNow()).toBeNaN();
+        time.heard = 1.15;
+        clock.addSample(1050);
+        expect(clock.isStalled).toBe(false);
+    });
+
+    it('subtracts-the-offset-times-the-speed', () => {
+        const time = new FakeHeardTime();
+        const clock = new ExternalMediaClock(time, () => 20);
+        clock.speed = 2;
+        clock.setPlaying(true);
+        feed(clock, time, 0, 1, t => t * 2000);
+        expect(clock.mediaTimeAt(1 * 48000)).toBeCloseTo(2000 - 40, 6);
+    });
+
+    it('moved-since-pause-tells-a-start-inside-the-media', () => {
+        // F-6
+        const time = new FakeHeardTime();
+        const clock = new ExternalMediaClock(time, () => 0);
+        time.heard = 1;
+        clock.addSample(1000); // paused at 1000
+        expect(clock.movedSincePause()).toBe(false);
+        time.heard = 1.3;
+        clock.addSample(1220); // the user pressed play in the video: it reached the app ~220 ms later
+        expect(clock.movedSincePause()).toBe(true);
+        time.heard = 1.5; // 200 ms later the update is too old to tell
+        expect(clock.movedSincePause()).toBe(false);
+    });
+
+    it('a-seek-while-paused-is-not-a-start', () => {
+        const time = new FakeHeardTime();
+        const clock = new ExternalMediaClock(time, () => 0);
+        time.heard = 1;
+        clock.addSample(1000);
+        clock.notePausedPosition(9000); // alphaTab seeked the paused media
+        time.heard = 1.05;
+        clock.addSample(9000);
+        expect(clock.movedSincePause()).toBe(false);
+    });
+
+    it('expect-jump-ignores-updates-from-before-the-seek', () => {
+        const time = new FakeHeardTime();
+        const clock = new ExternalMediaClock(time, () => 0);
+        clock.setPlaying(true);
+        feed(clock, time, 0, 1, t => t * 1000);
+        clock.expectJumpTo(20000);
+        expect(clock.isSeeking).toBe(true);
+        feed(clock, time, 1.05, 1.1, t => t * 1000); // still the old position
+        expect(clock.isSeeking).toBe(true);
+        feed(clock, time, 1.15, 1.3, t => 20000 + (t - 1.15) * 1000);
+        expect(clock.isSeeking).toBe(false);
+        expect(clock.mediaTimeAt(1.3 * 48000)).toBeCloseTo(20150, 6);
+    });
+});
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `npx vitest run test/audio/MediaClock.test.ts`
+Expected: FAIL — cannot resolve `MediaClock`.
+
+- [ ] **Step 3: Implement**
+
+Create `packages/alphatab/src/platform/javascript/MediaClock.ts`:
+
+```ts
+import type { IMediaSyncClock } from '@coderline/alphatab/platform/javascript/MediaSyncController';
+import type { PerSpeedValues } from '@coderline/alphatab/platform/javascript/PerSpeedValues';
+
+/**
+ * A media clock as the combined player uses it (spec §6.3).
+ * @target web
+ * @internal
+ */
+export interface IMediaClock extends IMediaSyncClock {
+    /**
+     * The media's position (ms) as the media reports it: no latency, no offset.
+     */
+    readonly position: number;
+    readonly isSeeking: boolean;
+    speed: number;
+    /**
+     * Runs the action once the media's current seek is done (now when it isn't seeking).
+     */
+    whenSeeked(action: () => void): void;
+}
+
+/**
+ * What the backing-track clock reads.
+ * @target web
+ * @internal
+ */
+export interface IBackingTrackClockSource {
+    /** <audio>.currentTime, s */
+    readonly mediaCurrentTime: number;
+    readonly mediaPaused: boolean;
+    readonly mediaSeeking: boolean;
+    /** AudioContext.currentTime, s */
+    readonly contextTime: number;
+    readonly sampleRate: number;
+    onceSeeked(action: () => void): void;
+}
+
+/**
+ * @target web
+ * @internal
+ */
+export class AudioElementClockSource implements IBackingTrackClockSource {
+    private readonly _element: HTMLAudioElement;
+    private readonly _context: AudioContext;
+
+    public constructor(element: HTMLAudioElement, context: AudioContext) {
+        this._element = element;
+        this._context = context;
+    }
+
+    public get mediaCurrentTime(): number {
+        return this._element.currentTime;
+    }
+    public get mediaPaused(): boolean {
+        return this._element.paused;
+    }
+    public get mediaSeeking(): boolean {
+        return this._element.seeking;
+    }
+    public get contextTime(): number {
+        return this._context.currentTime;
+    }
+    public get sampleRate(): number {
+        return this._context.sampleRate;
+    }
+    public onceSeeked(action: () => void): void {
+        this._element.addEventListener('seeked', () => action(), { once: true });
+    }
+}
+
+/**
+ * The backing track's clock: the routed <audio> and the synthesizer share one AudioContext (spec §6.3).
+ * @target web
+ * @internal
+ */
+export class BackingTrackMediaClock implements IMediaClock {
+    public speed: number = 1;
+    private readonly _source: IBackingTrackClockSource;
+    private readonly _latencies: PerSpeedValues;
+    private readonly _offsetMs: () => number;
+
+    /**
+     * @param latencies The media's time-stretch latency per speed (the probe's values).
+     * @param offsetMs mediaSyncOffsetInMilliseconds, read live.
+     */
+    public constructor(source: IBackingTrackClockSource, latencies: PerSpeedValues, offsetMs: () => number) {
+        this._source = source;
+        this._latencies = latencies;
+        this._offsetMs = offsetMs;
+    }
+
+    public get position(): number {
+        return this._source.mediaCurrentTime * 1000;
+    }
+
+    public get isSeeking(): boolean {
+        return this._source.mediaSeeking;
+    }
+
+    public whenSeeked(action: () => void): void {
+        if (this._source.mediaSeeking) {
+            this._source.onceSeeked(action);
+        } else {
+            action();
+        }
+    }
+
+    public mediaTimeAt(frame: number): number {
+        const source = this._source;
+        if (source.mediaPaused || source.mediaSeeking) {
+            return Number.NaN;
+        }
+        const speed = this.speed;
+        return (
+            source.mediaCurrentTime * 1000 -
+            (source.contextTime - frame / source.sampleRate) * 1000 * speed +
+            this._latencies.get(speed) * speed -
+            // F-11: + = the synthesizer plays later; ms of real time
+            this._offsetMs() * speed
+        );
+    }
+
+    public mediaTimeNow(): number {
+        return this.mediaTimeAt(this._source.contextTime * this._source.sampleRate);
+    }
+}
+
+/**
+ * The time axis of the external media clock (implemented by WebAudioMixGraph).
+ * @target web
+ * @internal
+ */
+export interface IExternalClockSource {
+    /**
+     * The AudioContext time (s) of the audio being heard now (getOutputTimestamp; gap G-6).
+     */
+    heardContextTime(): number;
+    readonly sampleRate: number;
+}
+
+/**
+ * @target web
+ * @internal
+ */
+class ExternalClockSample {
+    public readonly time: number;
+    public readonly position: number;
+
+    public constructor(time: number, position: number) {
+        this.time = time;
+        this.position = position;
+    }
+}
+
+/**
+ * The external media's clock (spec §6.3): a robust line through the last ~2 s of updatePosition() calls,
+ * stamped with the context time being heard and read at the moment a synthesizer frame is heard. Best-effort.
+ * @target web
+ * @internal
+ */
+export class ExternalMediaClock implements IMediaClock {
+    public static readonly FitWindowS: number = 2;
+    public static readonly MinFitSpanS: number = 0.1;
+    /** F-17: the same position this long while playing is a stall. */
+    public static readonly StallMs: number = 100;
+    /** F-6: an update at most this old that shows the media moved since the pause: the media started itself. */
+    public static readonly MovedWithinMs: number = 100;
+    public static readonly MovedToleranceMs: number = 5;
+    /** After a seek, updates further than this from the target still show the old position. */
+    public static readonly JumpToleranceMs: number = 500;
+    /** The fitted rate must be within this fraction of the speed for the media to count as playing. */
+    public static readonly RateTolerance: number = 0.5;
+
+    public speed: number = 1;
+    private readonly _source: IExternalClockSource;
+    private readonly _offsetMs: () => number;
+    private _samples: ExternalClockSample[] = [];
+    private _slope: number = 0;
+    private _intercept: number = 0;
+    private _fitValid: boolean = false;
+    private _playing: boolean = false;
+    private _lastPosition: number = Number.NaN;
+    private _lastChangeAt: number = 0;
+    private _lastSampleAt: number = Number.NEGATIVE_INFINITY;
+    private _sawMovement: boolean = false;
+    private _positionAtPause: number = Number.NaN;
+    private _jumpTarget: number = Number.NaN;
+
+    public constructor(source: IExternalClockSource, offsetMs: () => number) {
+        this._source = source;
+        this._offsetMs = offsetMs;
+    }
+
+    /**
+     * An updatePosition() call: the media's position now (ms).
+     */
+    public addSample(positionMs: number): void {
+        if (!Number.isNaN(this._jumpTarget)) {
+            if (Math.abs(positionMs - this._jumpTarget) > ExternalMediaClock.JumpToleranceMs) {
+                return;
+            }
+            this._jumpTarget = Number.NaN;
+        }
+        const time = this._source.heardContextTime();
+        if (Number.isNaN(this._positionAtPause) && !this._playing) {
+            this._positionAtPause = positionMs;
+        }
+        if (positionMs !== this._lastPosition) {
+            if (this._playing && !Number.isNaN(this._lastPosition)) {
+                this._sawMovement = true;
+            }
+            this._lastPosition = positionMs;
+            this._lastChangeAt = time;
+        }
+        this._lastSampleAt = time;
+        this._samples.push(new ExternalClockSample(time, positionMs));
+        while (this._samples.length > 0 && this._samples[0].time < time - ExternalMediaClock.FitWindowS) {
+            this._samples.shift();
+        }
+        this._fit();
+    }
+
+    public get position(): number {
+        return Number.isNaN(this._lastPosition) ? 0 : this._lastPosition;
+    }
+
+    public get isSeeking(): boolean {
+        return !Number.isNaN(this._jumpTarget);
+    }
+
+    public whenSeeked(action: () => void): void {
+        // an external seek can't be awaited here; the combined player waits for the first update after it
+        action();
+    }
+
+    /**
+     * Whether the combined player has the media playing.
+     */
+    public setPlaying(playing: boolean): void {
+        if (playing === this._playing) {
+            return;
+        }
+        this._playing = playing;
+        this._sawMovement = false;
+        if (!playing) {
+            this._positionAtPause = this._lastPosition;
+        }
+    }
+
+    /**
+     * alphaTab seeked the paused media: its new position is not a start.
+     */
+    public notePausedPosition(position: number): void {
+        this._positionAtPause = position;
+    }
+
+    /**
+     * Drops the fitted line (after a stall, a seek or a speed change).
+     */
+    public restartFit(): void {
+        this._samples = [];
+        this._fitValid = false;
+    }
+
+    /**
+     * After a seek to `target`: ignore updates that still show the old position, then fit anew.
+     */
+    public expectJumpTo(target: number): void {
+        this._jumpTarget = target;
+        this.restartFit();
+    }
+
+    /**
+     * F-17: playing, moved since the start, and the same position for StallMs or longer.
+     */
+    public get isStalled(): boolean {
+        return (
+            this._playing &&
+            this._sawMovement &&
+            (this._lastSampleAt - this._lastChangeAt) * 1000 >= ExternalMediaClock.StallMs
+        );
+    }
+
+    /**
+     * F-6: a recent update shows the media moved since it was last paused (play was pressed inside the media).
+     */
+    public movedSincePause(): boolean {
+        if (Number.isNaN(this._positionAtPause) || Number.isNaN(this._lastPosition)) {
+            return false;
+        }
+        const ageMs = (this._source.heardContextTime() - this._lastSampleAt) * 1000;
+        return (
+            ageMs <= ExternalMediaClock.MovedWithinMs &&
+            Math.abs(this._lastPosition - this._positionAtPause) > ExternalMediaClock.MovedToleranceMs
+        );
+    }
+
+    public mediaTimeAt(frame: number): number {
+        if (!this._playing || !this._fitValid || this.isStalled) {
+            return Number.NaN;
+        }
+        // G-6: frame / sampleRate is the frame's heard context time, the axis the samples are stamped on
+        return this._intercept + this._slope * (frame / this._source.sampleRate) - this._offsetMs() * this.speed;
+    }
+
+    public mediaTimeNow(): number {
+        return this.mediaTimeAt(this._source.heardContextTime() * this._source.sampleRate);
+    }
+
+    private _fit(): void {
+        const samples = this._samples;
+        const n = samples.length;
+        this._fitValid = false;
+        if (n < 3 || samples[n - 1].time - samples[0].time < ExternalMediaClock.MinFitSpanS) {
+            return;
+        }
+        // Theil–Sen: the median of the pairwise slopes; one late update doesn't bend it (spike 9 §4)
+        const slopes: number[] = [];
+        for (let i = 0; i < n; i++) {
+            for (let j = i + 1; j < n; j++) {
+                const dt = samples[j].time - samples[i].time;
+                if (dt > 1e-6) {
+                    slopes.push((samples[j].position - samples[i].position) / dt);
+                }
+            }
+        }
+        if (slopes.length === 0) {
+            return;
+        }
+        const slope = ExternalMediaClock._median(slopes);
+        const expected = 1000 * this.speed;
+        if (Math.abs(slope - expected) > expected * ExternalMediaClock.RateTolerance) {
+            // not playing (yet), or a stall inside the window
+            return;
+        }
+        this._slope = slope;
+        this._intercept = ExternalMediaClock._median(samples.map(s => s.position - slope * s.time));
+        this._fitValid = true;
+    }
+
+    private static _median(values: number[]): number {
+        const sorted = [...values].sort((a, b) => a - b);
+        const mid = sorted.length >> 1;
+        return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    }
+}
+```
+
+- [ ] **Step 4: Run the tests to see them pass**
+
+Run: `npx vitest run test/audio/MediaClock.test.ts`
+Expected: PASS (13 tests). If `fits-a-line-that-one-late-update-does-not-bend` misses by more than 0.5 ms, check
+that the late sample is the only one changed (`Math.abs(t - 0.5) < 1e-6` must match exactly one step of the loop).
+
+- [ ] **Step 5: State the offset's sign and unit in the spec (F-11, G-6)**
+
+In `docs/superpowers/specs/2026-10-07-synth-with-media-design.md` §6.3, replace the sentence under the table.
+
+**Before:**
+> `mediaSyncOffsetInMilliseconds` is applied to both clocks as a final user adjustment (e.g. Bluetooth).
+
+**After:**
+> Both clocks subtract `mediaSyncOffsetInMilliseconds × speed` as a final user adjustment (e.g. Bluetooth): a
+> positive value makes the synth play later, in milliseconds of real time at any speed (F-11). The external clock
+> stamps each `updatePosition()` sample with the context time being heard (`getOutputTimestamp()`) and is read at
+> frame time `F / sampleRate`; that is the moment frame F is heard, so `outputLatency` is not added again.
+
+- [ ] **Step 6: Run the repo gates and commit**
+
+```bash
+npm run lint && npm run typecheck && npm test
+git add packages/alphatab/src/platform/javascript/MediaClock.ts packages/alphatab/test/audio/MediaClock.test.ts docs/superpowers/specs/2026-10-07-synth-with-media-design.md
+git commit -m "feat(web): backing-track and external media clocks; offset sign and unit (#2397, F-11, F-17, F-6)"
+git push
+```
+
+---
+
+### Task 12: Latency probe
+
+**Files:**
+- Create: `packages/alphatab/src/platform/javascript/MediaLatencyProbe.ts`
+- Modify: `packages/alphatab/src/platform/javascript/AlphaSynthAudioWorkletOutput.ts` (register the
+  `alphatab-probe-tap` processor in `AlphaSynthWebWorklet.init()`)
+- Modify: `packages/alphatab/src/platform/worker/AlphaTabWorkerProtocol.ts` (`alphaSynth.probe.onset`)
+- Create: `packages/alphatab/test/audio/MediaLatencyProbe.test.ts`
+- Modify: `docs/superpowers/specs/2026-10-07-synth-with-media-design.md` (§13, G-7)
+
+**Interfaces:**
+- Consumes: `PerSpeedValues` (Task 8), `IMediaLatencyProbe` (Task 5).
+- Produces (used by Tasks 15, 20, 21): `MediaLatencyProbe implements IMediaLatencyProbe` with
+  `constructor(context, loadWorkletModule: () => Promise<void>, lengthS?, spacingS?)`, `measure(speed)`; statics
+  `cache: PerSpeedValues`
+  (per page session), `backgroundSpeeds = [1, 0.5, 0.75, 1.25, 1.5]`, `createProbeWav(sampleRate, lengthS, spacingS)`,
+  `latencyFromOnsets(onsets, polls, beepTimes, speed)`; `ProbeWav`, `ProbePoll`.
+
+§6.4: a generated WAV with 2 kHz beeps plays in a hidden `<audio>` at the target speed and is routed into the
+synth's AudioContext, into a tap that is never heard. The latency is the median of (currentTime reaching a beep −
+the beep being heard). The probe's tap is registered in alphaTab's own worklet module, so it needs no Blob URL
+(CSP- and bundler-safe). The spec's ~1 s probe with 125 ms spacing is **untested**: the spike used 4 s with 250 ms
+spacing, and Task 22 compares the two.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `packages/alphatab/test/audio/MediaLatencyProbe.test.ts`:
+
+```ts
+/**
+ * The latency probe's pure parts (spec §6.4); the measurement itself runs in the sync lab.
+ * @target web
+ */
+import { describe, expect, it } from 'vitest';
+import { MediaLatencyProbe, ProbePoll } from '@coderline/alphatab/platform/javascript/MediaLatencyProbe';
+
+describe('MediaLatencyProbeTests', () => {
+    it('creates-a-1-second-wav-with-a-beep-every-125-ms', () => {
+        const wav = MediaLatencyProbe.createProbeWav(48000, 1, 0.125);
+        const view = new DataView(wav.bytes.buffer, wav.bytes.byteOffset, wav.bytes.byteLength);
+        const text = (offset: number) => String.fromCharCode(...wav.bytes.subarray(offset, offset + 4));
+        expect(text(0)).toBe('RIFF');
+        expect(text(8)).toBe('WAVE');
+        expect(view.getUint32(24, true)).toBe(48000);
+        expect(view.getUint32(40, true)).toBe(48000 * 2); // 1 s of 16-bit mono
+        expect(wav.beepTimes).toEqual([0.125, 0.25, 0.375, 0.5, 0.625, 0.75]);
+        const sampleAt = (s: number) => view.getInt16(44 + Math.round(s * 48000) * 2 + 2 * 10, true);
+        expect(Math.abs(sampleAt(0.25))).toBeGreaterThan(0); // inside a beep
+        expect(sampleAt(0.3)).toBe(0); // between beeps
+    });
+
+    for (const [speed, latency] of [
+        [0.5, 60],
+        [1.5, -4],
+        [1, 0]
+    ]) {
+        it(`latency-from-onsets-${speed}x`, () => {
+            const beepTimes = [0.125, 0.25, 0.375, 0.5, 0.625, 0.75];
+            // the media starts at context time 1 s; a beep is heard `latency` real ms before currentTime reaches it
+            const polls: ProbePoll[] = [];
+            for (let ctx = 1; ctx < 1 + 1 / speed + 0.2; ctx += 0.004) {
+                polls.push(new ProbePoll((ctx - 1) * speed, ctx));
+            }
+            const onsets = beepTimes.map(b => 1 + (b - (latency / 1000) * speed) / speed);
+            onsets[0] += 0.2; // the first beep carries the start transient: skipped
+            expect(MediaLatencyProbe.latencyFromOnsets(onsets, polls, beepTimes, speed)).toBeCloseTo(latency, 6);
+        });
+    }
+
+    it('no-onsets-is-0', () => {
+        expect(MediaLatencyProbe.latencyFromOnsets([], [], [0.125], 1)).toBe(0);
+    });
+
+    it('background-speeds-and-a-session-cache', () => {
+        expect(MediaLatencyProbe.backgroundSpeeds).toEqual([1, 0.5, 0.75, 1.25, 1.5]);
+        expect(MediaLatencyProbe.cache).toBe(MediaLatencyProbe.cache);
+    });
+});
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `npx vitest run test/audio/MediaLatencyProbe.test.ts`
+Expected: FAIL — cannot resolve `MediaLatencyProbe`.
+
+- [ ] **Step 3: Register the tap processor and its message**
+
+Protocol (`AlphaTabWorkerProtocol.ts`), next to the other output messages:
+
+```ts
+    | { cmd: 'alphaSynth.probe.onset'; frame: number }
+```
+
+In `AlphaSynthWebWorklet` add the tap's values and register the processor at the end of `init()`:
+
+```ts
+    /**
+     * The latency probe's tap: a sample above this starts a beep (spec §6.4).
+     */
+    public static readonly ProbeTapThreshold: number = 0.25;
+    /**
+     * Frames to wait after an onset (50 ms at 48 kHz): one onset per beep, also at 2×.
+     */
+    public static readonly ProbeTapCooldownFrames: number = 2400;
+```
+
+```ts
+        registerProcessor(
+            'alphatab-probe-tap',
+            class AlphaSynthProbeTapProcessor extends AudioWorkletProcessor {
+                private _cooldown: number = 0;
+
+                public override process(
+                    inputs: Float32Array[][],
+                    _outputs: Float32Array[][],
+                    _parameters: Record<string, Float32Array>
+                ): boolean {
+                    const channel = inputs.length > 0 && inputs[0].length > 0 ? inputs[0][0] : undefined;
+                    if (channel) {
+                        for (let i = 0; i < channel.length; i++) {
+                            if (this._cooldown > 0) {
+                                this._cooldown--;
+                                continue;
+                            }
+                            if (Math.abs(channel[i]) > AlphaSynthWebWorklet.ProbeTapThreshold) {
+                                this.port.postMessage({ cmd: 'alphaSynth.probe.onset', frame: currentFrame + i });
+                                this._cooldown = AlphaSynthWebWorklet.ProbeTapCooldownFrames;
+                            }
+                        }
+                    }
+                    // the outputs stay zero: the tap is connected so it is processed, and is never heard (G-7)
+                    return true;
+                }
+            }
+        );
+```
+
+- [ ] **Step 4: Implement the probe**
+
+Create `packages/alphatab/src/platform/javascript/MediaLatencyProbe.ts`:
+
+```ts
+import type { IMediaLatencyProbe } from '@coderline/alphatab/platform/javascript/MediaSynthTypes';
+import { PerSpeedValues } from '@coderline/alphatab/platform/javascript/PerSpeedValues';
+import type { IAlphaSynthWorkerMessage } from '@coderline/alphatab/platform/worker/AlphaTabWorkerProtocol';
+
+/**
+ * @target web
+ * @internal
+ */
+export class ProbeWav {
+    public readonly bytes: Uint8Array;
+    /** The beeps' positions in the WAV, s. */
+    public readonly beepTimes: number[];
+
+    public constructor(bytes: Uint8Array, beepTimes: number[]) {
+        this.bytes = bytes;
+        this.beepTimes = beepTimes;
+    }
+}
+
+/**
+ * The probe <audio>'s currentTime and the AudioContext's time, read together (both s).
+ * @target web
+ * @internal
+ */
+export class ProbePoll {
+    public readonly mediaTime: number;
+    public readonly contextTime: number;
+
+    public constructor(mediaTime: number, contextTime: number) {
+        this.mediaTime = mediaTime;
+        this.contextTime = contextTime;
+    }
+}
+
+/**
+ * Measures how much earlier a time-stretched <audio> is heard than its currentTime says, per speed (spec §6.4).
+ * @target web
+ * @internal
+ */
+export class MediaLatencyProbe implements IMediaLatencyProbe {
+    /**
+     * Measured values, cached for the page session (one per speed).
+     */
+    public static readonly cache: PerSpeedValues = new PerSpeedValues();
+    /**
+     * Measured in the background after load; other speeds on first use.
+     */
+    public static readonly backgroundSpeeds: number[] = [1, 0.5, 0.75, 1.25, 1.5];
+    public static readonly SampleRate: number = 48000;
+    /** Spec §6.4: ~1 s with a beep every 125 ms (untested; the spike used 4 s / 250 ms, Task 22 compares). */
+    public static readonly LengthS: number = 1;
+    public static readonly SpacingS: number = 0.125;
+    private static readonly _beepFrequency: number = 2000;
+    private static readonly _beepS: number = 0.003;
+    private static readonly _pollMs: number = 4;
+
+    private readonly _context: AudioContext;
+    private readonly _loadWorkletModule: () => Promise<void>;
+    private readonly _lengthS: number;
+    private readonly _spacingS: number;
+    private _wav: ProbeWav | null = null;
+    private _url: string = '';
+
+    /**
+     * @param loadWorkletModule Loads alphaTab's worklet module (which registers the probe's tap) into the context.
+     * @param lengthS The probe's length; the sync lab passes the spike's 4 s to compare (Task 22).
+     * @param spacingS The beeps' spacing; the sync lab passes the spike's 0.25 s to compare.
+     */
+    public constructor(
+        context: AudioContext,
+        loadWorkletModule: () => Promise<void>,
+        lengthS: number = MediaLatencyProbe.LengthS,
+        spacingS: number = MediaLatencyProbe.SpacingS
+    ) {
+        this._context = context;
+        this._loadWorkletModule = loadWorkletModule;
+        this._lengthS = lengthS;
+        this._spacingS = spacingS;
+    }
+
+    public static createProbeWav(sampleRate: number, lengthS: number, spacingS: number): ProbeWav {
+        const pcm = new Int16Array(Math.round(sampleRate * lengthS));
+        const beepTimes: number[] = [];
+        const beepFrames = Math.round(sampleRate * MediaLatencyProbe._beepS);
+        for (let i = 1; i * spacingS < lengthS - 0.2; i++) {
+            const time = i * spacingS;
+            beepTimes.push(time);
+            const start = Math.round(time * sampleRate);
+            for (let k = 0; k < beepFrames; k++) {
+                pcm[start + k] = Math.round(
+                    Math.sin((2 * Math.PI * MediaLatencyProbe._beepFrequency * k) / sampleRate) * 0.6 * 32767
+                );
+            }
+        }
+        const buffer = new ArrayBuffer(44 + pcm.length * 2);
+        const view = new DataView(buffer);
+        const text = (offset: number, value: string) => {
+            for (let i = 0; i < value.length; i++) {
+                view.setUint8(offset + i, value.charCodeAt(i));
+            }
+        };
+        text(0, 'RIFF');
+        view.setUint32(4, 36 + pcm.length * 2, true);
+        text(8, 'WAVE');
+        text(12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true); // PCM
+        view.setUint16(22, 1, true); // mono
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * 2, true);
+        view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true);
+        text(36, 'data');
+        view.setUint32(40, pcm.length * 2, true);
+        new Int16Array(buffer, 44).set(pcm);
+        return new ProbeWav(new Uint8Array(buffer), beepTimes);
+    }
+
+    /**
+     * The median of (currentTime reaching a beep − the beep being heard), real ms. The first beep carries the
+     * start transient and is skipped. No onsets: 0.
+     */
+    public static latencyFromOnsets(onsets: number[], polls: ProbePoll[], beepTimes: number[], speed: number): number {
+        const offsets: number[] = [];
+        for (const onset of onsets) {
+            for (let i = 1; i < polls.length; i++) {
+                const a = polls[i - 1];
+                const b = polls[i];
+                if (a.contextTime <= onset && b.contextTime > onset) {
+                    const mediaAt =
+                        a.mediaTime +
+                        ((onset - a.contextTime) / (b.contextTime - a.contextTime)) * (b.mediaTime - a.mediaTime);
+                    let beep = beepTimes[0];
+                    for (const time of beepTimes) {
+                        if (Math.abs(time - mediaAt) < Math.abs(beep - mediaAt)) {
+                            beep = time;
+                        }
+                    }
+                    offsets.push(((beep - mediaAt) / speed) * 1000);
+                    break;
+                }
+            }
+        }
+        offsets.shift();
+        if (offsets.length === 0) {
+            return 0;
+        }
+        offsets.sort((x, y) => x - y);
+        return offsets[Math.floor(offsets.length / 2)];
+    }
+
+    public async measure(speed: number): Promise<number> {
+        const context = this._context;
+        await this._loadWorkletModule();
+        if (!this._wav) {
+            this._wav = MediaLatencyProbe.createProbeWav(MediaLatencyProbe.SampleRate, this._lengthS, this._spacingS);
+            this._url = URL.createObjectURL(new Blob([this._wav.bytes as Uint8Array<ArrayBuffer>], { type: 'audio/wav' }));
+        }
+        const wav = this._wav;
+        const element = new Audio(this._url);
+        element.preload = 'auto';
+        element.playbackRate = speed;
+        await new Promise<void>(resolve => element.addEventListener('canplaythrough', () => resolve(), { once: true }));
+
+        const source = context.createMediaElementSource(element);
+        const tap = new AudioWorkletNode(context, 'alphatab-probe-tap');
+        const onsets: number[] = [];
+        tap.port.onmessage = (e: MessageEvent<IAlphaSynthWorkerMessage>) => {
+            if (e.data.cmd === 'alphaSynth.probe.onset') {
+                onsets.push(e.data.frame / context.sampleRate);
+            }
+        };
+        source.connect(tap);
+        // connected so it is processed; it outputs silence (G-7)
+        tap.connect(context.destination);
+
+        const polls: ProbePoll[] = [];
+        const lastBeep = wav.beepTimes[wav.beepTimes.length - 1];
+        try {
+            await element.play();
+            while (element.currentTime < lastBeep + 0.1 && !element.ended) {
+                polls.push(new ProbePoll(element.currentTime, context.currentTime));
+                await new Promise(resolve => setTimeout(resolve, MediaLatencyProbe._pollMs));
+            }
+        } finally {
+            element.pause();
+            source.disconnect();
+            tap.disconnect();
+        }
+        return MediaLatencyProbe.latencyFromOnsets(onsets, polls, wav.beepTimes, speed);
+    }
+}
+```
+
+- [ ] **Step 5: Run the tests to see them pass**
+
+Run: `npx vitest run test/audio/MediaLatencyProbe.test.ts`
+Expected: PASS (6 tests).
+
+- [ ] **Step 6: Fix the §13 wording (G-7)**
+
+In the spec's §13 table, row "Hidden probe playback in the background", replace "Silent (never connected to the
+destination)" with "Silent (its tap outputs silence; it is connected so that it is processed)".
+
+- [ ] **Step 7: Run the repo gates and commit**
+
+```bash
+npm run lint && npm run typecheck && npm test
+git add packages/alphatab/src/platform packages/alphatab/test/audio/MediaLatencyProbe.test.ts docs/superpowers/specs/2026-10-07-synth-with-media-design.md
+git commit -m "feat(web): media latency probe with a tap in alphaTab's own worklet (#2397)"
 git push
 ```
 
