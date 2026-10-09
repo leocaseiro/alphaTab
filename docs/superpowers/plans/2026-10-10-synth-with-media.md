@@ -81,11 +81,11 @@ that owns the code.
 
 1. **A backing track that runs past the score** (an outro after the last bar). The synth keeps following and stays
    silent, the media plays to its end, and `finished` fires once. Tests: Task 3
-   (`keeps-following-after-the-song-ends`) and Task 16 (`media-end-stops-both-once`).
+   (`keeps-following-after-the-song-ends`) and Task 16 (`the-media-end-stops-both-once`).
 2. **Actions in the middle of a handshake**: Pause while the media start is still delayed, Pause or a seek during
    the count-in, a speed change during the count-in. Expected: no media `play()` after a Pause, no second worklet,
-   no `stateChanged` from inside the handshake. Tests: Task 16 (`pause-during-media-delay-cancels-the-media-start`),
-   Task 17 (`pause-during-count-in-cancels-the-hand-off`, `seek-during-count-in-restarts-without-count-in`).
+   no `stateChanged` from inside the handshake. Tests: Task 16 (`pause-during-the-media-delay-cancels-the-media-start`),
+   Task 17 (`pause-during-the-count-in-cancels-the-hand-off`, `a-seek-during-the-count-in-restarts-without-count-in`).
 3. **Play before the background probe is done, or while the `AudioContext` is still suspended** (autoplay policy).
    Expected: the start uses the straight-line guess, the probe waits for a running context, and a value that
    lands mid-playback settles without cutting notes (D-1). Tests: Task 10 (`latency-change-settles-without-resync`),
@@ -205,7 +205,7 @@ Each one is flagged where it is used. Keep or drop them during the plan review.
 - `AlphaTabApi.ts` (modify): a failed SoundFont download is raised on the player instance.
 
 **Tests (`packages/alphatab/test/audio/`):** `RecordingAudioSynthesizer.ts`, `FollowTestOutput.ts`,
-`MediaSyncFakes.ts` (helpers); `FollowMedia.test.ts`, `MediaWorkerProtocol.test.ts`, `MediaChunkMarkers.test.ts`,
+`TestMediaOutput.ts`, `MediaSyncFakes.ts` (helpers); `FollowMedia.test.ts`, `MediaWorkerProtocol.test.ts`, `MediaChunkMarkers.test.ts`,
 `AudioWorkletOutputMedia.test.ts`, `PerSpeedValues.test.ts`, `MediaSyncController.test.ts`, `MediaClock.test.ts`,
 `MediaLatencyProbe.test.ts`, `MediaVolumes.test.ts`, `WebAudioMixGraph.test.ts`, `MediaSynthPlayer.Routing.test.ts`,
 `MediaSynthPlayer.Transport.test.ts`, `MediaSynthPlayer.CountIn.test.ts`, `MediaSynthPlayer.Loop.test.ts`,
@@ -593,8 +593,8 @@ describe('FollowMediaTests', () => {
     it('count-in-uses-the-given-tempo-else-the-score-tempo', () => {
         const midi = loadTexSong(`
             \\tempo 100
-            \\ts 3 4
             .
+            \\ts 3 4
             C4 * 3 | C4 * 3
         `);
         const scoreTempo = createSequencer(midi, [], 1).sequencer;
@@ -1364,8 +1364,8 @@ Add to the `FollowMediaSynthTests` describe in `FollowMedia.test.ts`:
     it('count-in-clicks-one-bar-in-the-time-signature', () => {
         const midi = loadTexSong(`
             \\tempo 100
-            \\ts 3 4
             .
+            \\ts 3 4
             C4 * 3 | C4 * 3 | C4 * 3
         `);
         const { output, synthesizer, synth } = createFollowingSynth(midi, [], 1, 0);
@@ -7733,3 +7733,3057 @@ git push
 
 ---
 
+### Task 17: `MediaSynthPlayer` — count-in hand-off (G-5) and the refused-start safety net (R-2)
+
+**Files:**
+- Modify: `packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts`
+- Create: `packages/alphatab/test/audio/MediaSynthPlayer.CountIn.test.ts`
+
+**Interfaces:**
+- Consumes: `IMediaSynth.countInStarted` (Task 5), `IMediaFollowingOutput.countInEnd` (Task 7),
+  `MediaSyncController.handOffPlayTime/preRoll/startedAfterHandOff` (Task 10), `MediaSyncConstants` (Task 9),
+  `IMediaTimer.spinUntil` (Task 5).
+- Produces (used by Tasks 18, 19): `_startPlayback(countIn: boolean)`, `_countIn` (non-null while counting in),
+  `_watchMediaStart(delayMs)`, `MediaSynthCountInRecord` entries in `diagnostics.countIns`.
+
+§6.2 count-in: only an app Play from Paused counts in (§6.1). The worker renders one bar and then the song in one
+stream (Task 4), while the media waits, paused, at its pre-roll start (60 ms above 1×, 120 ms below, F-14). Once
+the boundary chunk is buffered the worklet reports its context frame (Task 7). The media's `play()` is issued at
+`frame / sampleRate − (mediaStartLatency(speed) + preRoll / speed)`. **G-5:** the timer fires 12 ms early, then
+waits on the audio clock for at most 30 ms (spike 6: `play()` 0.2–4.8 ms after its time). If the hand-off doesn't
+come by the count-in's length + 250 ms, the media starts anyway and this player turns media-only. The cursor stays
+at the start position. **R-2 safety net** (not spiked; Low): WebKit may refuse a `play()` a bar after the gesture.
+If the media isn't running 500 ms after its planned start, both pause and a warning is logged. Decision D-7 (Task 24)
+picks the real fallback.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `packages/alphatab/test/audio/MediaSynthPlayer.CountIn.test.ts`:
+
+```ts
+/**
+ * The count-in hand-off (spec §6.2) and the refused-start safety net (R-2).
+ * @target web
+ */
+import { describe, expect, it } from 'vitest';
+import { MediaSynthHarness } from 'test/audio/MediaSyncFakes';
+
+async function countingIn(speed: number = 1, at: number = 5000): Promise<MediaSynthHarness> {
+    const h = new MediaSynthHarness();
+    await h.loadSong();
+    h.player.playbackSpeed = speed;
+    h.player.countInVolume = 1;
+    h.mediaOutput!.currentTime = at;
+    h.player.play();
+    return h;
+}
+
+describe('MediaSynthPlayerCountInTests', () => {
+    it('play-with-count-in-starts-the-synth-alone', async () => {
+        const h = await countingIn();
+        expect(h.states).toEqual(['Playing']);
+        expect(h.synth.calls.slice(-3)).toEqual(['pause', 'seek:5000', 'play:countIn=1']);
+        expect(h.synth.countInVolume).toBe(0); // handshakes later in this playback never count in
+        expect(h.mediaOutput!.isPlaying).toBe(false);
+        expect(h.player.controller.isActive).toBe(false);
+    });
+
+    it('no-position-reaches-the-app-during-the-count-in', async () => {
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        h.player.playbackSpeed = 0.5;
+        h.player.countInVolume = 1;
+        h.player.timePosition = 10000;
+        const start = h.player.timePosition;
+        h.positions.length = 0;
+        h.player.play(); // the media pre-rolls 120 ms, paused
+        expect(h.positions.filter(p => p < start - 1)).toEqual([]);
+    });
+
+    it('the-count-in-end-schedules-the-media-start', async () => {
+        const h = await countingIn();
+        h.synth.startCountIn(2000);
+        h.synthOutput.endCountIn(1.5 * 48000); // no learned latency and no pre-roll at 1x: play() at the boundary
+        h.timer.advance(1500 - 12 - 1);
+        expect(h.mediaOutput!.isPlaying).toBe(false);
+        h.timer.advance(2); // fires 12 ms early, then waits on the audio clock
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+        expect(h.graph.currentTime).toBeGreaterThanOrEqual(1.5);
+        expect(h.player.diagnostics.countIns[0].lateMs).toBeLessThan(0.2);
+        expect(h.player.controller.isActive).toBe(true);
+    });
+
+    it('below-1x-the-media-pre-rolls-120-ms', async () => {
+        // F-14 (D-3)
+        const h = await countingIn(0.5, 5000);
+        expect(h.mediaOutput!.seekTimes[h.mediaOutput!.seekTimes.length - 1]).toBeCloseTo(5000 - 120, 3);
+        h.synth.startCountIn(4000);
+        h.synthOutput.endCountIn(3 * 48000);
+        // play() at the boundary minus the pre-roll in real time: 120 / 0.5 = 240 ms
+        h.timer.advance(3000 - 240 - 12 - 1);
+        expect(h.mediaOutput!.isPlaying).toBe(false);
+        h.timer.advance(2);
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+        expect(h.graph.currentTime).toBeCloseTo(2.76, 3);
+    });
+
+    it('a-refined-count-in-end-moves-the-media-start', async () => {
+        const h = await countingIn();
+        h.synth.startCountIn(2000);
+        h.synthOutput.endCountIn(1.5 * 48000);
+        h.synthOutput.endCountIn(1.51 * 48000); // an underrun moved the boundary 10 ms
+        h.timer.advance(1490);
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+        expect(h.graph.currentTime).toBeGreaterThanOrEqual(1.51 - 1e-9);
+    });
+
+    it('the-time-limit-starts-the-media-alone', async () => {
+        const h = await countingIn();
+        h.synth.startCountIn(2000);
+        h.timer.advance(2249);
+        expect(h.mediaOutput!.isPlaying).toBe(false);
+        h.timer.advance(1);
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+        expect(h.synth.calls[h.synth.calls.length - 1]).toBe('pause');
+        // media only from here on
+        h.player.pause();
+        const plays = h.synth.count('play:');
+        h.player.play();
+        expect(h.synth.count('play:')).toBe(plays);
+    });
+
+    it('pause-during-the-count-in-cancels-the-hand-off', async () => {
+        // Review Focus 2
+        const h = await countingIn();
+        h.synth.startCountIn(2000);
+        h.synthOutput.endCountIn(1.5 * 48000);
+        h.player.pause();
+        h.timer.advance(3000);
+        expect(h.mediaOutput!.isPlaying).toBe(false);
+        expect(h.timer.pending).toBe(0);
+    });
+
+    it('a-seek-during-the-count-in-restarts-without-count-in', async () => {
+        // Review Focus 2
+        const h = await countingIn();
+        h.synth.startCountIn(2000);
+        h.player.timePosition = 20000;
+        expect(h.states).toEqual(['Playing']);
+        expect(h.synth.calls[h.synth.calls.length - 1]).toBe('play:countIn=0');
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+        h.timer.advance(3000); // the old count-in's timers are gone
+        expect(h.timer.pending).toBe(0);
+    });
+
+    it('a-media-start-that-never-happens-pauses-both', async () => {
+        // R-2 safety net
+        const h = await countingIn();
+        h.synth.startCountIn(2000);
+        h.synthOutput.endCountIn(1.5 * 48000);
+        h.timer.advance(1500);
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+        h.mediaOutput!.isPlaying = false; // the browser refused the delayed play()
+        h.timer.advance(600);
+        expect(h.states).toEqual(['Playing', 'Paused']);
+    });
+});
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `npx vitest run test/audio/MediaSynthPlayer.CountIn.test.ts`
+Expected: FAIL — `play-with-count-in-starts-the-synth-alone` sees `play:countIn=0` and a playing media.
+
+- [ ] **Step 3: Implement**
+
+Import `MediaSyncConstants` (value) from `MediaSyncController`. Add above `MediaSynthPlayer`:
+
+```ts
+/**
+ * One count-in hand-off in flight.
+ * @target web
+ * @internal
+ */
+class CountInHandOff {
+    public readonly target: number;
+    public readonly speed: number;
+    public readonly preRoll: number;
+    /** The context time (s) for the media's play(); -1 until the count-in end is known. */
+    public playAt: number = -1;
+    public handOffTimer: number = 0;
+    public limitTimer: number = 0;
+
+    public constructor(target: number, speed: number, preRoll: number) {
+        this.target = target;
+        this.speed = speed;
+        this.preRoll = preRoll;
+    }
+}
+```
+
+Fields and subscriptions:
+
+```ts
+    private _countIn: CountInHandOff | null = null;
+    private _mediaStartCheckTimer: number = 0;
+```
+
+```ts
+        // in the constructor, after the mediaTimestamp subscription
+        subscribe(this._synthOutput.countInEnd.on(frame => this._onCountInEnd(frame)));
+        subscribe(synth.countInStarted.on(lengthMs => this._onCountInStarted(lengthMs)));
+```
+
+Only an app Play counts in:
+
+```diff
+         this._setState(PlayerState.Playing, false);
+-        this._startPlayback();
++        // an app Play from Paused is the only start that counts in (§6.1)
++        this._startPlayback(true);
+         return true;
+@@
+-    private _startPlayback(): void {
++    private _startPlayback(countIn: boolean): void {
+@@
+         this._sendFollowConfig();
+-        this._runStart(this.controller.planStart(this._clock.position, speed, this._mediaLatency(speed)), true);
++        const target = this._clock.position;
++        if (countIn && this._countInVolume > 0) {
++            this._startCountIn(target, speed);
++            return;
++        }
++        this._runStart(this.controller.planStart(target, speed, this._mediaLatency(speed)), true);
+     }
+@@ (in _seek)
+-        this._startPlayback();
++        this._startPlayback(false);
+```
+
+`_interrupt` cancels a count-in and the start check:
+
+```diff
+         this._timer.clearTimeout(this._mediaDelayTimer);
+         this._mediaDelayTimer = 0;
++        this._timer.clearTimeout(this._mediaStartCheckTimer);
++        this._mediaStartCheckTimer = 0;
++        this._cancelCountIn();
+         this._holdBefore = -1;
+```
+
+A speed change during the count-in waits for the hand-off:
+
+```diff
+-        if (this._state === PlayerState.Playing && this._isMixing) {
++        if (this._state === PlayerState.Playing && this._isMixing && !this._countIn) {
+```
+
+New methods:
+
+```ts
+    private _startCountIn(target: number, speed: number): void {
+        const preRoll = MediaSyncController.preRoll(speed, true);
+        // the cursor stays at the start position meanwhile
+        this._holdBefore = this._media.timePosition;
+        this._synth.pause();
+        if (preRoll > 0) {
+            // the media waits, paused, at its pre-roll start
+            this._media.seekMediaTo(target - preRoll);
+        }
+        this._countIn = new CountInHandOff(target, speed, preRoll);
+        this._synth.seekToMediaTime(target);
+        this._synth.countInVolume = this._countInVolume;
+        this._synth.play();
+        // later starts in this playback (a seek, a wrap) never count in
+        this._synth.countInVolume = 0;
+    }
+
+    private _onCountInStarted(lengthMs: number): void {
+        const countIn = this._countIn;
+        if (!countIn || countIn.limitTimer !== 0) {
+            return;
+        }
+        countIn.limitTimer = this._timer.setTimeout(
+            () => this._onCountInTimeLimit(countIn),
+            lengthMs + MediaSyncConstants.CountInTimeLimitExtraMs
+        );
+    }
+
+    private _onCountInEnd(frame: number): void {
+        const countIn = this._countIn;
+        if (!countIn) {
+            return;
+        }
+        countIn.playAt = this.controller.handOffPlayTime(frame, this._graph.sampleRate, countIn.speed, countIn.preRoll);
+        if (countIn.handOffTimer !== 0) {
+            // a refined estimate only moves playAt
+            return;
+        }
+        const waitMs = (countIn.playAt - this._graph.currentTime) * 1000 - MediaSyncConstants.HandOffEarlyMs;
+        countIn.handOffTimer = this._timer.setTimeout(() => this._handOff(countIn), Math.max(0, waitMs));
+    }
+
+    private _handOff(countIn: CountInHandOff): void {
+        if (this._countIn !== countIn) {
+            return;
+        }
+        // the last ms on the audio clock (G-5; spike 6: play() 0.2–4.8 ms after its time)
+        this._timer.spinUntil(() => this._graph.currentTime >= countIn.playAt, MediaSyncConstants.HandOffSpinMaxMs);
+        this._countIn = null;
+        this._timer.clearTimeout(countIn.limitTimer);
+        this.diagnostics.countIns.push(
+            new MediaSynthCountInRecord(countIn.speed, (this._graph.currentTime - countIn.playAt) * 1000)
+        );
+        this._playMedia();
+        this.controller.startedAfterHandOff(countIn.speed, true);
+        this._watchMediaStart(this.controller.mediaStartLatencies.get(countIn.speed) + MediaSyncConstants.MediaStartCheckMs);
+    }
+
+    private _onCountInTimeLimit(countIn: CountInHandOff): void {
+        if (this._countIn !== countIn) {
+            return;
+        }
+        // the hand-off never came: start the media anyway and play it alone (§6.2)
+        this._countIn = null;
+        this._timer.clearTimeout(countIn.handOffTimer);
+        this._fallBackToMediaOnly('the count-in hand-off never came');
+        this._playMedia();
+    }
+
+    private _cancelCountIn(): void {
+        const countIn = this._countIn;
+        if (countIn) {
+            this._timer.clearTimeout(countIn.handOffTimer);
+            this._timer.clearTimeout(countIn.limitTimer);
+            this._countIn = null;
+        }
+    }
+
+    /**
+     * After a delayed media start: check that the media runs.
+     */
+    private _watchMediaStart(delayMs: number): void {
+        this._timer.clearTimeout(this._mediaStartCheckTimer);
+        this._mediaStartCheckTimer = this._timer.setTimeout(() => {
+            this._mediaStartCheckTimer = 0;
+            if (
+                this._state !== PlayerState.Playing ||
+                !Number.isNaN(this._clock.mediaTimeNow()) ||
+                this._clock.isSeeking
+            ) {
+                return;
+            }
+            // R-2: the browser refused the media's play(); decision D-7 picks the real fallback
+            Logger.warning('Player', 'The media did not start after the count-in; pausing');
+            this.pause();
+        }, delayMs);
+    }
+```
+
+- [ ] **Step 4: Run the tests to see them pass**
+
+Run: `npx vitest run test/audio/MediaSynthPlayer.CountIn.test.ts test/audio/MediaSynthPlayer.Transport.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Run the repo gates and commit**
+
+```bash
+npm run lint && npm run typecheck && npm test
+git add packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts packages/alphatab/test/audio/MediaSynthPlayer.CountIn.test.ts
+git commit -m "feat(web): count-in hand-off to the media; pause when the media never starts (#2397)"
+git push
+```
+
+---
+
+### Task 18: `MediaSynthPlayer` — playback range and the loop wrap (G-3)
+
+**Files:**
+- Modify: `packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts`
+- Create: `packages/alphatab/test/audio/MediaSynthPlayer.Loop.test.ts`
+
+**Interfaces:**
+- Consumes: `BackingTrackPlayer.tickToMediaTime` (Task 15), the handshakes (Tasks 16, 17).
+- Produces (used by Task 19): `_scheduleWrap(extraDelayMs)`, `_wrapEnd()`, `_onWrapTimer()`, `_wrapTimer`.
+
+§6.2 loop wrap: the combined player owns `playbackRange` and `isLooping`. When no range is set, the song's end
+counts as the range end, so `isLooping` alone loops the whole song, as today. Just before the range end it fires
+`finished`, pauses both, seeks both to the range start (60 ms earlier at speeds other than 1×, from the start plan)
+and restarts them through the start handshake, with no count-in and no `stateChanged`. Spike 4 measured this:
+0 missing clicks at 0.5×, 1× and 1.5×, under 15 ms per wrap at 1× and ~24 ms at 0.5× and 1.5×. With `isLooping`
+off, the range end fires `finished` and stops both at the range start, as today. **G-3** (spike 4): the timer
+fires 15 ms of media time before the end. If the media is behind (a late start), it waits for the media.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `packages/alphatab/test/audio/MediaSynthPlayer.Loop.test.ts`:
+
+```ts
+/**
+ * The playback range and the loop wrap (spec §6.2).
+ * @target web
+ */
+import { describe, expect, it } from 'vitest';
+import { PlaybackRange } from '@coderline/alphatab/synth/PlaybackRange';
+import { MediaSynthHarness } from 'test/audio/MediaSyncFakes';
+
+const StartTick = 7680;
+const EndTick = 15360;
+
+async function looping(speed: number = 1, loop: boolean = true) {
+    const h = new MediaSynthHarness();
+    await h.loadSong();
+    h.player.playbackSpeed = speed;
+    h.player.isLooping = loop;
+    const range = new PlaybackRange();
+    range.startTick = StartTick;
+    range.endTick = EndTick;
+    h.player.playbackRange = range;
+    return { h, start: h.media.tickToMediaTime(StartTick), end: h.media.tickToMediaTime(EndTick) };
+}
+
+/**
+ * Time and the media move together, in 10 ms steps.
+ */
+function run(h: MediaSynthHarness, ms: number) {
+    for (let t = 0; t < ms; t += 10) {
+        h.timer.advance(10);
+        h.mediaOutput!.advance(10);
+    }
+}
+
+describe('MediaSynthPlayerLoopTests', () => {
+    it('setting-a-range-seeks-to-its-start-and-raises-the-event', async () => {
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        let changed = 0;
+        h.player.playbackRangeChanged.on(() => changed++);
+        const range = new PlaybackRange();
+        range.startTick = StartTick;
+        range.endTick = EndTick;
+        h.player.playbackRange = range;
+        expect(changed).toBe(1);
+        expect(h.mediaOutput!.currentTime).toBeCloseTo(h.media.tickToMediaTime(StartTick), 3);
+    });
+
+    it('a-wrap-fires-finished-and-restarts-through-the-handshake', async () => {
+        const { h, start, end } = await looping();
+        h.player.countInVolume = 1;
+        h.player.play(); // counts in
+        h.synth.startCountIn(2000);
+        h.synthOutput.endCountIn(0.5 * 48000);
+        h.timer.advance(600);
+        const plays = h.synth.count('play:');
+        run(h, (end - start) + 100);
+        expect(h.finished).toBe(1);
+        expect(h.states).toEqual(['Playing']);
+        expect(h.synth.count('play:')).toBe(plays + 1);
+        expect(h.synth.calls[h.synth.calls.length - 1]).toBe('play:countIn=0');
+        expect(h.player.diagnostics.wraps.length).toBe(1);
+        expect(h.mediaOutput!.currentTime).toBeLessThan(start + 200);
+    });
+
+    it('a-wrap-above-1x-pre-rolls-60-ms', async () => {
+        const { h, start, end } = await looping(1.5);
+        h.player.play();
+        run(h, (end - start) / 1.5 + 100);
+        expect(h.finished).toBe(1);
+        expect(h.mediaOutput!.seekTimes.some(t => Math.abs(t - (start - 60)) < 0.01)).toBe(true);
+    });
+
+    it('the-range-end-without-looping-stops-at-the-range-start', async () => {
+        const { h, start, end } = await looping(1, false);
+        h.player.play();
+        run(h, (end - start) + 100);
+        expect(h.finished).toBe(1);
+        expect(h.states).toEqual(['Playing', 'Stopped']);
+        expect(h.mediaOutput!.currentTime).toBeCloseTo(start, 3);
+    });
+
+    it('looping-without-a-range-wraps-at-the-song-end', async () => {
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        h.player.isLooping = true;
+        const songEnd = h.media.tickToMediaTime(h.media.loadedMidiInfo!.endTick);
+        h.mediaOutput!.currentTime = songEnd - 300;
+        h.player.play();
+        run(h, 400);
+        expect(h.finished).toBe(1);
+        expect(h.states).toEqual(['Playing']);
+        expect(h.mediaOutput!.currentTime).toBeLessThan(200);
+    });
+
+    it('an-early-timer-waits-for-the-media', async () => {
+        const { h, start, end } = await looping();
+        h.player.play();
+        h.timer.advance((end - start) + 100); // the media hasn't moved (it started late)
+        expect(h.finished).toBe(0);
+        run(h, (end - start) + 100);
+        expect(h.finished).toBe(1);
+    });
+
+    it('destroy-clears-the-wrap-timer', async () => {
+        // Review Focus 5
+        const { h } = await looping();
+        h.player.play();
+        h.player.destroy();
+        expect(h.timer.pending).toBe(0);
+    });
+});
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `npx vitest run test/audio/MediaSynthPlayer.Loop.test.ts`
+Expected: FAIL — no `finished` at the range end.
+
+- [ ] **Step 3: Implement**
+
+Field: `private _wrapTimer: number = 0;`. `_interrupt` clears it:
+
+```diff
++        this._timer.clearTimeout(this._wrapTimer);
++        this._wrapTimer = 0;
+         this._cancelCountIn();
+```
+
+Schedule the wrap wherever playback (re)starts or its timing changes:
+
+```diff
+@@ _startPlayback (media-only branch)
+         if (!this._isMixing) {
+             this._playMedia();
++            this._scheduleWrap(0);
+             return;
+         }
+@@ _runStart (inside whenSeeked, after controller.started)
+             this.controller.started(plan, learnStartLead);
++            this._scheduleWrap(plan.mediaDelayMs);
+         });
+@@ _handOff (at the end)
+         this._watchMediaStart(this.controller.mediaStartLatencies.get(countIn.speed) + MediaSyncConstants.MediaStartCheckMs);
++        this._scheduleWrap(0);
+@@ _onCountInTimeLimit (at the end)
+         this._playMedia();
++        this._scheduleWrap(0);
+@@ playbackSpeed setter (at the end)
++        if (this._state === PlayerState.Playing) {
++            this._scheduleWrap(0);
++        }
+@@ playbackRange setter (after the event)
++        this._scheduleWrap(0);
+@@ isLooping setter
+         this._isLooping = value;
++        this._scheduleWrap(0);
+```
+
+New methods:
+
+```ts
+    /**
+     * The media time of the end to wrap or stop at, or -1 when the media's own end handles it (no range, no loop).
+     */
+    private _wrapEnd(): number {
+        const range = this._playbackRange;
+        if (range) {
+            return this._media.tickToMediaTime(range.endTick);
+        }
+        const info = this._media.loadedMidiInfo;
+        if (this._isLooping && info) {
+            return this._media.tickToMediaTime(info.endTick);
+        }
+        return -1;
+    }
+
+    private _scheduleWrap(extraDelayMs: number): void {
+        this._timer.clearTimeout(this._wrapTimer);
+        this._wrapTimer = 0;
+        if (this._state !== PlayerState.Playing || this._countIn) {
+            return;
+        }
+        const end = this._wrapEnd();
+        if (end < 0) {
+            return;
+        }
+        // G-3 (spike 4): a little before the end
+        const untilEndMs = (end - MediaSyncConstants.LoopWrapLeadMs - this._clock.position) / this.playbackSpeed;
+        this._wrapTimer = this._timer.setTimeout(() => this._onWrapTimer(), Math.max(0, untilEndMs) + extraDelayMs);
+    }
+
+    private _onWrapTimer(): void {
+        this._wrapTimer = 0;
+        const end = this._wrapEnd();
+        if (this._state !== PlayerState.Playing || end < 0) {
+            return;
+        }
+        const remainingMs = (end - MediaSyncConstants.LoopWrapLeadMs - this._clock.position) / this.playbackSpeed;
+        if (remainingMs > 5) {
+            // the timer fired early or the media started late: wait for the media
+            this._wrapTimer = this._timer.setTimeout(() => this._onWrapTimer(), remainingMs);
+            return;
+        }
+        (this.finished as EventEmitter).trigger();
+        if (!this._isLooping) {
+            // back to the range start, stateChanged(Paused, stopped), as today
+            this.stop();
+            return;
+        }
+        this.diagnostics.wraps.push(this._timer.now());
+        // pause both, seek both to the range start, restart through the start handshake (§6.2):
+        // no count-in, no stateChanged
+        this._interrupt();
+        const range = this._playbackRange;
+        if (range) {
+            this._media.tickPosition = range.startTick;
+        } else {
+            this._media.timePosition = 0;
+        }
+        this._startPlayback(false);
+    }
+```
+
+- [ ] **Step 4: Run the tests to see them pass**
+
+Run: `npx vitest run test/audio/MediaSynthPlayer.Loop.test.ts test/audio/MediaSynthPlayer.CountIn.test.ts test/audio/MediaSynthPlayer.Transport.test.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Run the repo gates and commit**
+
+```bash
+npm run lint && npm run typecheck && npm test
+git add packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts packages/alphatab/test/audio/MediaSynthPlayer.Loop.test.ts
+git commit -m "feat(web): combined player owns the playback range and the loop wrap (#2397)"
+git push
+```
+
+---
+
+### Task 19: `MediaSynthPlayer` — external media (F-5, F-6, F-17)
+
+**Files:**
+- Modify: `packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts`
+- Create: `packages/alphatab/test/audio/MediaSynthPlayer.External.test.ts`
+- Modify: `docs/superpowers/specs/2026-10-07-synth-with-media-design.md` (§1 S10 scope, F-5; §7 the
+  `updatePosition()` call, F-6)
+
+**Interfaces:**
+- Consumes: `ExternalMediaClock` (`addSample`, `setPlaying`, `notePausedPosition`, `restartFit`, `expectJumpTo`,
+  `isStalled`, `movedSincePause`) (Task 11); the handshakes (Tasks 16–18).
+- Produces (used by Task 20): the external-media flows below. No new public members.
+
+External media is best-effort (S9). It can't be held, so a seek or a wrap happens while it plays, and its
+position arrives through the app's `updatePosition()` calls. Our design's problems, all **(untested)** except
+F-17's model:
+
+- **Seek while playing (§6.2):** the synth stays silent until the first update after the jump, then restarts at
+  the media's position. There's no count-in and no learning; the settling re-sync locks it.
+- **F-5** (library-only; Low): a wrap doesn't pause the media. It seeks to the range start, then does what a seek
+  does. S10 is scoped to the backing track.
+- **F-6** (alphaTabWebsite; Low): when the position moved since the pause (an update at most 100 ms old), the start
+  came from the media's own player. The synth then starts at the media's position, with no count-in and no
+  learning.
+- **F-17** (alphaTabWebsite; modeled in spike 9 §4; Medium): the same position for 100 ms or more silences the
+  synth. On the first update that moves, the fit restarts there and the synth restarts.
+- **A media that hasn't started 500 ms after its planned start** (buffering): the synth goes silent and restarts
+  once the media moves.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `packages/alphatab/test/audio/MediaSynthPlayer.External.test.ts`:
+
+```ts
+/**
+ * External media with the combined player (spec §6.2): seeks, wraps, stalls and starts inside the media.
+ * @target web
+ */
+import { describe, expect, it } from 'vitest';
+import { PlaybackRange } from '@coderline/alphatab/synth/PlaybackRange';
+import { MediaSynthHarness } from 'test/audio/MediaSyncFakes';
+
+async function externalPlaying(): Promise<MediaSynthHarness> {
+    const h = new MediaSynthHarness(true);
+    await h.loadSong();
+    h.report(5000); // the paused media's position
+    h.player.play(); // through alphaTab: no movement since the pause
+    for (let i = 1; i <= 6; i++) {
+        h.timer.advance(50);
+        h.report(5000 + i * 50);
+    }
+    return h;
+}
+
+function last(h: MediaSynthHarness): string {
+    return h.synth.calls[h.synth.calls.length - 1];
+}
+
+describe('MediaSynthPlayerExternalTests', () => {
+    it('a-seek-silences-the-synth-until-the-first-update-after-the-jump', async () => {
+        const h = await externalPlaying();
+        h.player.timePosition = 20000;
+        const target = h.media.mediaTimeOfPosition;
+        expect(h.handler!.seekTimes[h.handler!.seekTimes.length - 1]).toBeCloseTo(target, 3);
+        expect(h.handler!.pauses).toBe(0); // the media can't be held
+        expect(last(h)).toBe('pause');
+        h.timer.advance(50);
+        h.report(5350); // still the position from before the jump
+        expect(last(h)).toBe('pause');
+        for (let i = 0; i < 3; i++) {
+            h.timer.advance(50);
+            h.report(target + i * 50);
+        }
+        expect(last(h)).toBe('play:countIn=0');
+        expect(h.synth.lastSeek()).toBeCloseTo(target + 100 + 10, 0); // the media now + the re-sync lead
+    });
+
+    it('a-wrap-seeks-without-pausing-the-media', async () => {
+        // F-5
+        const h = new MediaSynthHarness(true);
+        await h.loadSong();
+        const range = new PlaybackRange();
+        range.startTick = 7680;
+        range.endTick = 15360;
+        h.player.isLooping = true;
+        h.player.playbackRange = range;
+        const start = h.media.tickToMediaTime(range.startTick);
+        h.report(start);
+        h.player.play();
+        let position = start;
+        for (let guard = 0; h.finished === 0 && guard < 10000; guard++) {
+            h.timer.advance(50);
+            position += 50;
+            h.report(position);
+        }
+        expect(h.finished).toBe(1);
+        expect(h.handler!.pauses).toBe(0);
+        expect(h.handler!.seekTimes[h.handler!.seekTimes.length - 1]).toBeCloseTo(start, 3);
+        expect(last(h)).toBe('pause');
+        for (let i = 0; i < 3; i++) {
+            h.timer.advance(50);
+            h.report(start + i * 50);
+        }
+        expect(last(h)).toBe('play:countIn=0');
+    });
+
+    it('a-stall-silences-the-synth-and-restarts-it-after', async () => {
+        // F-17, spike 9 §4
+        const h = await externalPlaying();
+        const plays = h.synth.count('play:');
+        h.timer.advance(50);
+        h.report(5300);
+        h.timer.advance(50);
+        h.report(5300); // the same position for 100 ms: buffering
+        expect(last(h)).toBe('pause');
+        for (let i = 1; i <= 3; i++) {
+            h.timer.advance(50);
+            h.report(5300 + i * 50);
+        }
+        expect(h.synth.count('play:')).toBe(plays + 1);
+    });
+
+    it('a-start-inside-the-media-skips-the-count-in-and-learning', async () => {
+        // F-6
+        const h = new MediaSynthHarness(true);
+        await h.loadSong();
+        h.player.countInVolume = 1;
+        h.report(1000); // paused at 1000
+        h.timer.advance(300);
+        h.report(1220); // play pressed inside the video; the app hears of it ~220 ms later
+        h.player.play(); // the integration calls api.play() from the media's play event
+        expect(h.synth.count('play:')).toBe(0); // waits for the media's clock
+        for (let i = 1; i <= 3; i++) {
+            h.timer.advance(50);
+            h.report(1220 + i * 50);
+        }
+        expect(h.synth.calls.filter(c => c.startsWith('play:'))).toEqual(['play:countIn=0']);
+        expect(h.handler!.plays).toBe(1);
+        expect(h.player.controller.startLeads.size).toBe(0);
+    });
+
+    it('a-start-through-alphatab-counts-in', async () => {
+        const h = new MediaSynthHarness(true);
+        await h.loadSong();
+        h.player.countInVolume = 1;
+        h.report(1000);
+        h.player.play();
+        expect(last(h)).toBe('play:countIn=1');
+        expect(h.handler!.plays).toBe(0); // the media starts at the hand-off
+    });
+
+    it('a-media-that-has-not-started-restarts-the-synth-when-it-moves', async () => {
+        const h = new MediaSynthHarness(true);
+        await h.loadSong();
+        h.report(5000);
+        h.player.play();
+        for (let i = 1; i <= 12; i++) {
+            h.timer.advance(50);
+            h.report(5000); // buffering
+        }
+        expect(last(h)).toBe('pause');
+        for (let i = 1; i <= 3; i++) {
+            h.timer.advance(50);
+            h.report(5000 + i * 50);
+        }
+        expect(last(h)).toBe('play:countIn=0');
+    });
+});
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `npx vitest run test/audio/MediaSynthPlayer.External.test.ts`
+Expected: FAIL — e.g. the seek pauses the external media through the backing-track handshake.
+
+- [ ] **Step 3: Implement**
+
+Fields:
+
+```ts
+    private _awaitingSynthStart: boolean = false;
+    private _stalled: boolean = false;
+    private _refitOnMove: boolean = false;
+```
+
+Subscribe to the media's position updates (constructor):
+
+```ts
+        subscribe((media.output as IBackingTrackSynthOutput).timeUpdate.on(t => this._onMediaTimeUpdate(t)));
+```
+
+`_interrupt` resets the external state:
+
+```diff
+         this._holdBefore = -1;
++        this._awaitingSynthStart = false;
++        this._stalled = false;
++        this._refitOnMove = false;
+         this.controller.stopped();
+```
+
+`_startPlayback` — a start inside the media (F-6), after the media-only branch:
+
+```diff
+         if (!this._isMixing) {
+             this._playMedia();
+             this._scheduleWrap(0);
+             return;
+         }
++        const external = this._externalClock;
++        if (external && external.movedSincePause()) {
++            // F-6: play was pressed inside the media's own player and it already moves:
++            // no count-in, no learning; the synth starts where the media is
++            this._playMedia();
++            this._awaitingSynthStart = true;
++            this._startSynthWhenTheMediaRuns();
++            return;
++        }
+         this._sendFollowConfig();
+```
+
+`_runStart` watches an external start (inside `whenSeeked`, after `controller.started`):
+
+```diff
+             this.controller.started(plan, learnStartLead);
+             this._scheduleWrap(plan.mediaDelayMs);
++            if (this._externalClock) {
++                this._watchMediaStart(
++                    plan.mediaDelayMs + this.controller.mediaStartLatencies.get(plan.speed) + MediaSyncConstants.MediaStartCheckMs
++                );
++            }
+         });
+```
+
+`_watchMediaStart` — external media restarts the synth when it moves, instead of pausing:
+
+```diff
+                 return;
+             }
++            if (this._externalClock) {
++                // the video buffers: the synth restarts at the media's position once it moves (§6.2)
++                this._silenceUntilTheMediaMoves();
++                return;
++            }
+             // R-2: the browser refused the media's play(); decision D-7 picks the real fallback
+```
+
+`_seek` — external media jumps while it plays; a paused seek is not a start:
+
+```ts
+    private _seek(apply: () => void): void {
+        if (this._state !== PlayerState.Playing) {
+            apply();
+            this._externalClock?.notePausedPosition(this._media.mediaTimeOfPosition);
+            return;
+        }
+        if (this._externalClock && !this._countIn) {
+            // external media can't be held: it jumps while playing, the synth waits for it (§6.2)
+            this._timer.clearTimeout(this._wrapTimer);
+            this._wrapTimer = 0;
+            apply();
+            this._jumpExternal(this._media.mediaTimeOfPosition);
+            return;
+        }
+        // pause both, seek, restart through the start handshake: no count-in, no stateChanged (§6.2)
+        this._interrupt();
+        apply();
+        this._startPlayback(false);
+    }
+```
+
+`_onWrapTimer` — F-5, before the backing-track wrap:
+
+```diff
+         this.diagnostics.wraps.push(this._timer.now());
++        const range = this._playbackRange;
++        if (this._externalClock) {
++            // F-5: external media wraps without pausing: seek it, the synth waits for the first update after
++            const start = range ? this._media.tickToMediaTime(range.startTick) : 0;
++            this._media.seekMediaTo(start);
++            this._jumpExternal(start);
++            return;
++        }
+         // pause both, seek both to the range start, restart through the start handshake (§6.2):
+         // no count-in, no stateChanged
+         this._interrupt();
+-        const range = this._playbackRange;
+         if (range) {
+```
+
+Speed change — the fit is at the old rate:
+
+```diff
+         if (this._state === PlayerState.Playing && this._isMixing && !this._countIn) {
++            // the fitted line is at the old rate
++            this._externalClock?.restartFit();
+             // both at the new speed with its latency: re-sync and settle (§6.2; spike 11)
+             this.controller.speedChanged(speed);
+         }
+```
+
+New methods:
+
+```ts
+    private _onMediaTimeUpdate(position: number): void {
+        const clock = this._externalClock;
+        if (!clock) {
+            return;
+        }
+        if (this._refitOnMove && position !== clock.position) {
+            // the media moves (again): fit from here; a fit across a stall re-syncs twice (spike 9 §4)
+            this._refitOnMove = false;
+            this._stalled = false;
+            clock.restartFit();
+        }
+        clock.addSample(position);
+        if (this._mediaStartCheckTimer !== 0 && !Number.isNaN(clock.mediaTimeNow())) {
+            // the media runs: its start needs no more checking
+            this._timer.clearTimeout(this._mediaStartCheckTimer);
+            this._mediaStartCheckTimer = 0;
+        }
+        if (this._state !== PlayerState.Playing || !this._isMixing || this._countIn) {
+            return;
+        }
+        if (!this._stalled && !this._awaitingSynthStart && clock.isStalled) {
+            // F-17: the media stalls (buffering): silence the synth until it moves again
+            this._stalled = true;
+            this._silenceUntilTheMediaMoves();
+            return;
+        }
+        this._startSynthWhenTheMediaRuns();
+    }
+
+    private _startSynthWhenTheMediaRuns(): void {
+        if (!this._awaitingSynthStart || this._stalled || Number.isNaN(this._clock.mediaTimeNow())) {
+            return;
+        }
+        this._awaitingSynthStart = false;
+        // started by the media, or after an external seek, wrap or stall: no count-in, no learning; the synth starts
+        // where the media is and the settling re-sync locks it (§6.2)
+        this._sendFollowConfig();
+        this.controller.startedAfterHandOff(this.playbackSpeed, false);
+        this._synth.pause();
+        this.controller.resync();
+        this._synth.play();
+        this._scheduleWrap(0);
+    }
+
+    private _jumpExternal(target: number): void {
+        this.controller.stopped();
+        this._synth.pause();
+        this._externalClock!.expectJumpTo(target);
+        this._awaitingSynthStart = true;
+    }
+
+    private _silenceUntilTheMediaMoves(): void {
+        this.controller.stopped();
+        this._synth.pause();
+        this._awaitingSynthStart = true;
+        this._refitOnMove = true;
+    }
+```
+
+- [ ] **Step 4: Run the tests to see them pass**
+
+Run: `npx vitest run test/audio/MediaSynthPlayer.External.test.ts` and then all `MediaSynthPlayer.*` tests.
+Expected: PASS.
+
+- [ ] **Step 5: Update the spec (F-5, F-6)**
+
+§1, row S10, add at the end of the criterion cell: "Backing track only: external media wraps without pausing and
+stays best-effort (S9)."
+
+§7, after the paragraph that starts "External media: hide the player's own controls", add:
+
+> If your integration starts alphaTab from the media's own play event (for example YouTube's `PLAYING` state),
+> call `updatePosition()` right before `api.play()`: alphaTab then sees that the media already moves and starts
+> the synthesizer at its position, with no count-in (F-6).
+
+- [ ] **Step 6: Run the repo gates and commit**
+
+```bash
+npm run lint && npm run typecheck && npm test
+git add packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts packages/alphatab/test/audio/MediaSynthPlayer.External.test.ts docs/superpowers/specs/2026-10-07-synth-with-media-design.md
+git commit -m "feat(web): external media seeks, wraps, stalls and starts inside the media (#2397, F-5, F-6, F-17)"
+git push
+```
+
+---
+
+### Task 20: Settings and wiring
+
+**Files:**
+- Modify: `packages/alphatab/src/PlayerSettings.ts`
+- Regenerate: `packages/alphatab/src/generated/*` (`npm run generate-typescript`)
+- Modify: `packages/alphatab/src/platform/IUiFacade.ts`
+- Modify: `packages/alphatab/test/visualTests/TestUiFacade.ts`
+- Modify: `packages/alphatab/src/platform/javascript/BrowserUiFacade.ts`
+- Modify: `packages/alphatab/src/AlphaTabApiBase.ts` (`_setupOrDestroyPlayer`)
+- Create: `packages/alphatab/test/audio/MediaSynthWiring.test.ts`
+
+**Interfaces:**
+- Consumes: everything above.
+- Produces (used by Tasks 21–27): `PlayerSettings.enableSynthesizerWithMedia`,
+  `PlayerSettings.mediaSyncOffsetInMilliseconds`, `IUiFacade.createMediaSynthPlayer(mode: PlayerMode): IAlphaSynth | null`,
+  the combined player in the browser.
+
+§7 wiring: when the resolved mode is `EnabledBackingTrack` or `EnabledExternalMedia` and the switch is on,
+`_setupOrDestroyPlayer` asks `uiFacade.createMediaSynthPlayer(mode)`. Web returns a `MediaSynthPlayer`; other
+platforms return null and get today's media-only player. Web also returns null, and logs a warning, when
+`outputMode` isn't `WebAudioAudioWorklets` or AudioWorklets are unavailable (no `AudioWorkletNode`, or not a secure
+context). The player is also recreated when the switch changes through `updateSettings()` (Review Focus 4). With
+the switch off nothing changes (S7).
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `packages/alphatab/test/audio/MediaSynthWiring.test.ts`:
+
+```ts
+/**
+ * Creating the combined player from the settings (spec §7).
+ * @target web
+ */
+import { describe, expect, it } from 'vitest';
+import { AlphaTabApiBase } from '@coderline/alphatab/AlphaTabApiBase';
+import { PlayerMode } from '@coderline/alphatab/PlayerSettings';
+import { Settings } from '@coderline/alphatab/Settings';
+import { AlphaSynth } from '@coderline/alphatab/synth/AlphaSynth';
+import type { AlphaSynthWrapper } from '@coderline/alphatab/synth/AlphaSynthWrapper';
+import { BackingTrackPlayer } from '@coderline/alphatab/synth/BackingTrackPlayer';
+import { ExternalMediaPlayer } from '@coderline/alphatab/synth/ExternalMediaPlayer';
+import type { IAlphaSynth } from '@coderline/alphatab/synth/IAlphaSynth';
+import { TestMediaOutput } from 'test/audio/TestMediaOutput';
+import { TestOutput } from 'test/audio/TestOutput';
+import { TestUiFacade } from '../visualTests/TestUiFacade';
+
+class MixingTestUiFacade extends TestUiFacade {
+    public readonly mediaSynthCalls: PlayerMode[] = [];
+    public mediaSynthResult: (() => IAlphaSynth | null) = () => null;
+    public backingTrackCalls: number = 0;
+
+    public override createMediaSynthPlayer(mode: PlayerMode): IAlphaSynth | null {
+        this.mediaSynthCalls.push(mode);
+        return this.mediaSynthResult();
+    }
+
+    public override createBackingTrackPlayer(): IAlphaSynth | null {
+        this.backingTrackCalls++;
+        return new BackingTrackPlayer(new TestMediaOutput(), 500);
+    }
+}
+
+function createApi(mode: PlayerMode, mixing: boolean, facade: MixingTestUiFacade): AlphaTabApiBase<unknown> {
+    const settings = new Settings();
+    settings.player.playerMode = mode;
+    settings.player.enableSynthesizerWithMedia = mixing;
+    return new AlphaTabApiBase<unknown>(facade, settings);
+}
+
+function instanceOf(api: AlphaTabApiBase<unknown>): IAlphaSynth | undefined {
+    return (api.player as AlphaSynthWrapper | null)?.instance;
+}
+
+describe('MediaSynthWiringTests', () => {
+    it('settings-default-off-and-read-from-json', () => {
+        const settings = new Settings();
+        expect(settings.player.enableSynthesizerWithMedia).toBe(false);
+        expect(settings.player.mediaSyncOffsetInMilliseconds).toBe(0);
+        settings.fillFromJson({ player: { enableSynthesizerWithMedia: true, mediaSyncOffsetInMilliseconds: 25 } });
+        expect(settings.player.enableSynthesizerWithMedia).toBe(true);
+        expect(settings.player.mediaSyncOffsetInMilliseconds).toBe(25);
+    });
+
+    it('mixing-on-asks-for-a-combined-player', () => {
+        const facade = new MixingTestUiFacade();
+        const combined = new AlphaSynth(new TestOutput(), 500);
+        facade.mediaSynthResult = () => combined;
+        const api = createApi(PlayerMode.EnabledBackingTrack, true, facade);
+        expect(facade.mediaSynthCalls).toEqual([PlayerMode.EnabledBackingTrack]);
+        expect(facade.backingTrackCalls).toBe(0);
+        expect(instanceOf(api)).toBe(combined);
+        api.destroy();
+    });
+
+    it('no-combined-player-falls-back-to-the-media-player', () => {
+        const facade = new MixingTestUiFacade();
+        const api = createApi(PlayerMode.EnabledBackingTrack, true, facade);
+        expect(facade.mediaSynthCalls.length).toBe(1);
+        expect(instanceOf(api)).toBeInstanceOf(BackingTrackPlayer);
+        api.destroy();
+    });
+
+    it('external-media-asks-too-and-falls-back', () => {
+        const facade = new MixingTestUiFacade();
+        const api = createApi(PlayerMode.EnabledExternalMedia, true, facade);
+        expect(facade.mediaSynthCalls).toEqual([PlayerMode.EnabledExternalMedia]);
+        expect(instanceOf(api)).toBeInstanceOf(ExternalMediaPlayer);
+        api.destroy();
+    });
+
+    it('mixing-off-changes-nothing', () => {
+        // S7
+        const facade = new MixingTestUiFacade();
+        const api = createApi(PlayerMode.EnabledBackingTrack, false, facade);
+        expect(facade.mediaSynthCalls).toEqual([]);
+        expect(facade.backingTrackCalls).toBe(1);
+        api.destroy();
+    });
+
+    it('synthesizer-mode-ignores-the-switch', () => {
+        const facade = new MixingTestUiFacade();
+        const api = createApi(PlayerMode.EnabledSynthesizer, true, facade);
+        expect(facade.mediaSynthCalls).toEqual([]);
+        api.destroy();
+    });
+
+    it('flag-change-recreates-the-player', () => {
+        // Review Focus 4
+        const facade = new MixingTestUiFacade();
+        facade.mediaSynthResult = () => new AlphaSynth(new TestOutput(), 500);
+        const api = createApi(PlayerMode.EnabledBackingTrack, false, facade);
+        expect(facade.backingTrackCalls).toBe(1);
+
+        api.settings.player.enableSynthesizerWithMedia = true;
+        api.updateSettings();
+        expect(facade.mediaSynthCalls.length).toBe(1);
+
+        api.updateSettings(); // unchanged: no new player
+        expect(facade.mediaSynthCalls.length).toBe(1);
+
+        api.settings.player.enableSynthesizerWithMedia = false;
+        api.updateSettings();
+        expect(facade.backingTrackCalls).toBe(2);
+        api.destroy();
+    });
+
+    it('wrapper-restores-media-volumes', () => {
+        // Review Focus 4
+        const facade = new MixingTestUiFacade();
+        const combined = new AlphaSynth(new TestOutput(), 500);
+        facade.mediaSynthResult = () => combined;
+        const api = createApi(PlayerMode.EnabledBackingTrack, false, facade);
+        api.backingTrackVolume = 0.4;
+        api.synthVolume = 1.5;
+        api.settings.player.enableSynthesizerWithMedia = true;
+        api.updateSettings();
+        expect(combined.backingTrackVolume).toBeCloseTo(0.4, 9);
+        expect(combined.synthVolume).toBeCloseTo(1.5, 9);
+        api.destroy();
+    });
+});
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `npx vitest run test/audio/MediaSynthWiring.test.ts`
+Expected: FAIL — `enableSynthesizerWithMedia` doesn't exist.
+
+- [ ] **Step 3: The settings**
+
+`PlayerSettings.ts`, after `bufferTimeInMilliseconds`:
+
+```ts
+    /**
+     * Whether the synthesizer plays along a backing track or external media.
+     * @since 1.9.0
+     * @defaultValue `false`
+     * @category Player
+     * @remarks
+     * With {@link playerMode} resolving to {@link PlayerMode.EnabledBackingTrack} or
+     * {@link PlayerMode.EnabledExternalMedia}, alphaTab also runs its synthesizer, locked to the media: the
+     * metronome, the count-in and the score's tracks (use the track mute, solo and volume to choose what plays).
+     * The media stays the time source. Balance the two with `api.backingTrackVolume` and `api.synthVolume`.
+     *
+     * Needs {@link outputMode} {@link PlayerOutputMode.WebAudioAudioWorklets} and a browser with AudioWorklets (a
+     * secure context); otherwise the media plays alone and a warning is logged. Web only: other platforms play the
+     * media alone.
+     *
+     * External media is best-effort: tune {@link mediaSyncOffsetInMilliseconds} by ear. Hide the external player's
+     * own controls (YouTube: `controls: 0`, `disablekb: 1`) so starts go through your Play button and keep their
+     * count-in. If your integration starts alphaTab from the media's own play event, call `updatePosition()` right
+     * before `api.play()`: alphaTab then starts the synthesizer where the media already is, without a count-in.
+     */
+    public enableSynthesizerWithMedia: boolean = false;
+
+    /**
+     * A manual correction of the synthesizer against the media, in milliseconds.
+     * @since 1.9.0
+     * @defaultValue `0`
+     * @category Player
+     * @remarks
+     * Positive values make the synthesizer play later, negative values earlier, in milliseconds of real time at any
+     * playback speed. Use it for output paths alphaTab can't measure, like Bluetooth headphones or an external
+     * media player. Only used with {@link enableSynthesizerWithMedia}.
+     */
+    public mediaSyncOffsetInMilliseconds: number = 0;
+```
+
+Then regenerate the JSON types and serializers:
+
+```bash
+npm run generate-typescript
+```
+
+Expected: `packages/alphatab/src/generated/PlayerSettingsJson.ts` and the serializer gain both members.
+
+- [ ] **Step 4: The UI facade member**
+
+`IUiFacade.ts`, after `createBackingTrackPlayer()`:
+
+```ts
+    /**
+     * Tells the UI layer to create a player that runs the synthesizer along a backing track or external media
+     * ({@link PlayerSettings.enableSynthesizerWithMedia}).
+     * @param mode {@link PlayerMode.EnabledBackingTrack} or {@link PlayerMode.EnabledExternalMedia}.
+     * @returns The player, or null when this platform can't mix (the media then plays alone).
+     */
+    createMediaSynthPlayer(mode: PlayerMode): IAlphaSynth | null;
+```
+
+`TestUiFacade.ts`:
+
+```ts
+    public createMediaSynthPlayer(_mode: PlayerMode): IAlphaSynth | null {
+        return null;
+    }
+```
+
+- [ ] **Step 5: The wiring in `AlphaTabApiBase`**
+
+```diff
+     private _actualPlayerMode: PlayerMode = PlayerMode.Disabled;
++    private _actualMixing: boolean = false;
+@@ _setupOrDestroyPlayer
+         let newPlayer: IAlphaSynth | null = null;
+-        if (mode !== this._actualPlayerMode) {
++        // the synthesizer along a backing track or external media (§7); recreated when the switch changes
++        const mixing =
++            this.settings.player.enableSynthesizerWithMedia &&
++            (mode === PlayerMode.EnabledBackingTrack || mode === PlayerMode.EnabledExternalMedia);
++        if (mode !== this._actualPlayerMode || mixing !== this._actualMixing) {
+             this._destroyPlayer();
+             this._updateCursors();
+@@
+                 case PlayerMode.EnabledBackingTrack:
+-                    newPlayer = this.uiFacade.createBackingTrackPlayer();
++                    newPlayer =
++                        (mixing ? this.uiFacade.createMediaSynthPlayer(mode) : null) ??
++                        this.uiFacade.createBackingTrackPlayer();
+                     break;
+                 case PlayerMode.EnabledExternalMedia:
+-                    newPlayer = new ExternalMediaPlayer(this.settings.player.bufferTimeInMilliseconds);
++                    newPlayer =
++                        (mixing ? this.uiFacade.createMediaSynthPlayer(mode) : null) ??
++                        new ExternalMediaPlayer(this.settings.player.bufferTimeInMilliseconds);
+                     break;
+@@
+         this._actualPlayerMode = mode;
++        this._actualMixing = mixing;
+```
+
+- [ ] **Step 6: The browser's combined player**
+
+`BrowserUiFacade.ts`:
+
+```ts
+    /**
+     * The synthesizer along a backing track or external media (spec §7). Null (the media plays alone) when
+     * AudioWorklets can't be used.
+     */
+    public createMediaSynthPlayer(mode: PlayerMode): IAlphaSynth | null {
+        const settings = this._api.settings;
+        const supportsAudioWorklets: boolean = window.isSecureContext && 'AudioWorkletNode' in window;
+        if (settings.player.outputMode !== PlayerOutputMode.WebAudioAudioWorklets || !supportsAudioWorklets) {
+            Logger.warning(
+                'Player',
+                'Mixing the synthesizer with media needs AudioWorklets (PlayerOutputMode.WebAudioAudioWorklets in a secure context); playing the media only'
+            );
+            return null;
+        }
+        // created first: when it fails no media player (and no <audio>) is left behind
+        const synth = this.createWorkerPlayer() as AlphaSynthWebWorkerApi | null;
+        if (!synth) {
+            Logger.warning('Player', 'The synthesizer could not be created; playing the media only');
+            return null;
+        }
+        const synthOutput = synth.output as AlphaSynthAudioWorkletOutput;
+        const context = synthOutput.audioContext!;
+        const graph = new WebAudioMixGraph(context);
+        synthOutput.destinationNode = graph.synthInput;
+        synth.mediaSampleOutput = synthOutput;
+        const offset = () => settings.player.mediaSyncOffsetInMilliseconds;
+
+        const parts = new MediaSynthPlayerParts();
+        parts.synth = synth;
+        parts.synthOutput = synthOutput;
+        parts.graph = graph;
+        parts.timer = new BrowserMediaTimer();
+        parts.hasSoundFont = !!settings.player.soundFont;
+        parts.probeLatencies = MediaLatencyProbe.cache;
+        if (mode === PlayerMode.EnabledExternalMedia) {
+            const clock = new ExternalMediaClock(graph, offset);
+            parts.media = new ExternalMediaPlayer(settings.player.bufferTimeInMilliseconds);
+            parts.clock = clock;
+            parts.externalClock = clock;
+        } else {
+            const media = this.createBackingTrackPlayer() as BackingTrackPlayer;
+            const element = (media.output as AudioElementBackingTrackSynthOutput).audioElement;
+            graph.connectMediaElement(element);
+            parts.media = media;
+            parts.clock = new BackingTrackMediaClock(
+                new AudioElementClockSource(element, context),
+                MediaLatencyProbe.cache,
+                offset
+            );
+            parts.probe = new MediaLatencyProbe(context, () =>
+                BrowserUiFacade.createAlphaSynthAudioWorklet(context, settings)
+            );
+        }
+        return new MediaSynthPlayer(parts);
+    }
+```
+
+Imports: `PlayerMode` (next to `PlayerOutputMode`), `ExternalMediaPlayer`, `WebAudioMixGraph`,
+`MediaSynthPlayer, MediaSynthPlayerParts`, `BackingTrackMediaClock, AudioElementClockSource, ExternalMediaClock`,
+`MediaLatencyProbe`, `BrowserMediaTimer`; `AlphaSynthAudioWorkletOutput`, `AlphaSynthWebWorkerApi`,
+`AudioElementBackingTrackSynthOutput` and `BackingTrackPlayer` are imported already. Remove nothing else.
+
+- [ ] **Step 7: Run the tests to see them pass**
+
+Run: `npx vitest run test/audio/MediaSynthWiring.test.ts`
+Expected: PASS (8 tests).
+
+- [ ] **Step 8: Run the repo gates, build, and commit**
+
+```bash
+npm run lint && npm run typecheck && npm test
+npm run build
+git add packages/alphatab/src packages/alphatab/test/audio/MediaSynthWiring.test.ts packages/alphatab/test/visualTests/TestUiFacade.ts
+git commit -m "feat: enableSynthesizerWithMedia and mediaSyncOffsetInMilliseconds; create the combined player (#2397)"
+git push
+```
+
+`npm run build` must pass: it bundles the worklet module too, and Task 12 registered the probe tap in it.
+
+---
+
+## Phase 5 — Verification
+
+### Task 21: The sync lab (playground demo), with the speed-change tests (F-9d) and the F-3 tolerance
+
+**Files:**
+- Create: `packages/playground/demos/sync-lab/index.html`
+- Create: `packages/playground/demos/sync-lab/index.ts`
+
+**Interfaces:**
+- Consumes: `MediaSynthPlayer.diagnostics` and `controller` (Task 15), `MediaLatencyProbe` (Task 12),
+  `MediaSyncConstants` (Task 9), the public API.
+- Produces (used by Tasks 22–24): `http://localhost:5188/demos/sync-lab/` with `window.syncLab` (the tests below,
+  `results`, `created`).
+
+§9: the spike's measurement page, cleaned up and moved onto the real player. It doesn't carry the spike's modes.
+It reads the player through the `@internal` diagnostics only (§3). The default file is the repo's
+`syncpoints-testfile.gp` (the spike used a local file). `?file=` loads another one, and `?mixing=0` is the S7 check.
+New compared with the spike:
+
+- the real count-in;
+- the F-9d tests: an auto-BPM loop, a held sweep, a first Play at an unprobed speed;
+- a probe value landing mid-playback (D-1);
+- the count-in pre-roll comparison (D-3);
+- the 1 s vs 4 s probe comparison (§6.4);
+- the S4 tolerance derived from `baseLatency` (F-3).
+
+- [ ] **Step 1: The page**
+
+Create `packages/playground/demos/sync-lab/index.html`:
+
+```html
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <title>alphaTab — Sync lab (#2397)</title>
+        <link rel="stylesheet" href="../../src/styles/common.css" />
+        <style>
+            body { margin: 0; font-family: system-ui, sans-serif; }
+            .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px; border-bottom: 1px solid #ddd; }
+            .bar select, .bar button { font-size: 14px; }
+            pre { margin: 0; padding: 8px; max-height: 30vh; overflow: auto; background: #f6f6f6; font-size: 12px; }
+            .at-viewport { height: 55vh; overflow: auto; }
+            body.dragging { outline: 4px dashed #2a7; outline-offset: -8px; }
+        </style>
+    </head>
+    <body>
+        <div class="bar">
+            <strong>Sync lab #2397</strong>
+            <label title="or drop a .gp file anywhere on the page">File <input type="file" id="fileInput" accept=".gp,.gpx" /></label>
+            <em id="fileName"></em>
+            <label>Audio
+                <select id="src">
+                    <option value="beeps">generated beeps (measure)</option>
+                    <option value="mp3">the file's audio (listen)</option>
+                </select>
+            </label>
+            <label><input type="checkbox" id="listen" checked /> sound on</label>
+            <button id="play">Play / Pause</button>
+            <label><input type="checkbox" id="metronome" checked /> metronome</label>
+            <label>Metronome vol <input type="range" id="metronomeVol" min="0" max="3" step="0.1" value="1" /></label>
+            <label><input type="checkbox" id="drums" /> synth tracks</label>
+            <label>Speed
+                <select id="speed">
+                    <option>0.25</option>
+                    <option>0.5</option>
+                    <option>0.75</option>
+                    <option selected>1</option>
+                    <option>1.25</option>
+                    <option>1.5</option>
+                    <option>2</option>
+                </select>
+            </label>
+            <label>Backing track vol <input type="range" id="mediaVol" min="0" max="1" step="0.05" value="1" /></label>
+            <label>Synth vol <input type="range" id="synthVol" min="0" max="3" step="0.1" value="1" /></label>
+            <button id="measure">Run measurement</button>
+        </div>
+        <div class="bar" id="live" style="font-family: ui-monospace, monospace; font-size: 13px;">live: —</div>
+        <pre id="log">loading…</pre>
+        <div class="at-viewport"><div class="at-canvas"></div></div>
+        <script type="module" src="./index.ts"></script>
+    </body>
+</html>
+```
+
+- [ ] **Step 2: The lab**
+
+Create `packages/playground/demos/sync-lab/index.ts`:
+
+```ts
+// Sync lab (CoderLine/alphaTab#2397): measures the synthesizer against a backing track (spec §9).
+//
+// URL params: ?src=beeps|mp3 &listen=0|1 &mixing=0|1 &file=/test-data/audio/syncpoints-testfile.gp
+//   src=beeps  the file's backing track is replaced by a 2 kHz beep on every beat (from the file's own sync points);
+//              the synth plays the metronome. Two taps record every beep (media) and every click (synth) on the
+//              AudioContext's clock, so click - beep is the audible offset.
+//   mixing=0   the S7 check: the same page with enableSynthesizerWithMedia off.
+// Every test logs its result and keeps it in window.syncLab.results.
+import * as alphaTab from '@coderline/alphatab';
+import { AlphaSynthMidiFileHandler } from '@coderline/alphatab/midi/AlphaSynthMidiFileHandler';
+import { MidiFile } from '@coderline/alphatab/midi/MidiFile';
+import { MidiFileGenerator } from '@coderline/alphatab/midi/MidiFileGenerator';
+import { BrowserUiFacade } from '@coderline/alphatab/platform/javascript/BrowserUiFacade';
+import { MediaLatencyProbe } from '@coderline/alphatab/platform/javascript/MediaLatencyProbe';
+import { MediaSyncConstants } from '@coderline/alphatab/platform/javascript/MediaSyncController';
+import type { MediaSynthPlayer } from '@coderline/alphatab/platform/javascript/MediaSynthPlayer';
+import type { IAudioSampleSynthesizer } from '@coderline/alphatab/synth/IAudioSampleSynthesizer';
+import { MidiFileSequencer } from '@coderline/alphatab/synth/MidiFileSequencer';
+import type { SynthEvent } from '@coderline/alphatab/synth/synthesis/SynthEvent';
+import { Paths } from '../../src/util/Paths';
+
+const params = new URL(window.location.href).searchParams;
+const src = params.get('src') ?? 'beeps';
+const mixing = params.get('mixing') !== '0';
+const file = params.get('file') ?? '/test-data/audio/syncpoints-testfile.gp';
+const results: { name: string; value: unknown; at: string }[] = [];
+
+const logEl = document.getElementById('log')!;
+function log(...args: unknown[]) {
+    const line = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+    logEl.textContent = `${logEl.textContent === 'loading…' ? '' : `${logEl.textContent}\n`}${line}`;
+    logEl.scrollTop = logEl.scrollHeight;
+    console.log('[sync-lab]', line);
+}
+function record(name: string, value: unknown) {
+    results.push({ name, value, at: new Date().toISOString() });
+    log({ [name]: value });
+}
+
+const input = (id: string) => document.getElementById(id) as HTMLInputElement;
+(document.getElementById('src') as HTMLSelectElement).value = src;
+input('listen').checked = params.get('listen') !== '0';
+input('drums').checked = params.has('drums') ? params.get('drums') === '1' : src === 'mp3';
+input('metronome').checked = params.get('metronome') !== '0';
+document.getElementById('src')!.addEventListener('change', () => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('src', (document.getElementById('src') as HTMLSelectElement).value);
+    window.location.href = url.toString();
+});
+
+// ---- S7: count what the player creates (before the API exists) ----
+const created = { synthWorkers: 0, synthWorklets: 0 };
+const createSynthWorker = BrowserUiFacade.createAlphaSynthWebWorker;
+BrowserUiFacade.createAlphaSynthWebWorker = s => {
+    created.synthWorkers++;
+    return createSynthWorker(s);
+};
+const NativeWorkletNode = window.AudioWorkletNode;
+(window as unknown as { AudioWorkletNode: typeof AudioWorkletNode }).AudioWorkletNode = class extends NativeWorkletNode {
+    public constructor(context: BaseAudioContext, name: string, options?: AudioWorkletNodeOptions) {
+        super(context, name, options);
+        if (name === 'alphatab') {
+            created.synthWorklets++;
+        }
+    }
+};
+
+class SilentSynth implements IAudioSampleSynthesizer {
+    public masterVolume = 0;
+    public metronomeVolume = 0;
+    public outSampleRate = 44100;
+    public currentTempo = 120;
+    public timeSignatureNumerator = 4;
+    public timeSignatureDenominator = 4;
+    public activeVoiceCount = 0;
+    public noteOffAll(): void {}
+    public resetSoft(): void {}
+    public resetPresets(): void {}
+    public loadPresets(): void {}
+    public setupMetronomeChannel(): void {}
+    public synthesizeSilent(): void {}
+    public dispatchEvent(_e: SynthEvent): void {}
+    public synthesize(): SynthEvent[] {
+        return [];
+    }
+    public applyTranspositionPitches(): void {}
+    public setChannelTranspositionPitch(): void {}
+    public channelSetMute(): void {}
+    public channelSetSolo(): void {}
+    public resetChannelStates(): void {}
+    public channelSetMixVolume(): void {}
+    public hasSamplesForProgram(): boolean {
+        return true;
+    }
+    public hasSamplesForPercussion(): boolean {
+        return true;
+    }
+}
+
+function encodeWav(pcm: Int16Array, sampleRate: number): Uint8Array {
+    const buf = new ArrayBuffer(44 + pcm.length * 2);
+    const v = new DataView(buf);
+    const w = (o: number, s: string) => {
+        for (let i = 0; i < s.length; i++) {
+            v.setUint8(o + i, s.charCodeAt(i));
+        }
+    };
+    w(0, 'RIFF');
+    v.setUint32(4, 36 + pcm.length * 2, true);
+    w(8, 'WAVE');
+    w(12, 'fmt ');
+    v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true);
+    v.setUint16(22, 1, true);
+    v.setUint32(24, sampleRate, true);
+    v.setUint32(28, sampleRate * 2, true);
+    v.setUint16(32, 2, true);
+    v.setUint16(34, 16, true);
+    w(36, 'data');
+    v.setUint32(40, pcm.length * 2, true);
+    new Int16Array(buf, 44).set(pcm);
+    return new Uint8Array(buf);
+}
+
+async function mediaDuration(bytes: Uint8Array): Promise<number> {
+    const el = new Audio(URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>])));
+    await new Promise(r => el.addEventListener('loadedmetadata', r, { once: true }));
+    return el.duration * 1000;
+}
+
+const settings = new alphaTab.Settings();
+settings.fillFromJson({
+    core: { fontDirectory: Paths.fontDirectory, logLevel: 'warning' },
+    player: {
+        playerMode: alphaTab.PlayerMode.EnabledBackingTrack,
+        enableSynthesizerWithMedia: mixing,
+        soundFont: Paths.soundFont,
+        scrollMode: alphaTab.ScrollMode.Off
+    }
+} satisfies alphaTab.json.SettingsJson);
+
+// conversions media time <-> alphaTab time (the same sync points as the player)
+let sequencer!: MidiFileSequencer;
+let durationMs = 0;
+let beatMediaTimes: number[] = [];
+
+async function prepareScore(bytes: Uint8Array, name: string): Promise<alphaTab.model.Score | null> {
+    let score: alphaTab.model.Score;
+    try {
+        score = alphaTab.importer.ScoreLoader.loadScoreFromBytes(bytes, settings);
+    } catch (e) {
+        log(`${name}: could not load (${(e as Error).message})`);
+        return null;
+    }
+    const audio = score.backingTrack?.rawAudioFile;
+    if (!audio) {
+        log(`${name}: no embedded audio track. The lab needs a Guitar Pro file with an audio track and sync points.`);
+        return null;
+    }
+    durationMs = await mediaDuration(audio);
+    const midi = new MidiFile();
+    const generator = new MidiFileGenerator(score, settings, new AlphaSynthMidiFileHandler(midi));
+    generator.generate();
+    sequencer = new MidiFileSequencer(new SilentSynth());
+    sequencer.loadMidi(midi);
+    sequencer.mainUpdateSyncPoints(generator.syncPoints);
+    const metronome = (sequencer as unknown as { _mainState: { synthData: SynthEvent[] } })._mainState.synthData.filter(
+        e => e.isMetronome
+    );
+    beatMediaTimes = metronome.map(e => sequencer.mainTickToMediaTime(e.event.tick, durationMs));
+    if (src === 'beeps') {
+        const rate = 48000;
+        const pcm = new Int16Array(Math.ceil((durationMs / 1000) * rate));
+        const beepFrames = Math.round(rate * 0.003);
+        for (const t of beatMediaTimes) {
+            const start = Math.round((t / 1000) * rate);
+            for (let i = 0; i < beepFrames && start + i < pcm.length; i++) {
+                pcm[start + i] = Math.round(Math.sin((2 * Math.PI * 2000 * i) / rate) * 0.6 * 32767);
+            }
+        }
+        score.backingTrack!.rawAudioFile = encodeWav(pcm, rate);
+    }
+    log(
+        `file=${name} src=${src} mixing=${mixing} duration=${(durationMs / 1000).toFixed(2)}s beats=${beatMediaTimes.length} syncPoints=${generator.syncPoints.length}`
+    );
+    return score;
+}
+
+const fileNameEl = document.getElementById('fileName')!;
+let pendingFileName = '';
+async function loadBytes(bytes: Uint8Array, name: string) {
+    const score = await prepareScore(bytes, name);
+    if (!score) {
+        return;
+    }
+    api.stop();
+    tapOnsets.media.length = 0;
+    tapOnsets.synth.length = 0;
+    pendingFileName = name;
+    fileNameEl.textContent = `${name} — loading, wait for "player ready"…`;
+    api.renderScore(
+        score,
+        score.tracks.map(t => t.index)
+    );
+}
+
+document.getElementById('fileInput')!.addEventListener('change', async e => {
+    const f = (e.target as HTMLInputElement).files?.[0];
+    if (f) {
+        await loadBytes(new Uint8Array(await f.arrayBuffer()), f.name);
+    }
+});
+window.addEventListener('dragover', e => {
+    e.preventDefault();
+    document.body.classList.add('dragging');
+});
+window.addEventListener('dragleave', () => document.body.classList.remove('dragging'));
+window.addEventListener('drop', async e => {
+    e.preventDefault();
+    document.body.classList.remove('dragging');
+    const f = e.dataTransfer?.files?.[0];
+    if (f) {
+        await loadBytes(new Uint8Array(await f.arrayBuffer()), f.name);
+    }
+});
+
+const api = new alphaTab.AlphaTabApi(document.querySelector('.at-canvas') as HTMLElement, settings);
+(window as unknown as { api: unknown }).api = api;
+
+function mediaSynth(): MediaSynthPlayer {
+    const instance = (api.player as unknown as { instance?: unknown } | null)?.instance as MediaSynthPlayer | undefined;
+    if (!instance?.diagnostics) {
+        throw new Error('no MediaSynthPlayer: mixing is off or not supported in this browser');
+    }
+    return instance;
+}
+const lab = () => mediaSynth().diagnostics;
+const ctx = () => lab().audioContext!;
+
+// ---- taps ----
+const tapOnsets = { media: [] as number[], synth: [] as number[] };
+const tapPeaks = { media: 0, synth: 0 };
+const tapCode = `
+class LabTap extends AudioWorkletProcessor {
+    constructor(o) {
+        super();
+        this.threshold = o.processorOptions.threshold;
+        this.cool = 0;
+        this.coolFrames = Math.round(sampleRate * 0.1);
+        this.peak = 0;
+        this.sincePeak = 0;
+    }
+    process(inputs) {
+        const ch = inputs[0] && inputs[0][0];
+        if (ch) {
+            for (let i = 0; i < ch.length; i++) {
+                const v = Math.abs(ch[i]);
+                if (v > this.peak) this.peak = v;
+                if (this.cool > 0) { this.cool--; continue; }
+                if (v > this.threshold) {
+                    this.port.postMessage({ frame: currentFrame + i });
+                    this.cool = this.coolFrames;
+                }
+            }
+        }
+        this.sincePeak += 128;
+        if (this.sincePeak > sampleRate) { this.port.postMessage({ peak: this.peak }); this.sincePeak = 0; this.peak = 0; }
+        return true;
+    }
+}
+registerProcessor('lab-tap', LabTap);`;
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+async function setupTaps() {
+    const context = ctx();
+    await context.audioWorklet.addModule(URL.createObjectURL(new Blob([tapCode], { type: 'application/javascript' })));
+    const makeTap = (kind: 'media' | 'synth', threshold: number) => {
+        const node = new AudioWorkletNode(context, 'lab-tap', { processorOptions: { threshold } });
+        node.port.onmessage = e => {
+            if (e.data.frame !== undefined) {
+                tapOnsets[kind].push(e.data.frame);
+            } else if (e.data.peak !== undefined) {
+                tapPeaks[kind] = Math.max(tapPeaks[kind], e.data.peak);
+            }
+        };
+        node.connect(context.destination);
+        return node;
+    };
+    const tapMedia = makeTap('media', 0.25);
+    const tapSynth = makeTap('synth', 0.02);
+    lab().mediaSourceNode!.connect(tapMedia);
+    // the worklet is built when the player is ready (warm start)
+    while (!lab().synthNode) {
+        await sleep(50);
+    }
+    lab().synthNode!.connect(tapSynth);
+    applySound();
+}
+
+function applySound() {
+    lab().masterGainNode!.gain.value = input('listen').checked ? api.masterVolume : 0;
+}
+input('listen').addEventListener('change', applySound);
+
+// ---- analysis (as in the spike) ----
+interface SegmentStats {
+    name: string;
+    clicks: number;
+    matched: number;
+    unmatched: number;
+    firstWindow: { n: number; meanMs: number; maxAbsMs: number };
+    settled: { n: number; meanMs: number; medianMs: number; p95AbsMs: number; maxAbsMs: number; stdMs: number };
+    resyncs: number;
+    firstOffsets: number[];
+}
+
+function nearest(sorted: number[], x: number): number {
+    let lo = 0;
+    let hi = sorted.length - 1;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (sorted[mid] < x) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    let best = sorted[lo];
+    if (lo > 0 && Math.abs(sorted[lo - 1] - x) < Math.abs(best - x)) {
+        best = sorted[lo - 1];
+    }
+    return best;
+}
+
+const r1 = (x: number | undefined | null) => (x === undefined || x === null || Number.isNaN(x) ? null : Math.round(x * 10) / 10);
+
+function analyze(name: string, fromFrame: number, toFrame: number, fromPerf: number, toPerf: number, settleMs: number): SegmentStats {
+    const sr = ctx().sampleRate;
+    const media = tapOnsets.media.filter(f => f >= fromFrame - sr && f <= toFrame + sr).sort((a, b) => a - b);
+    const synth = tapOnsets.synth.filter(f => f >= fromFrame && f <= toFrame);
+    const settleFrame = fromFrame + (settleMs / 1000) * sr;
+    const first: number[] = [];
+    const settled: number[] = [];
+    let unmatched = 0;
+    for (const s of synth) {
+        if (media.length === 0) {
+            unmatched++;
+            continue;
+        }
+        const off = ((s - nearest(media, s)) / sr) * 1000;
+        if (Math.abs(off) > 150) {
+            unmatched++;
+            continue;
+        }
+        (s < settleFrame ? first : settled).push(off);
+    }
+    const mean = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : Number.NaN);
+    const sortedAbs = settled.map(Math.abs).sort((a, b) => a - b);
+    const sorted = [...settled].sort((a, b) => a - b);
+    const m = mean(settled);
+    return {
+        name,
+        clicks: synth.length,
+        matched: first.length + settled.length,
+        unmatched,
+        firstWindow: {
+            n: first.length,
+            meanMs: r1(mean(first))!,
+            maxAbsMs: r1(first.length ? Math.max(...first.map(Math.abs)) : Number.NaN)!
+        },
+        settled: {
+            n: settled.length,
+            meanMs: r1(m)!,
+            medianMs: r1(sorted[Math.floor(sorted.length / 2)])!,
+            p95AbsMs: r1(sortedAbs[Math.floor(sortedAbs.length * 0.95)])!,
+            maxAbsMs: r1(sortedAbs[sortedAbs.length - 1])!,
+            stdMs: r1(Math.sqrt(mean(settled.map(x => (x - m) ** 2))))!
+        },
+        resyncs: lab().stats.resyncTimes.filter(t => t >= fromPerf && t <= toPerf).length,
+        firstOffsets: [...first, ...settled].slice(0, 12).map(x => r1(x)!)
+    };
+}
+
+function alphaTabTimeForMedia(mediaTime: number) {
+    // api.timePosition is time at the current speed; the lab's own sequencer runs at 1x
+    return sequencer.mainTimePositionFromBackingTrack(mediaTime, durationMs) / api.playbackSpeed;
+}
+
+/**
+ * S4's first-click tolerance: max(±11 ms, ±2 × baseLatency) at 1× (F-3), ±20 ms at other speeds.
+ */
+function firstClickToleranceMs(speed: number): number {
+    return speed === 1 ? Math.max(11, 2 * ctx().baseLatency * 1000) : 20;
+}
+
+function measuringSetup(speed: number) {
+    lab().masterGainNode!.gain.value = 0; // silent, metronome only at full level: fixed tap thresholds
+    api.metronomeVolume = 1;
+    api.countInVolume = 0;
+    api.changeTrackMute(api.score!.tracks, true);
+    api.backingTrackVolume = 1;
+    api.synthVolume = 1;
+    api.playbackSpeed = speed;
+    lab().enableDriftLog(true);
+}
+
+function restore() {
+    api.pause();
+    api.isLooping = false;
+    api.playbackRange = null;
+    applySound();
+    applyMix();
+    applyVolumes();
+}
+
+async function waitForProbe(speeds: number[]) {
+    while (speeds.some(s => lab().probeLatencies[String(s)] === undefined)) {
+        await sleep(100);
+    }
+}
+
+async function segment(name: string, action: () => void, durationMs: number, settleMs = 1500): Promise<SegmentStats> {
+    const context = ctx();
+    const fromFrame = Math.round(context.currentTime * context.sampleRate);
+    const fromPerf = performance.now();
+    action();
+    await sleep(durationMs);
+    const toFrame = Math.round(context.currentTime * context.sampleRate);
+    return analyze(name, fromFrame, toFrame, fromPerf, performance.now(), settleMs);
+}
+
+/**
+ * S1-S3: steady playback, a seek at 1x, a seek with 0.5x and with 1.5x.
+ */
+async function runMeasurement() {
+    if (src !== 'beeps') {
+        log('the measurement needs src=beeps');
+        return;
+    }
+    api.stop();
+    measuringSetup(1);
+    await waitForProbe([1, 0.5, 1.5]);
+    tapOnsets.media.length = 0;
+    tapOnsets.synth.length = 0;
+    const segments: SegmentStats[] = [];
+    segments.push(await segment('start@0s 1.0x', () => api.play(), 25000));
+    segments.push(await segment('seek 1.0x', () => (api.timePosition = alphaTabTimeForMedia(durationMs * 0.45)), 15000));
+    segments.push(
+        await segment(
+            'seek + 0.5x',
+            () => {
+                api.playbackSpeed = 0.5;
+                api.timePosition = alphaTabTimeForMedia(durationMs * 0.6);
+            },
+            15000
+        )
+    );
+    segments.push(
+        await segment(
+            'seek + 1.5x',
+            () => {
+                api.playbackSpeed = 1.5;
+                api.timePosition = alphaTabTimeForMedia(durationMs * 0.75);
+            },
+            15000
+        )
+    );
+    restore();
+    record('measurement', {
+        sampleRate: ctx().sampleRate,
+        baseLatencyMs: r1(ctx().baseLatency * 1000),
+        outputLatencyMs: r1(ctx().outputLatency * 1000),
+        peaks: tapPeaks,
+        totalResyncs: lab().stats.resyncTimes.length,
+        resyncLeadMs: r1(lab().stats.resyncLeadMs),
+        probeLatencies: lab().probeLatencies,
+        segments
+    });
+}
+
+/**
+ * S4, S4b, S5: n plays from different beats, `beforeBeatMs` before the beat; checks the first clicks, the skip
+ * (the first beep after Play must have its own click) and the lock time.
+ */
+async function startTest(n: number, beforeBeatMs: number, speed = 1) {
+    const sr = ctx().sampleRate;
+    measuringSetup(speed);
+    const tolerance = firstClickToleranceMs(speed);
+    const rows: {
+        startMedia: number;
+        first: number[];
+        lockMs: number | null;
+        resyncs: number;
+        firstGap: number | null;
+        skipped: boolean;
+        withinTolerance: boolean;
+        counts: string;
+    }[] = [];
+    for (let i = 0; i < n; i++) {
+        api.pause();
+        await sleep(400);
+        const beat = beatMediaTimes[Math.min(beatMediaTimes.length - 10, 40 + i * 23)];
+        const startMedia = beat - beforeBeatMs;
+        api.timePosition = alphaTabTimeForMedia(startMedia);
+        await sleep(300);
+        tapOnsets.media.length = 0;
+        tapOnsets.synth.length = 0;
+        const playFrame = ctx().currentTime * sr;
+        const playT = performance.now();
+        api.play();
+        await sleep(speed < 1 ? 4500 : 2500);
+        const resyncs = lab().stats.resyncTimes.filter(t => t > playT).length;
+        const media = [...tapOnsets.media].sort((a, b) => a - b);
+        const synthAfter = tapOnsets.synth.filter(f => f > playFrame);
+        const offs = synthAfter.slice(0, 5).map(f => r1(((f - nearest(media, f)) / sr) * 1000)!);
+        let lockMs: number | null = null;
+        for (let k = 0; k < synthAfter.length; k++) {
+            if (synthAfter.slice(k).every(f => Math.abs(((f - nearest(media, f)) / sr) * 1000) < 3)) {
+                lockMs = Math.round(((synthAfter[k] - playFrame) / sr) * 1000);
+                break;
+            }
+        }
+        const mediaAfter = media.filter(f => f > playFrame);
+        const firstGap =
+            mediaAfter.length > 0 && synthAfter.length > 0 ? r1(((synthAfter[0] - mediaAfter[0]) / sr) * 1000) : null;
+        const skipped = firstGap === null || Math.abs(firstGap) > 50;
+        rows.push({
+            startMedia: Math.round(startMedia),
+            first: offs,
+            lockMs,
+            resyncs,
+            firstGap,
+            skipped,
+            withinTolerance: !skipped && Math.abs(firstGap!) <= tolerance,
+            counts: `${synthAfter.length}/${mediaAfter.length}`
+        });
+    }
+    restore();
+    record('startTest', { speed, beforeBeatMs, toleranceMs: r1(tolerance), rows });
+    return rows;
+}
+
+/**
+ * S6: Play with the real count-in on a beat; counts the count-in clicks, the downbeat (click vs the media's first
+ * beep) and the next clicks.
+ */
+async function countInTest(n: number, speed = 1) {
+    const sr = ctx().sampleRate;
+    measuringSetup(speed);
+    api.countInVolume = 1;
+    const rows: object[] = [];
+    for (let i = 0; i < n; i++) {
+        api.pause();
+        await sleep(400);
+        const target = beatMediaTimes[Math.min(beatMediaTimes.length - 10, 40 + i * 23)];
+        api.timePosition = alphaTabTimeForMedia(target);
+        await sleep(300);
+        tapOnsets.media.length = 0;
+        tapOnsets.synth.length = 0;
+        const playFrame = ctx().currentTime * sr;
+        const playT = performance.now();
+        const handOffs = lab().countIns.length;
+        api.play();
+        await sleep(speed < 1 ? 9000 : 6000);
+        const media = [...tapOnsets.media].sort((a, b) => a - b);
+        const synthAfter = tapOnsets.synth.filter(f => f > playFrame).sort((a, b) => a - b);
+        const firstBeep = media.find(f => f > playFrame) ?? null;
+        const ms = (f: number) => r1((f / sr) * 1000)!;
+        const countInClicks = firstBeep === null ? null : synthAfter.filter(f => f < firstBeep - 0.05 * sr).length;
+        const downbeatMs =
+            firstBeep === null || synthAfter.length === 0 ? null : ms(nearest(synthAfter, firstBeep) - firstBeep);
+        const handOff = lab().countIns[handOffs];
+        rows.push({
+            target: Math.round(target),
+            countInClicks,
+            downbeatMs,
+            skipped: downbeatMs === null || Math.abs(downbeatMs) > 50,
+            withinTolerance: downbeatMs !== null && Math.abs(downbeatMs) <= firstClickToleranceMs(speed),
+            after:
+                firstBeep === null
+                    ? []
+                    : synthAfter
+                          .filter(f => f > firstBeep + 0.05 * sr)
+                          .slice(0, 4)
+                          .map(f => ms(f - nearest(media, f))),
+            resyncs: lab().stats.resyncTimes.filter(t => t > playT).length,
+            playLateMs: handOff ? r1(handOff.lateMs) : null,
+            learnedMediaStartMs: lab().mediaStartLatencies[String(speed)] ?? null
+        });
+    }
+    restore();
+    record('countInTest', { speed, rows });
+    return rows;
+}
+
+/**
+ * D-3 (F-14): the count-in's media pre-roll below 1x, 60 ms against 120 ms, with the real count-in.
+ */
+async function countInPreRollTest(speed = 0.5, n = 6) {
+    const constants = MediaSyncConstants as unknown as { CountInPreRollBelow1xMs: number };
+    const original = constants.CountInPreRollBelow1xMs;
+    const byPreRoll: Record<string, object[]> = {};
+    for (const preRoll of [60, 120]) {
+        constants.CountInPreRollBelow1xMs = preRoll;
+        byPreRoll[String(preRoll)] = await countInTest(n, speed);
+    }
+    constants.CountInPreRollBelow1xMs = original;
+    record('countInPreRollTest', { speed, byPreRoll });
+    return byPreRoll;
+}
+
+/**
+ * S10: loops `bars` bars from beat 40 for `wraps` repetitions; every beep must have its own click.
+ */
+async function loopTest(speed: number, bars = 2, wraps = 10, beatsPerBar = 4) {
+    const sr = ctx().sampleRate;
+    measuringSetup(speed);
+    api.pause();
+    await sleep(400);
+    const k0 = 40;
+    const startMedia = beatMediaTimes[k0];
+    const endMedia = beatMediaTimes[k0 + bars * beatsPerBar];
+    const beatMs = (beatMediaTimes[k0 + 1] - beatMediaTimes[k0]) / speed;
+    api.timePosition = alphaTabTimeForMedia(endMedia);
+    await sleep(150);
+    const endTick = api.tickPosition;
+    api.timePosition = alphaTabTimeForMedia(startMedia);
+    await sleep(150);
+    const range = new alphaTab.synth.PlaybackRange();
+    range.startTick = api.tickPosition;
+    range.endTick = endTick;
+    api.playbackRange = range;
+    api.isLooping = true;
+    const wrapsBefore = lab().wraps.length;
+    await sleep(300);
+    tapOnsets.media.length = 0;
+    tapOnsets.synth.length = 0;
+    const playFrame = ctx().currentTime * sr;
+    api.play();
+    await sleep(((endMedia - startMedia) / speed) * (wraps + 1) + 300);
+    const wrapCount = lab().wraps.length - wrapsBefore;
+    restore();
+    await sleep(300);
+    const media = tapOnsets.media.filter(f => f > playFrame).sort((a, b) => a - b);
+    const synth = tapOnsets.synth.filter(f => f > playFrame).sort((a, b) => a - b);
+    const offsets: number[] = [];
+    let missing = 0;
+    for (const m of media) {
+        const off = ((nearest(synth, m) - m) / sr) * 1000;
+        if (Math.abs(off) <= 50) {
+            offsets.push(off);
+        } else {
+            missing++;
+        }
+    }
+    const extra = synth.filter(s => Math.abs(((s - nearest(media, s)) / sr) * 1000) > 50).length;
+    const gaps: number[] = [];
+    for (let i = 1; i < media.length; i++) {
+        const d = ((media[i] - media[i - 1]) / sr) * 1000;
+        if (d > beatMs + 15) {
+            gaps.push(Math.round(d - beatMs));
+        }
+    }
+    const abs = offsets.map(Math.abs).sort((a, b) => a - b);
+    const sortedGaps = [...gaps].sort((a, b) => a - b);
+    const result = {
+        speed,
+        beeps: media.length,
+        clicks: synth.length,
+        missing,
+        extra,
+        meanMs: r1(offsets.reduce((a, b) => a + b, 0) / Math.max(1, offsets.length)),
+        p95Ms: r1(abs[Math.min(abs.length - 1, Math.floor(abs.length * 0.95))]),
+        wraps: wrapCount,
+        gaps,
+        medianGapMs: sortedGaps.length ? sortedGaps[Math.floor(sortedGaps.length / 2)] : null,
+        beatMs: Math.round(beatMs)
+    };
+    record('loopTest', result);
+    return result;
+}
+
+/**
+ * F-9d: a held tempo sweep (notation-hero's tempo button, one step per `stepMs`).
+ */
+async function sweepTest(fromSpeed: number, steps: number, stepSpeed: number, stepMs = 250) {
+    const sr = ctx().sampleRate;
+    measuringSetup(fromSpeed);
+    api.pause();
+    await sleep(400);
+    api.timePosition = alphaTabTimeForMedia(beatMediaTimes[40]);
+    await sleep(300);
+    api.play();
+    await sleep(3000);
+    tapOnsets.media.length = 0;
+    tapOnsets.synth.length = 0;
+    const f0 = ctx().currentTime * sr;
+    const t0 = performance.now();
+    let speed = fromSpeed;
+    for (let i = 0; i < steps; i++) {
+        speed = Math.round((speed + stepSpeed) * 10000) / 10000;
+        api.playbackSpeed = speed;
+        await sleep(stepMs);
+    }
+    const lastStepT = performance.now();
+    await sleep(2000);
+    const f1 = ctx().currentTime * sr;
+    restore();
+    const media = [...tapOnsets.media].sort((a, b) => a - b);
+    const clicks = tapOnsets.synth.filter(f => f > f0 && f < f1);
+    const abs = clicks.map(f => Math.abs(((f - nearest(media, f)) / sr) * 1000)).sort((a, b) => a - b);
+    // after the last step + 1.5 s settle the clicks must be back within S4b's tolerance
+    const settledFrom = f0 + ((lastStepT - t0 + 1500) / 1000) * sr;
+    const settled = clicks.filter(f => f > settledFrom).map(f => Math.abs(((f - nearest(media, f)) / sr) * 1000));
+    const row = {
+        fromSpeed,
+        toSpeed: speed,
+        steps,
+        stepMs,
+        resyncs: lab().stats.resyncTimes.filter(t => t > t0).length,
+        counts: `${clicks.length}/${media.filter(f => f > f0 && f < f1).length}`,
+        p95Ms: r1(abs[Math.floor(abs.length * 0.95)]),
+        maxMs: r1(abs[abs.length - 1]),
+        over20: abs.filter(x => x > 20).length,
+        settledMaxMs: r1(settled.length ? Math.max(...settled) : Number.NaN),
+        settledWithinTolerance: settled.every(x => x <= firstClickToleranceMs(speed))
+    };
+    record('sweepTest', row);
+    return row;
+}
+
+/**
+ * F-9d: the rhythm game's auto-BPM loop: +`bpmStep` BPM each time the loop wraps.
+ */
+async function autoBpmLoopTest(startSpeed: number, bpmStep = 5, wraps = 10, bars = 2, beatsPerBar = 4) {
+    const sr = ctx().sampleRate;
+    const bpm = api.score!.tempo;
+    const step = bpmStep / bpm;
+    let speed = startSpeed;
+    const unsubscribe = api.playerFinished.on(() => {
+        speed = Math.round((speed + step) * 10000) / 10000;
+        api.playbackSpeed = speed;
+    });
+    const wrapFrames: number[] = [];
+    const unsubscribeWraps = api.playerFinished.on(() => wrapFrames.push(ctx().currentTime * sr));
+    measuringSetup(startSpeed);
+    const k0 = 40;
+    const startMedia = beatMediaTimes[k0];
+    const endMedia = beatMediaTimes[k0 + bars * beatsPerBar];
+    api.timePosition = alphaTabTimeForMedia(endMedia);
+    await sleep(150);
+    const endTick = api.tickPosition;
+    api.timePosition = alphaTabTimeForMedia(startMedia);
+    await sleep(150);
+    const range = new alphaTab.synth.PlaybackRange();
+    range.startTick = api.tickPosition;
+    range.endTick = endTick;
+    api.playbackRange = range;
+    api.isLooping = true;
+    tapOnsets.media.length = 0;
+    tapOnsets.synth.length = 0;
+    const playFrame = ctx().currentTime * sr;
+    api.play();
+    while (wrapFrames.length < wraps) {
+        await sleep(100);
+    }
+    await sleep(((endMedia - startMedia) / speed) * 0.5);
+    unsubscribe();
+    unsubscribeWraps();
+    restore();
+    const media = tapOnsets.media.filter(f => f > playFrame).sort((a, b) => a - b);
+    const synth = tapOnsets.synth.filter(f => f > playFrame).sort((a, b) => a - b);
+    // each repetition's first beat: the first beep after each wrap
+    const firstBeats = wrapFrames.map(w => {
+        const beep = media.find(f => f > w);
+        return beep === undefined || synth.length === 0 ? null : r1(((nearest(synth, beep) - beep) / sr) * 1000);
+    });
+    const missing = media.filter(m => Math.abs(((nearest(synth, m) - m) / sr) * 1000) > 50).length;
+    const row = {
+        startSpeed,
+        endSpeed: speed,
+        bpmStep,
+        wraps: wrapFrames.length,
+        firstBeatsMs: firstBeats,
+        firstBeatsWithinTolerance: firstBeats.every(x => x !== null && Math.abs(x) <= 20),
+        missing,
+        resyncs: lab().stats.resyncTimes.length
+    };
+    record('autoBpmLoopTest', row);
+    return row;
+}
+
+/**
+ * F-9a / F-9d: the first Play at a speed with no probe value and no start lead: the straight-line guesses.
+ */
+async function firstPlayAtUnprobedSpeedTest(speeds: number[], beforeBeatMs = 30) {
+    const rows: object[] = [];
+    for (const speed of speeds) {
+        lab().forgetProbeLatency(speed);
+        lab().forgetStartLead(speed);
+        const guessedLead = mediaSynth().controller.startLeads.get(speed);
+        const guessedLatency = MediaLatencyProbe.cache.get(speed);
+        const probesBefore = lab().probes.length;
+        const playT = performance.now();
+        const [row] = await startTest(1, beforeBeatMs, speed);
+        const probe = lab().probes.slice(probesBefore).find(p => p.speed === speed);
+        rows.push({
+            speed,
+            guessedLeadMs: r1(guessedLead),
+            guessedLatencyMs: r1(guessedLatency),
+            probeArrivedAfterPlayMs: probe ? Math.round(probe.time - playT) : null,
+            ...row
+        });
+    }
+    record('firstPlayAtUnprobedSpeedTest', rows);
+    return rows;
+}
+
+/**
+ * D-1 (F-9a): a probe value lands while a loop plays at an unprobed speed. forcedResync = true runs the spec's
+ * current rule (re-sync on arrival) for comparison.
+ */
+async function probeMidPlaybackTest(speed = 0.875, forcedResync = false) {
+    const sr = ctx().sampleRate;
+    const controller = mediaSynth().controller;
+    const latencyChanged = controller.latencyChanged.bind(controller);
+    if (forcedResync) {
+        controller.latencyChanged = () => {
+            latencyChanged();
+            controller.resync();
+        };
+    }
+    lab().forgetProbeLatency(speed);
+    measuringSetup(speed);
+    api.timePosition = alphaTabTimeForMedia(beatMediaTimes[40]);
+    await sleep(300);
+    tapOnsets.media.length = 0;
+    tapOnsets.synth.length = 0;
+    const probesBefore = lab().probes.length;
+    const playFrame = ctx().currentTime * sr;
+    const playT = performance.now();
+    api.play(); // queues this speed's probe first: it lands mid-playback
+    await sleep(8000);
+    restore();
+    controller.latencyChanged = latencyChanged;
+    const probe = lab().probes.slice(probesBefore).find(p => p.speed === speed);
+    const arrivalFrame = probe ? playFrame + ((probe.time - playT) / 1000) * sr : Number.NaN;
+    const media = [...tapOnsets.media].sort((a, b) => a - b);
+    const offsetsAround = (from: number, to: number) =>
+        tapOnsets.synth
+            .filter(f => f > from && f < to)
+            .map(f => r1(((f - nearest(media, f)) / sr) * 1000)!);
+    const row = {
+        speed,
+        forcedResync,
+        probeArrivedAfterPlayMs: probe ? Math.round(probe.time - playT) : null,
+        probeLatencyMs: probe ? r1(probe.latencyMs) : null,
+        resyncsAfterArrival: probe ? lab().stats.resyncTimes.filter(t => t >= probe.time).length : null,
+        clicksBeforeMs: offsetsAround(arrivalFrame - sr, arrivalFrame),
+        clicksAfterMs: offsetsAround(arrivalFrame, arrivalFrame + 2 * sr)
+    };
+    record('probeMidPlaybackTest', row);
+    return row;
+}
+
+/**
+ * §6.4: the ~1 s probe (125 ms spacing) against the spike's 4 s probe (250 ms spacing).
+ */
+async function probeComparison(speeds = [0.5, 0.75, 1.25, 1.5], repeats = 3) {
+    const context = ctx();
+    const load = () => BrowserUiFacade.createAlphaSynthAudioWorklet(context, settings);
+    const short = new MediaLatencyProbe(context, load, 1, 0.125);
+    const long = new MediaLatencyProbe(context, load, 4, 0.25);
+    const rows: object[] = [];
+    for (const speed of speeds) {
+        const shortValues: number[] = [];
+        const longValues: number[] = [];
+        for (let i = 0; i < repeats; i++) {
+            shortValues.push(r1(await short.measure(speed))!);
+            longValues.push(r1(await long.measure(speed))!);
+        }
+        rows.push({ speed, shortMs: shortValues, longMs: longValues });
+    }
+    record('probeComparison', rows);
+    return rows;
+}
+
+/**
+ * §6.1, spike 7: playBeat while playing pauses both; the next Play is in sync.
+ */
+async function playBeatTest(n = 4, speed = 1) {
+    const sr = ctx().sampleRate;
+    measuringSetup(speed);
+    const track = api.score!.tracks[0];
+    const beat = track.staves[0].bars[Math.min(12, track.staves[0].bars.length - 1)].voices[0].beats[0];
+    const rows: object[] = [];
+    for (let i = 0; i < n; i++) {
+        api.pause();
+        await sleep(400);
+        api.timePosition = alphaTabTimeForMedia(beatMediaTimes[40 + i * 23] - 500);
+        await sleep(300);
+        api.play();
+        await sleep(2500);
+        const states: string[] = [];
+        const unsubscribe = api.playerStateChanged.on(e =>
+            states.push(e.state === alphaTab.synth.PlayerState.Playing ? 'Playing' : 'Paused')
+        );
+        api.playBeat(beat);
+        await sleep(1500);
+        unsubscribe();
+        tapOnsets.media.length = 0;
+        tapOnsets.synth.length = 0;
+        const playFrame = ctx().currentTime * sr;
+        api.play();
+        await sleep(2500);
+        const media = [...tapOnsets.media].sort((a, b) => a - b);
+        const synthAfter = tapOnsets.synth.filter(f => f > playFrame);
+        const mediaAfter = media.filter(f => f > playFrame);
+        rows.push({
+            statesAfterPlayBeat: states,
+            firstGapMs: mediaAfter.length && synthAfter.length ? r1(((synthAfter[0] - mediaAfter[0]) / sr) * 1000) : null,
+            nextClicksMs: synthAfter.slice(0, 5).map(f => r1(((f - nearest(media, f)) / sr) * 1000))
+        });
+    }
+    restore();
+    record('playBeatTest', { speed, rows });
+    return rows;
+}
+
+document.getElementById('play')!.addEventListener('click', () => api.playPause());
+document.getElementById('measure')!.addEventListener('click', () => runMeasurement());
+document.getElementById('speed')!.addEventListener('change', e => {
+    api.playbackSpeed = Number.parseFloat((e.target as HTMLSelectElement).value);
+});
+const metronomeEl = input('metronome');
+const drumsEl = input('drums');
+const metronomeVolEl = input('metronomeVol');
+function applyMix() {
+    api.metronomeVolume = metronomeEl.checked ? Number.parseFloat(metronomeVolEl.value) : 0;
+    if (api.score) {
+        api.changeTrackMute(api.score.tracks, !drumsEl.checked);
+    }
+}
+metronomeEl.addEventListener('change', applyMix);
+metronomeVolEl.addEventListener('input', applyMix);
+drumsEl.addEventListener('change', applyMix);
+const mediaVolEl = input('mediaVol');
+const synthVolEl = input('synthVol');
+function applyVolumes() {
+    api.backingTrackVolume = Number.parseFloat(mediaVolEl.value);
+    api.synthVolume = Number.parseFloat(synthVolEl.value);
+}
+mediaVolEl.addEventListener('input', applyVolumes);
+synthVolEl.addEventListener('input', applyVolumes);
+
+let tapsReady = false;
+api.playerReady.on(async () => {
+    fileNameEl.textContent = pendingFileName;
+    // S7: with mixing=0 both stay 0 in backing-track mode
+    log('player ready', { mixing, created });
+    if (!mixing) {
+        return;
+    }
+    applyMix();
+    applyVolumes();
+    if (!tapsReady) {
+        tapsReady = true;
+        await setupTaps();
+    }
+});
+
+// live readout: how far each metronome click is from the backing track's beep (beeps only)
+const liveEl = document.getElementById('live')!;
+let liveSeen = 0;
+setInterval(() => {
+    if (!mixing || !tapsReady) {
+        return;
+    }
+    const speed = api.playbackSpeed;
+    const latency = lab().probeLatencies[String(speed)];
+    const probe = latency === undefined ? `latency @${speed}x: guessed` : `latency @${speed}x: ${latency} ms`;
+    if (src !== 'beeps') {
+        liveEl.textContent = `live: ${probe} — switch Audio to "generated beeps" for click-vs-beep offsets`;
+        return;
+    }
+    const sr = ctx().sampleRate;
+    const media = [...tapOnsets.media].sort((a, b) => a - b);
+    const recent = tapOnsets.synth.slice(-8);
+    if (media.length === 0 || recent.length === 0 || tapOnsets.synth.length === liveSeen) {
+        return;
+    }
+    liveSeen = tapOnsets.synth.length;
+    const offsets = recent
+        .map(s => ((s - nearest(media, s)) / sr) * 1000)
+        .filter(o => Math.abs(o) < 150)
+        .map(o => Math.round(o));
+    const mean = offsets.length ? Math.round(offsets.reduce((a, b) => a + b, 0) / offsets.length) : 0;
+    liveEl.textContent = `live @${speed}x: click - beep (last ${offsets.length}): ${offsets.join(' ')} ms, mean ${mean} ms; ${probe}`;
+}, 400);
+
+(window as unknown as { syncLab: unknown }).syncLab = {
+    results,
+    created,
+    lab,
+    mediaSynth,
+    runMeasurement,
+    startTest,
+    countInTest,
+    countInPreRollTest,
+    loopTest,
+    sweepTest,
+    autoBpmLoopTest,
+    firstPlayAtUnprobedSpeedTest,
+    probeMidPlaybackTest,
+    probeComparison,
+    playBeatTest
+};
+
+(async () => {
+    const bytes = new Uint8Array(await (await fetch(file)).arrayBuffer());
+    await loadBytes(bytes, file.split('/').pop() ?? file);
+})();
+```
+
+Note on the beat times: the lab reads the metronome events' **ticks** and maps them with `mainTickToMediaTime`
+(Task 2). The spike page passed the events' times to `mainTimePositionToBackingTrack`, which equals this only at 1×.
+
+- [ ] **Step 3: Typecheck, lint, and a smoke run**
+
+```bash
+npm run typecheck --workspace=packages/playground
+npm run lint --workspace=packages/playground
+npm run dev --workspace=packages/playground -- --port 5188 --strictPort
+```
+
+Open `http://localhost:5188/demos/sync-lab/`, click the page once, wait for "player ready", then in the console
+run `await syncLab.startTest(2, 30, 1)`.
+Expected: two rows, `skipped: false`, first clicks within ±11 ms. Then open
+`http://localhost:5188/demos/sync-lab/?mixing=0`: the log shows `created: {"synthWorkers":0,"synthWorklets":0}`
+(S7).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add packages/playground/demos/sync-lab
+git commit -m "test(playground): sync lab for synth-with-media acceptance (#2397)"
+git push
+```
+
+---
+
+### Task 22: Acceptance run on this machine — and decision gates D-1, D-3, D-4, D-5
+
+**Files:**
+- Create: `docs/spikes/issue-2397/acceptance-<date>.md` (the results, beside the §1 targets)
+- Modify: `docs/spikes/issue-2397/results-<date>.json` (raw numbers: `syncLab.results`)
+- Modify: `docs/superpowers/specs/2026-10-07-synth-with-media-design.md` (§1 S6 and S12, §6.4, §9 acceptance, the
+  §14 lines this run settles)
+
+**Interfaces:** consumes the sync lab (Task 21) and the built feature (Tasks 2–20).
+
+The §9 acceptance on Chromium (macOS), with the lab and by ear. Each step names the criterion it measures. Results
+go in the dated `.md`: one table per criterion, with the target, the result, pass or fail. Each decision gate
+first runs its measurement, then puts the choice as a picker (see "How to run this plan").
+
+- [ ] **Step 1: S1–S3, steady playback**
+
+Run `await syncLab.runMeasurement()`.
+Pass: S1 p95 ≤ 3 ms at 1×, S2 p95 ≤ 5 ms at 1.5× (also run `syncLab.loopTest(1.25, 4, 3)` for a 1.25× figure), S3
+p95 ≤ 20 ms at 0.5× (and `syncLab.startTest(5, 30, 0.75)` for 0.75×).
+
+- [ ] **Step 2: S4, S4b, S5 — starts, seeks and speed changes on a beat**
+
+```text
+await syncLab.startTest(10, 30, 1); await syncLab.startTest(10, 30, 0.5); await syncLab.startTest(10, 30, 1.5)
+await syncLab.startTest(10, 0, 1)        (exactly on a beat)
+```
+
+Pass: no `skipped`, `withinTolerance` everywhere, counts equal (one click per beat, S5). For S4b, the seek
+segments of Step 1 and the sweep in Step 6 cover seeks and speed changes during playback.
+
+§9 also asks for speeds outside the probed list. Run:
+
+```text
+await syncLab.startTest(5, 30, 0.25); await syncLab.startTest(5, 30, 2)
+await syncLab.lab().measureLatency(0.25); await syncLab.lab().measureLatency(2)
+```
+
+Record the click offsets and the measured latencies next to spike 5's (0.25×: 80 ms, 2×: −6 ms). These speeds are
+reported, not gated.
+
+- [ ] **Step 3: STOP — decision gate D-4 (Q-1): does S4 gate the first Play at an unlearned speed?**
+
+Run `await syncLab.firstPlayAtUnprobedSpeedTest([0.625, 0.875])` on a fresh page load. Put to the person as
+`[Q-D4]`:
+
+- **Scenario:** you open a song and press Play at 0.875× before the lab, or the app, has played at that speed.
+- **Option 1 (recommended; implemented reporting; High; rule only):** report that first Play against S4's (open)
+  item, don't gate on it. Spike 11: 0.875× lands within 5 ms, 0.625× +18…+23 ms.
+- **Option 2:** gate on it at ±20 ms. That fails whenever the straight-line guess is more than ~20 ms off (spike 11:
+  once just over).
+
+Apply the answer to §1 S4's "(open)" sentence.
+
+- [ ] **Step 4: STOP — decision gates D-3 (F-14) and S6, the count-in**
+
+```text
+await syncLab.countInPreRollTest(0.5, 6)
+await syncLab.countInTest(6, 1); await syncLab.countInTest(6, 1.5)
+```
+
+Put D-3 to the person as `[Q-D3]` with the two pre-roll results in hand:
+
+- **Scenario:** in the rhythm game at 0.5×, you press Play with the count-in on; the backing track enters on the
+  downbeat after one bar of clicks.
+- **Option 1 (recommended; implemented; spiked in spike 6 with an emulated count-in; Medium):** 120 ms.
+- **Option 2 (spiked; Medium):** 60 ms, the same pre-roll as every other start.
+
+Then restate §1 S6's figures with the run's numbers. The 1.5× figure should read 0…+2.7 ms (F-14). Mark "the first
+count-in at an unlearned speed: (open)".
+
+- [ ] **Step 5: STOP — decision gate D-5 (F-15), S10, the loop wrap**
+
+```text
+await syncLab.loopTest(0.5); await syncLab.loopTest(1); await syncLab.loopTest(1.5)
+```
+
+Then switch **Audio** to the file's audio, turn the synth tracks on, loop at 1× and 1.5×, and listen at each wrap
+the run's `gaps` flags. Put to the person as `[Q-D5]`:
+
+- **Scenario:** in notation-hero you loop two bars to practice; at every wrap the recording jumps back to the
+  first beat.
+- **Option 1 (recommended; provisional; partly spiked in spike 4; Medium):** a median gate (median added time per
+  wrap ≤ 30 ms, every first beat within S4b), plus the ear check.
+- **Option 2 (spike 4; Medium):** every wrap ≤ 30 ms. A single slow seek fails it.
+
+Write the gate into §1 S10.
+
+- [ ] **Step 6: F-9d — the apps' speed patterns, and S12 into the spec**
+
+```text
+await syncLab.sweepTest(1, 12, -0.0072, 250)       (a held tempo button: 12 steps of about 1 BPM)
+await syncLab.sweepTest(0.75, 12, 0.0072, 250)
+await syncLab.autoBpmLoopTest(0.8, 5, 10)          (the rhythm game: +5 BPM per passed loop)
+```
+
+Add S12 to §1, with the numbers this run measured:
+
+**After** (a new row under S11):
+> S12 | Speed changes during playback (the apps' patterns) | a held sweep in 1-BPM steps every 250 ms: one
+> re-sync per step (Chrome's media lands 15–43 ms behind at each change, spike 11), clicks back within S4b's
+> tolerance 1.5 s after the last step; an auto-BPM loop (+5 BPM per wrap, 10 wraps): each repetition's first beat
+> within S4b's tolerance, no missing clicks; the first Play at an unprobed speed: as S4 (Q-1 decides whether it
+> gates)
+
+- [ ] **Step 7: STOP — decision gate D-1 (F-9a), a probe value mid-playback**
+
+```text
+await syncLab.probeMidPlaybackTest(0.875, false); await syncLab.probeMidPlaybackTest(0.875, true)
+```
+
+with the synth tracks unmuted and listening, then the same pair at 0.625×. Put to the person as `[Q-D1]`:
+
+- **Scenario:** in the rhythm game the auto-BPM moves to a speed never played before, and its latency measurement
+  lands two bars in.
+- **Option 1 (recommended; implemented; not spiked before this run; Low → as measured):** settle only; the drift
+  rules re-sync only if the agreed drift exceeds the threshold.
+- **Option 2 (the spec's current §6.4 text):** re-sync on arrival. It cuts the notes that are sounding (spike 4).
+
+Edit §6.4's sentence "A value that arrives during playback is applied like a speed change (re-sync, settle)" to
+match the answer.
+
+- [ ] **Step 8: §6.4 — the shorter probe**
+
+Run `await syncLab.probeComparison()`. If the 1 s and 4 s values differ by more than 3 ms at any speed, change
+`MediaLatencyProbe.LengthS` / `SpacingS` to 4 / 0.25 in a separate commit and say so in the results. Either way,
+remove "**untested**" from §6.4 and state what was measured.
+
+- [ ] **Step 9: S7, S8, S11, F-8, F-13 and by ear**
+
+- **S7:** with `?mixing=0` the log shows 0 synth workers and 0 synth worklets.
+- **S8:** play the same song for 30 s in synth mode (the control demo) and with mixing on (this lab, the file's
+  audio). Record main-thread scripting time and worker message counts from the Chrome performance panel. They
+  should be comparable.
+- **S11 and F-13:** play a mastered recording (`?file=` your real MP3-backed file) at default levels — the
+  metronome must be clearly audible. Then raise `synthVolume` to 3 — there must be no clipping by ear. Also re-run
+  spike 8's offline script (`docs/spikes/issue-2397/spike-8-limiter-console.js`): its proposed row must still read
+  −0.31 dBFS at `synthVolume` 3 (the unit test ties the code's values to it).
+- **F-8 signals:** re-run `docs/spikes/issue-2397/spike-10-batch-1-console.js` in the control demo: a SoundFont
+  download failure now fires `soundFontLoadFailed` on the player instance. Mixing on with a missing worker or
+  worklet plays the media alone, with the warning.
+- **Listening check (§9):** the file's audio with the synth tracks unmuted, using a song with sustained notes.
+  Do a Play, a seek, and a speed change. Expect no cut notes and no dropouts, except the one re-sync at each speed
+  change (spike 11; a re-sync that keeps notes sounding is later work, §12).
+- **Manual (§9):** your real MP3 with drums and metronome, by ear. The `youtube-sync` playground demo with mixing
+  on and the metronome: tune `mediaSyncOffsetInMilliseconds` by ear and record the value (S9).
+
+- [ ] **Step 10: F-18 — the acceptance list**
+
+In §9's sync-lab row, change "Acceptance: S1–S5, S4b, S10" to "Acceptance: S1–S6 (S6: backing track), S4b, S10,
+S12", using D-3's and D-4's answers.
+
+- [ ] **Step 11: Commit the evidence and the spec**
+
+```bash
+git add docs/spikes/issue-2397 docs/superpowers/specs/2026-10-07-synth-with-media-design.md
+git commit -m "docs: #2397 acceptance run (Chromium/macOS); S6, S10, S12 and §6.4 settled"
+git push
+```
+
+---
+
+### Task 23: A run on a machine with a higher `baseLatency` — decision gate D-2 (F-3)
+
+**Files:**
+- Create: `docs/spikes/issue-2397/baselatency-<date>.md`
+
+**Interfaces:** consumes the sync lab.
+
+F-3 (both; our design's problem; not spiked; Low): the thresholds come from the context's audio callback. Settle
+re-sync at 1× = max(12 ms, 2 × `baseLatency` + 1 ms); the first-click tolerance = max(±11 ms, ±2 × `baseLatency`).
+Every run so far was on Chrome/macOS (`baseLatency` ≤ 5.3 ms), where both equal today's constants.
+
+- [ ] **Step 1: Find the machine**
+
+Windows Chrome typically reports 10 ms. In the lab's console, `syncLab.lab().audioContext.baseLatency * 1000`
+must be above 5.3. Note the browser, OS and value.
+
+- [ ] **Step 2: Run the start and loop tests**
+
+```text
+await syncLab.startTest(10, 30, 1); await syncLab.startTest(10, 0, 1); await syncLab.loopTest(1)
+```
+
+Record each row's `toleranceMs`, `withinTolerance`, `resyncs` and `lockMs`.
+
+- [ ] **Step 3: STOP — decision gate D-2**
+
+Put to the person as `[Q-D2]`, with the numbers:
+
+- **Scenario:** you play on a Windows laptop whose audio callback is 10 ms. Should a 15 ms start offset re-sync
+  (cutting notes) or be nudged away?
+- **Option 1 (implemented; now measured):** keep the derived thresholds.
+- **Option 2:** go back to the fixed 12 ms / ±11 ms.
+
+Record the answer in §14 and in `MediaSyncController.settleThreshold`'s comment.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add docs/spikes/issue-2397/baselatency-*.md docs/superpowers/specs/2026-10-07-synth-with-media-design.md
+git commit -m "docs: #2397 baseLatency run (F-3, D-2)"
+git push
+```
+
+---
+
+### Task 24: Target devices — iPad (WebKit) and Android — decision gates D-7 (R-2) and D-8 (R-1)
+
+**Files:**
+- Create: `docs/spikes/issue-2397/target-devices-<date>.md`
+
+**Interfaces:** consumes the sync lab, served over HTTPS.
+
+§9's target-device row: before delivery, run the sync lab's start, loop and count-in tests and the listening check
+on two devices. One is an iPad (WebKit, inside the Web MIDI Browser shim app both apps use there); the other is an
+Android tablet (Chrome). Load the lab over HTTPS: AudioWorklets need a secure context. A device that misses the
+targets stays media-only in both apps until it passes (each app leaves the flag off there).
+
+- [ ] **Step 1: Serve the lab over HTTPS on the local network**
+
+Use a tunnel or a local certificate so both devices load `https://…/demos/sync-lab/`. First check that mixing
+runs at all: the log must not show "playing the media only".
+
+- [ ] **Step 2: The runs on each device**
+
+```text
+await syncLab.startTest(10, 30, 1); await syncLab.startTest(10, 30, 0.5)
+await syncLab.loopTest(1); await syncLab.countInTest(6, 1)
+```
+
+Then do the listening check: the file's audio, synth tracks on; Play, a seek, a speed change. Listen for cut notes
+and dropouts. Put the results beside the §1 targets in the dated `.md`.
+
+- [ ] **Step 3: STOP — decision gate D-8 (R-1), iOS's Ring/Silent switch**
+
+On the iPad, turn the Silent switch on and play. Is the backing track still heard? (Web Audio is muted in silent
+mode; a plain `<audio>` is not.) If it isn't heard, try `navigator.audioSession.type = 'playback'` (Safari 16.4+)
+in the lab's console before Play and listen again. Put to the person as `[Q-D8]`:
+
+- **Scenario:** a student practices on an iPad with the Silent switch on; with mixing, the recording falls silent.
+- **Option 1:** set `navigator.audioSession.type = 'playback'` while mixing on iOS (a small change in
+  `MediaSynthPlayer`, with a test).
+- **Option 2:** leave mixing off on iOS (both apps keep the flag off there).
+- **Option 3:** document it and leave it to the apps.
+
+Confidence and spiked status come from this run.
+
+- [ ] **Step 4: STOP — decision gate D-7 (R-2), a refused delayed `play()`**
+
+On the iPad, run `await syncLab.countInTest(6, 1)`. Does WebKit refuse the backing track's `play()` a bar after the
+gesture? The safety net (Task 17) then pauses both and logs "The media did not start after the count-in". Put to
+the person as `[Q-D7]`, with the result:
+
+- **Scenario:** in the rhythm game on the iPad you press Play with the count-in on; after one bar of clicks
+  nothing plays.
+- **Option 1:** unlock the media in the gesture: call the `<audio>`'s `play()` and `pause()` synchronously inside
+  the Play handler, so the later `play()` is allowed (a change in `MediaSynthPlayer._startCountIn`, with a test).
+- **Option 2:** no count-in on WebKit: start the media at once and skip the count-in there.
+- **Option 3:** keep the safety net only.
+
+If it is not refused, record that and keep the safety net.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add docs/spikes/issue-2397/target-devices-*.md
+git commit -m "docs: #2397 target-device run (iPad WebKit, Android Chrome; R-1, R-2)"
+git push
+```
+
+---
+
+## Phase 6 — Delivery (§11)
+
+These tasks work in the two app repositories, alphaTabWebsite and notation-hero. Use each repo's own branch, commit
+and test conventions, never their default branch. Commands below use repo-relative paths, plus shell variables you
+set yourself (never write absolute paths into tracked files).
+
+### Task 25: Build, pack, and a first try in both apps (a `file:` dependency)
+
+**Files:** none tracked; a tarball outside both apps.
+
+- [ ] **Step 1: Build and pack**
+
+From the alphaTab feature worktree:
+
+```bash
+npm run build
+npm pack --workspace=packages/alphatab
+```
+
+Expected: a `coderline-alphatab-<version>.tgz` in the worktree root. Set `ALPHATAB_PACK` in your shell to its
+absolute path.
+
+- [ ] **Step 2: Try it in alphaTabWebsite (a throwaway branch, not committed)**
+
+```bash
+git switch -c try/2397-synth-with-media
+npm install "$ALPHATAB_PACK"
+```
+
+Turn `player.enableSynthesizerWithMedia` on where the rhythm game creates the API (Task 26 Step 5 shows the change).
+Play a backing-track song with the metronome on, by ear, and then the YouTube flow. Then throw the branch away:
+
+```bash
+git restore --staged --worktree .
+git switch -
+git branch -D try/2397-synth-with-media
+```
+
+- [ ] **Step 3: Try it in notation-hero/web (throwaway, not committed)**
+
+```bash
+git switch -c try/2397-synth-with-media
+pnpm --filter web add "file:$ALPHATAB_PACK"
+```
+
+Same check. Then restore and delete the branch as in Step 2.
+
+If either try fails, stop here, fix it on `feat/2397-synth-with-media` (with a test), and come back to Step 1.
+
+---
+
+### Task 26: alphaTabWebsite — the patch (patch-package) and turning the feature on (F-10)
+
+**Files (alphaTabWebsite):** `package.json`, its lockfile, `patches/@coderline+alphatab+<alpha>.patch` (new),
+`patches/@coderline+alphatab+1.8.1.patch` (delete), the rhythm game's API settings and YouTube player options,
+`cross-markers.tsx`.
+
+**F-10** (both apps; our design's problem; not spiked; Medium): §11 step 4 turns the feature on in each app. The
+rhythm game creates its YouTube player with `controls: 0` and `disablekb: 1`, so starts go through the app's Play
+button and keep their count-in (§7).
+
+- [ ] **Step 1: A branch, and the alpha that is current today**
+
+```bash
+git switch -c feat/2397-synth-with-media
+npm view @coderline/alphatab dist-tags
+```
+
+Pick the current `1.9.0-alpha.N` and call it `<alpha>` below.
+
+- [ ] **Step 2: Upgrade, and drop the stale patch in the same commit**
+
+```bash
+npm install @coderline/alphatab@<alpha>
+git rm patches/@coderline+alphatab+1.8.1.patch
+```
+
+The 1.8.1 patch is CoderLine/alphaTab#2591 (drum tablature) back-ported. The alpha contains all of it (checked
+2026-10-08 with `guitar-pro-rock-beat-repeat.gp`). A stale patch file fails every install: patch-package exits 1 and
+skips every patch after it.
+
+- [ ] **Step 3: The drum marker id after the upgrade**
+
+After the upgrade a hi-hat on string 6 is drawn on the 6th tab line (as in Guitar Pro) instead of line 5. Drum notes
+also have `note.fret = NaN`. In `cross-markers.tsx`, build the marker id for drum notes from
+`note.percussionArticulation` instead of `note.fret`. Run the app's tests and look at a drum song.
+
+- [ ] **Step 4: The patch, from an alpha that is an ancestor of the feature branch**
+
+In the alphaTab feature worktree:
+
+```bash
+npm view @coderline/alphatab@<alpha> gitHead
+git merge-base --is-ancestor <gitHead> HEAD && echo ancestor
+```
+
+If it isn't an ancestor: rebase `feat/2397-synth-with-media` onto `develop` at or after `<gitHead>`, run the repo
+gates, rebuild (`npm run build`), push. Then copy the build into alphaTabWebsite and create the patch:
+
+```bash
+rm -r node_modules/@coderline/alphatab/dist
+cp -R "$ALPHATAB_WORKTREE/packages/alphatab/dist" node_modules/@coderline/alphatab/dist
+npx patch-package @coderline/alphatab
+```
+
+(`ALPHATAB_WORKTREE` is the feature worktree's absolute path in your shell.) Expected:
+`patches/@coderline+alphatab+<alpha>.patch`. It only adds this feature, plus any `develop` commits newer than the
+alpha.
+
+- [ ] **Step 5: Turn it on (F-10)**
+
+Where the rhythm game builds its alphaTab settings:
+
+```ts
+player: {
+    // ...the existing player settings...
+    enableSynthesizerWithMedia: true
+}
+```
+
+Where it creates the YouTube player, add `controls: 0` and `disablekb: 1` to `playerVars`. Don't overlay the
+player: YouTube's terms forbid it (§7). If the game starts alphaTab from YouTube's `PLAYING` event, call
+`output.updatePosition(player.getCurrentTime() * 1000)` right before `api.play()` (F-6). Set
+`mediaSyncOffsetInMilliseconds` to the value found by ear in Task 22 Step 9, if one was needed.
+
+- [ ] **Step 6: Check, commit, push**
+
+Run the app's tests. By ear: a backing-track song with the metronome, a loop, a speed change; the YouTube flow.
+
+```bash
+git add -A
+git commit -m "feat: metronome along backing tracks and YouTube (alphaTab #2397 patch on <alpha>)"
+git push -u origin feat/2397-synth-with-media
+```
+
+Opening a PR in alphaTabWebsite is your call in that repo.
+
+---
+
+### Task 27: notation-hero/web — the patch (`pnpm patch`) and turning the feature on (F-10)
+
+**Files (notation-hero):** `pnpm-workspace.yaml` (`minimumReleaseAgeExclude`), `web/package.json`, `pnpm-lock.yaml`,
+`patches/@coderline__alphatab@<alpha>.patch` (written by pnpm) and `patchedDependencies`, the app's alphaTab
+settings, a notation-hero spec delta.
+
+notation-hero is a pnpm workspace, so it uses `pnpm patch`. patch-package only writes patches next to an npm or yarn
+lockfile. **F-10:** notation-hero keeps the external player's controls enabled while mixing is on. A start inside the
+player then plays without a count-in (F-6). That is a notation-hero spec delta.
+
+- [ ] **Step 1: A branch; let the alpha past the release-age rule**
+
+```bash
+git switch -c feat/2397-synth-with-media
+```
+
+In `pnpm-workspace.yaml`, add `'@coderline/alphatab@<alpha>'` to `minimumReleaseAgeExclude`. Use the exact
+`name@version`, like the list's other entries, and update it with every alpha upgrade. Then:
+
+```bash
+pnpm run check:supply-chain-pins
+```
+
+Expected: passes (it flags a stale pin).
+
+- [ ] **Step 2: Upgrade and patch**
+
+```bash
+pnpm --filter web add @coderline/alphatab@<alpha>
+pnpm patch @coderline/alphatab@<alpha>
+```
+
+`pnpm patch` prints a folder. Check that `<alpha>`'s `gitHead` is an ancestor of the feature branch (Task 26 Step 4),
+then:
+
+```bash
+rm -r "<printed folder>/dist"
+cp -R "$ALPHATAB_WORKTREE/packages/alphatab/dist" "<printed folder>/dist"
+pnpm patch-commit "<printed folder>"
+```
+
+Expected: a patch file under `patches/` and a `patchedDependencies` entry.
+
+- [ ] **Step 3: Turn it on, and write the spec delta**
+
+Set `player.enableSynthesizerWithMedia: true` where the app builds its alphaTab settings. Keep the external player's
+controls enabled. Wire the media-started path to call `updatePosition()` right before `api.play()` (F-6). Then add
+the spec delta to notation-hero's own spec docs, in that repo's existing format and folder. If the folder isn't
+obvious, ask with a picker. The delta says:
+
+> With mixing on, notation-hero keeps the external player's own controls: a start pressed inside the player plays
+> the synthesizer from the player's position without a count-in; the count-in plays only for starts through the
+> app's Play button.
+
+- [ ] **Step 4: Check, commit, push**
+
+Run the app's tests, then the same by-ear checks as Task 26 Step 6.
+
+```bash
+git add -A
+git commit -m "feat: metronome along backing tracks (alphaTab #2397 pnpm patch on <alpha>)"
+git push -u origin feat/2397-synth-with-media
+```
+
+---
+
+### Task 28: Draft the #2397 comment — never posted without the person's OK
+
+**Files:**
+- Create: `docs/spikes/issue-2397/issue-comment-draft.md`
+
+alphaTab's AGENTS.md applies to comments too:
+- the one-line disclosure with `alphatab-ai-authored-v1`;
+- no proposed patches;
+- no diagnosis from alphaTab's source;
+- nothing fabricated.
+
+No PR without an accepted issue. So the comment describes the need and the measured outcome, and asks whether a
+contribution would be welcome.
+
+- [ ] **Step 1: Write the draft**
+
+Use the template below and fill it with the acceptance numbers (Task 22) and the device results (Task 24):
+
+```markdown
+> _AI-assisted (`alphatab-ai-authored-v1`) — drafted with help of an AI agent._
+
+We needed the metronome and count-in over backing tracks (and YouTube) in two apps, so we tried running the
+synthesizer in sync with the media. Measured in Chromium on macOS with a generated beat track:
+
+| | Result |
+|---|---|
+| Click vs beat at 1× (p95) | <S1> |
+| At 1.25× / 1.5× (p95) | <S2> |
+| At 0.5× / 0.75× (p95) | <S3> |
+| First click after Play | <S4> |
+| Loop wraps (0.5× / 1× / 1.5×) | <S10> |
+| Count-in hand-off to the media | <S6> |
+| iPad (WebKit) / Android (Chrome) | <device results> |
+
+With the feature off nothing changes. Would a contribution along these lines be welcome? We can open a separate
+issue describing the use case first, if that's preferred.
+```
+
+- [ ] **Step 2: STOP — ask before anything is posted**
+
+Put to the person as `[Q-C1]`: post as drafted, edit first, or don't post. If they choose to post, they post it
+themselves or explicitly ask for it to be posted. Never post on your own.
+
+- [ ] **Step 3: Commit the draft**
+
+```bash
+git add docs/spikes/issue-2397/issue-comment-draft.md
+git commit -m "docs: draft #2397 comment (not posted)"
+git push
+```
+
+---
+
+## After this plan (not tasks here)
+
+- **Upstream PR (§11 step 5, optional and later):** only after a maintainer accepts an issue for it.
+  - It needs C# and Kotlin versions of the shared changes: `IAlphaSynth.backingTrackVolume` and `synthVolume` on
+    their players, and `IUiFacade.createMediaSynthPlayer` returning null.
+  - It needs the alphaTab docs pages for the two settings and the two API members.
+  - Drop the `docs/superpowers` and `docs/spikes` commits from the branch.
+  - Add the `alphatab-ai-authored-v1` disclosure block to the PR body.
+- **Later work the spec lists (§12):** a re-sync that keeps the synth's notes sounding; a direct worker → worklet
+  `MessagePort`; Firefox and Safari tuning beyond the probe.
