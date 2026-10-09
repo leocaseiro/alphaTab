@@ -96,7 +96,10 @@ setRateCorrection(factor: number): void    // ~0.98..1.02, multiplies how fast m
 
 1. `mediaStep = microBufferMs × playbackSpeed × rateCorrection`; `nextMediaTime = mediaTime + mediaStep`.
 2. `midiTarget = sequencer.mainTimePositionFromBackingTrack(nextMediaTime, mediaDuration) × playbackSpeed`
-   — the same mapping the cursor uses (`BackingTrackPlayer`), so what you see and hear agree.
+   — the same mapping the cursor uses (`BackingTrackPlayer`), so what you see and hear agree. With no sync points the
+   target is `nextMediaTime` itself (media time is MIDI time at 1×): that call then returns the media time unscaled,
+   so `× playbackSpeed` would play at speed² tempo while the stamps still match the media. `seekToMediaTime` uses the
+   same rule. The cursor keeps today's mapping there, off by the speed factor (not changed, see below).
 3. `sequencer.fillMidiEventQueueUntil(midiTarget)` (new): dispatch all events before the target.
 4. Synthesize; `mediaTime = nextMediaTime`.
 5. Each `addSamples` chunk carries `mediaStart` and `mediaPerFrame` (constant within a chunk).
@@ -271,7 +274,7 @@ must also recreate it when `enableSynthesizerWithMedia` changes (via `updateSett
 
 | Layer | Tests |
 |---|---|
-| Unit (vitest, Node) | Sequencer `fillMidiEventQueueUntil`; follow mode dispatches events at the right media times (sync points, tempo changes 135↔145 BPM, 0.5×/1.5×), using the repo's `syncpoints-testfile.gp` |
+| Unit (vitest, Node) | Sequencer `fillMidiEventQueueUntil`; follow mode dispatches events at the right media times (sync points, tempo changes 135↔145 BPM, 0.5×/1.5×), using the repo's `syncpoints-testfile.gp`, and the same file with no sync points at 0.5×/1.5× (target = media time, not media time × speed) |
 | | Chunk stamps consistent (`mediaStart + frames × mediaPerFrame` = next `mediaStart`); `seekToMediaTime`; rate correction |
 | | `MediaSyncController` with fed readings: agreement rule, settle thresholds, nudge sign/limits, re-sync, lead learning, start handshake (media delay vs synth pre-roll, start at target never past it, one start lead per speed, media pre-roll and compensated start at speeds other than 1×), seek = restart, loop wrap, a jumpy-clock sequence that must not re-sync |
 | | `MediaSynthPlayer` transport, with fake inner players: Play reports `Playing` at once, also during the count-in, and no `positionChanged` reaches the app until the media plays; a seek during playback and a loop wrap emit no `stateChanged` and play no count-in; setting a range seeks to its start and raises `playbackRangeChanged`; with `isLooping` off the range end fires `finished` and stops |
