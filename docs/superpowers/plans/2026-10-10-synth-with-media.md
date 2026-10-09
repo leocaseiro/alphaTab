@@ -10619,8 +10619,11 @@ npm install @coderline/alphatab@<alpha>
 git rm patches/@coderline+alphatab+1.8.1.patch
 ```
 
-The 1.8.1 patch is CoderLine/alphaTab#2591 (drum tablature) back-ported. The alpha contains all of it (checked
-2026-10-08 with `guitar-pro-rock-beat-repeat.gp`). A stale patch file fails every install: patch-package exits 1 and
+The 1.8.1 patch is CoderLine/alphaTab#2591 (drum tablature) back-ported and, since 2026-09-28, CoderLine/alphaTab#2894
+(horizontal layout width at a display scale above 1). The alpha contains #2591 (checked 2026-10-08 with
+`guitar-pro-rock-beat-repeat.gp`). #2894 is in an alpha only if it was built after 2026-10-06 (the newest today,
+`1.9.0-alpha.1891`, is from 2026-08-09), but it is in `develop` @ `25ef76d3`, so this task's own patch (Step 4, built from
+the feature branch) carries it. A stale patch file fails every install: patch-package exits 1 and
 skips every patch after it.
 
 - [ ] **Step 3: The drum marker id after the upgrade**
