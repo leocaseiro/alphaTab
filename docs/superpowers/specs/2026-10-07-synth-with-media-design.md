@@ -1,6 +1,7 @@
 ---
-lap: 2
+lap: 3
 last_applied: P1
+review_closed: "2026-10-10, by the author after lap 2 (no lap-3 review); open P2/P3 items carried into the plan (§14)"
 ---
 
 # Synthesizer + backing track / external media mixing — design
@@ -17,7 +18,7 @@ last_applied: P1
 When a song plays from a backing track (embedded audio) or external media (e.g. YouTube), alphaTab
 can also run its synthesizer in sync with it: the **metronome**, the **count-in** and, optionally,
 the score's **tracks**. The media stays the time source. The synth follows it within a few
-milliseconds, at any playback speed, with no cost when the feature is off.
+milliseconds from 1× to 1.5×, and within the media's own time-stretch wobble (p95 ≤ 20 ms) below 1× down to 0.5× (S1–S3), with no cost when the feature is off. External media is best-effort (S9).
 
 ### Success criteria
 
@@ -274,7 +275,7 @@ must also recreate it when `enableSynthesizerWithMedia` changes (via `updateSett
 
 | Layer | Tests |
 |---|---|
-| Unit (vitest, Node) | Sequencer `fillMidiEventQueueUntil`; follow mode dispatches events at the right media times (sync points, tempo changes 135↔145 BPM, 0.5×/1.5×), using the repo's `syncpoints-testfile.gp`, and the same file with no sync points at 0.5×/1.5× (target = media time, not media time × speed) |
+| Unit (vitest, Node) | Sequencer `fillMidiEventQueueUntil`; follow mode dispatches events at the right media times (the file's 9 sync points, tempo changes 120 → 60 → 80 BPM in the score and 60–240 BPM in its backing track, a repeat, 0.5×/1.5×), using the repo's `syncpoints-testfile.gp`, and the same file with no sync points at 0.5×/1.5× (target = media time, not media time × speed) |
 | | Chunk stamps consistent (`mediaStart + frames × mediaPerFrame` = next `mediaStart`); `seekToMediaTime`; rate correction |
 | | `MediaSyncController` with fed readings: agreement rule, settle thresholds, nudge sign/limits, re-sync, lead learning, start handshake (media delay vs synth pre-roll, start at target never past it, one start lead per speed, media pre-roll and compensated start at speeds other than 1×), seek = restart, loop wrap, a jumpy-clock sequence that must not re-sync |
 | | `MediaSynthPlayer` transport, with fake inner players: Play reports `Playing` at once, also during the count-in, and no `positionChanged` reaches the app until the media plays; a seek during playback and a loop wrap emit no `stateChanged` and play no count-in; setting a range seeks to its start and raises `playbackRangeChanged`; with `isLooping` off the range end fires `finished` and stops |
@@ -346,3 +347,72 @@ must also recreate it when `enableSynthesizerWithMedia` changes (via `updateSett
 | `createMediaElementSource` is one-shot per element and ties output to the `AudioContext` | Created once per output; device selection sets the context's sink (`MediaSynthPlayer.output`, §6.1), not the captured element's |
 | AudioContext suspended (autoplay policy) | Existing resume-on-gesture logic; the probe waits until the context runs |
 | Hidden probe playback in the background | Silent (never connected to the destination), ~6 s once per session; can be made lazy if needed |
+
+## 14. Open items carried into the plan
+
+The second review lap ended with these items undecided. The author closed the review on 2026-10-10 so
+the plan can settle them with tasks and tests. The ids are the review's; each line says what to decide
+or do, the recommended answer and its evidence (spikes in `docs/spikes/issue-2397/`).
+
+**Timing and sync**
+
+- **F-9a** (both apps): a speed with no learned start lead or media-start latency uses a straight-line
+  guess between the learned speeds (outside them the nearest value; none learned: 0), and a probe value
+  that lands during playback settles without a forced re-sync. Spike 11: the guess removed the
+  re-sync after the first start (0 of 6 starts, against 5 of 6 with 0), but at 0.625× the first click
+  landed +18…+23 ms. The probe part is **(untested)**.
+- **F-9d** (both): add success criterion S12 and a sync-lab speed-change test for the apps' speed
+  patterns: an auto-BPM loop (+5 BPM per wrap), a held tempo sweep in 1-BPM steps, a first Play at an
+  unprobed speed. The sweep re-syncs at each step (spike 11). Depends on F-9a.
+- **F-3** (both): derive the thresholds from the context's audio callback: settle re-sync threshold
+  max(12 ms, 2 × `baseLatency` + 1 ms), first-click tolerance max(±11 ms, ±2 × `baseLatency`). Run the
+  start and loop tests on a machine whose `baseLatency` is above 5.3 ms (e.g. Windows Chrome)
+  **(untested)**.
+- **F-14** (both): count-in media pre-roll below 1×. Recommended 120 ms (spike 6: 0.5× downbeat
+  +4.5…+13.9 ms), or keep 60 ms (+7.2…+20.5 ms). Either way restate the 1.5× figure as 0…+2.7 ms and mark
+  the first count-in at an unlearned speed (open).
+- **Q-1** (both): whether the S4 gate counts the first Play at a speed with no learned start lead.
+  Recommended: report it against S4's (open) item, don't gate it.
+
+**Loops and external media**
+
+- **F-15** (both): how strict the loop gate (S10) is. First re-run spike 4's loop test at 1× and 1.5×
+  and listen at each wrap the lab flags. Provisional pick: a median gate plus an ear check.
+- **F-5** (library only): external media wraps without pausing: seek the media to the range start, keep
+  the synth silent until the first position update after the jump, then restart it at the target.
+  Scope S10 to the backing track (external media stays best-effort, S9) **(untested)**.
+- **F-6** (alphaTabWebsite): tell a start pressed inside YouTube from one made through alphaTab. If an
+  `updatePosition()` at `play()` or within ~100 ms shows the media moved, the media started it: no
+  count-in, no learning. §7 asks integrations to call `updatePosition()` right before `api.play()` in
+  their media-started handler **(untested)**.
+- **F-17** (alphaTabWebsite, P3): a media stall rule. The same position for 100 ms or more during
+  playback silences the synth; once the position moves, it restarts at the media's position with the
+  clock fit restarted (spike 9 §4: no re-sync fires during a stall, and the first one comes 0.6–1.5 s
+  after the media resumes).
+- **F-11** (alphaTabWebsite): the sync offset subtracts `mediaSyncOffsetInMilliseconds × speed` from
+  both clocks; state its sign and unit under the routing table **(untested)**.
+
+**Levels and API**
+
+- **F-13** (both): the limiter is −1 dBFS, ratio 20, knee 0, attack 1 ms, release 100 ms, followed by a
+  fixed −0.57 dB trim that cancels Web Audio's make-up gain (spike 8: worst case −0.31 dBFS at
+  `synthVolume` 3, and the recording keeps its own level).
+- **FYI-3** (both): `synthVolume` can be expressed with `backingTrackVolume` and `masterVolume`; decide
+  whether it stays public (this reopens the lap-1 pick).
+
+**Delivery and acceptance**
+
+- **F-10** (both): §11 step 4 turns the feature on in each app: set the flag in both; create the rhythm
+  game's YouTube player with `controls: 0` and `disablekb: 1`; notation-hero keeps those controls
+  enabled while mixing is on (a notation-hero spec delta).
+- **F-18** (both, P3): add S6 to the sync lab's acceptance list ("S1–S6 (S6: backing track), S4b,
+  S10"), after F-14 and Q-1 are settled.
+
+**Risks for the target-device run (§9)**
+
+- **R-1** (both): iOS's Ring/Silent switch mutes Web Audio but not a plain `<audio>`, so mixing could
+  silence a backing track that plays today on an iPad in silent mode. Remedy to try: Safari 16.4+'s
+  `navigator.audioSession.type = 'playback'` **(untested)**.
+- **R-2** (both): WebKit may refuse the backing track's `play()` a bar after the Play gesture (the
+  count-in hand-off). Playback would then stall after the count-in; a fallback for a refused `play()`
+  is still open **(untested)**.
