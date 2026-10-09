@@ -25,6 +25,9 @@ wrap.
 
 ## How to run this plan
 
+- **Execution method (chosen 2026-10-10):** subagent-driven (superpowers:subagent-driven-development). A fresh
+  implementer and a fresh reviewer per task, then a whole-branch review. The main session runs the decision gates.
+  Implementation starts only after the plan review (spec-triage-loop:doc-review-loop) is done.
 - **Branch.** Task 1 creates `feat/2397-synth-with-media` from `25ef76d3` (the spec's base, where every line
   reference in this plan holds) in its own worktree, and carries `docs/superpowers/` and
   `docs/spikes/issue-2397/` from `spike/2397-sync-options` so the spec, this plan and the evidence travel with the
