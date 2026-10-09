@@ -4430,7 +4430,11 @@ export class ExternalMediaClock implements IMediaClock {
         }
         this._playing = playing;
         this._sawMovement = false;
-        if (!playing) {
+        if (playing) {
+            // fit the playing media only: the updates from while it was paused would bend the line
+            this._samples = this._samples.slice(-1);
+            this._fit();
+        } else {
             this._positionAtPause = this._lastPosition;
         }
     }
@@ -4499,7 +4503,8 @@ export class ExternalMediaClock implements IMediaClock {
         const samples = this._samples;
         const n = samples.length;
         this._fitValid = false;
-        if (n < 3 || samples[n - 1].time - samples[0].time < ExternalMediaClock.MinFitSpanS) {
+        // (the small margin keeps 3 updates 50 ms apart valid despite float rounding)
+        if (n < 3 || samples[n - 1].time - samples[0].time < ExternalMediaClock.MinFitSpanS - 1e-6) {
             return;
         }
         // Theil–Sen: the median of the pairwise slopes; one late update doesn't bend it (spike 9 §4)
@@ -4916,6 +4921,2813 @@ destination)" with "Silent (its tap outputs silence; it is connected so that it 
 npm run lint && npm run typecheck && npm test
 git add packages/alphatab/src/platform packages/alphatab/test/audio/MediaLatencyProbe.test.ts docs/superpowers/specs/2026-10-07-synth-with-media-design.md
 git commit -m "feat(web): media latency probe with a tap in alphaTab's own worklet (#2397)"
+git push
+```
+
+---
+
+## Phase 4 — The combined player
+
+### Task 13: Volumes on `IAlphaSynth` — `backingTrackVolume`, `synthVolume` (FYI-3 / D-6)
+
+**Files:**
+- Modify: `packages/alphatab/src/synth/IAlphaSynth.ts`
+- Modify: `packages/alphatab/src/synth/AlphaSynth.ts` (`AlphaSynthBase`)
+- Modify: `packages/alphatab/src/synth/BackingTrackPlayer.ts`
+- Modify: `packages/alphatab/src/synth/ExternalMediaPlayer.ts`
+- Modify: `packages/alphatab/src/synth/AlphaSynthWrapper.ts`
+- Modify: `packages/alphatab/src/platform/worker/AlphaSynthWebWorkerApi.ts`
+- Modify: `packages/alphatab/src/AlphaTabApiBase.ts`
+- Create: `packages/alphatab/test/audio/TestMediaOutput.ts`
+- Create: `packages/alphatab/test/audio/MediaVolumes.test.ts`
+
+**Interfaces:**
+- Produces (used by Tasks 15, 19, 20): `IAlphaSynth.backingTrackVolume: number`, `IAlphaSynth.synthVolume: number`;
+  `AlphaTabApiBase.backingTrackVolume`, `AlphaTabApiBase.synthVolume`; protected `BackingTrackPlayer.applyMediaVolume()`;
+  test helpers `TestMediaOutput` (a backing-track output with `currentTime`, `isPlaying`, `seekTimes`, `advance(ms)`)
+  and `TestMediaHandler` (an external-media handler that records `seekTimes`, `plays`, `pauses`).
+
+§7: `backingTrackVolume` scales the backing track's own level (`masterVolume` still scales both). It works without
+mixing too: `BackingTrackPlayer` applies `masterVolume × backingTrackVolume` to its `<audio>`. `ExternalMediaPlayer`
+ignores it, and its handler keeps getting `masterVolume` alone. Otherwise an app that writes its player's volume
+back into `masterVolume` drives both toward 0 (spike 9 §3: 239 `volumechange` events, master ~1e-110). Adding
+members to `IAlphaSynth` is a minor break for third-party implementations (§7).
+
+- [ ] **Step 0: STOP — decision gate D-6 (FYI-3): does `synthVolume` stay public?**
+
+Settle this before any code, ideally during the plan review. Put it to the person as `[Q-D6]`:
+
+- **Scenario:** in notation-hero you want the metronome louder than the recording, so you call one of the levels.
+- **Option 1 — keep `synthVolume` public (as §7 says; implemented default).** Apps raise the synth directly.
+  The limiter (Task 14) keeps raised levels from clipping. Cost: one more public member to document, for both apps.
+  Confidence High; nothing to spike (an API shape).
+- **Option 2 — drop it.** Apps lower `backingTrackVolume` and raise `masterVolume`, which gives the same mix:
+  `synth = master`, `media = master × backingTrackVolume`. Cost: two calls for one intent, and `masterVolume` above 1
+  leans on the limiter. Confidence High; nothing to spike.
+
+If the answer is Option 2, leave out every `synthVolume` line in this task and in Tasks 15 and 20, and edit spec §2
+("Public additions") and §7 in the same commit.
+
+- [ ] **Step 1: Write the test helpers**
+
+Create `packages/alphatab/test/audio/TestMediaOutput.ts`:
+
+```ts
+import {
+    EventEmitter,
+    EventEmitterOfT,
+    type IEventEmitter,
+    type IEventEmitterOfT
+} from '@coderline/alphatab/EventEmitter';
+import type { BackingTrack } from '@coderline/alphatab/model/BackingTrack';
+import type { IBackingTrackSynthOutput } from '@coderline/alphatab/synth/BackingTrackPlayer';
+import type { IExternalMediaHandler } from '@coderline/alphatab/synth/ExternalMediaPlayer';
+import type { ISynthOutputDevice } from '@coderline/alphatab/synth/ISynthOutput';
+
+/**
+ * A backing-track output whose media moves only when the test advances it.
+ * @internal
+ */
+export class TestMediaOutput implements IBackingTrackSynthOutput {
+    /**
+     * The media's position, ms.
+     */
+    public currentTime: number = 0;
+    public isPlaying: boolean = false;
+    public readonly seekTimes: number[] = [];
+    public backingTrackDuration: number = 42000;
+    public playbackRate: number = 1;
+    public masterVolume: number = 1;
+    public readonly sampleRate: number = 44100;
+
+    public seekTo(time: number): void {
+        this.seekTimes.push(time);
+        this.currentTime = time;
+    }
+
+    public loadBackingTrack(_backingTrack: BackingTrack): void {}
+
+    public open(_bufferTimeInMilliseconds: number): void {
+        (this.ready as EventEmitter).trigger();
+    }
+
+    public play(): void {
+        this.isPlaying = true;
+    }
+
+    public pause(): void {
+        this.isPlaying = false;
+    }
+
+    public destroy(): void {}
+    public addSamples(_samples: Float32Array): void {}
+    public resetSamples(): void {}
+    public activate(): void {}
+
+    /**
+     * The media moves forward and reports its position, as the <audio> does every 50 ms.
+     */
+    public advance(ms: number): void {
+        if (this.isPlaying) {
+            this.currentTime += ms * this.playbackRate;
+            (this.timeUpdate as EventEmitterOfT<number>).trigger(this.currentTime);
+        }
+    }
+
+    public readonly timeUpdate: IEventEmitterOfT<number> = new EventEmitterOfT<number>();
+    public readonly ready: IEventEmitter = new EventEmitter();
+    public readonly samplesPlayed: IEventEmitterOfT<number> = new EventEmitterOfT<number>();
+    public readonly sampleRequest: IEventEmitter = new EventEmitter();
+
+    public async enumerateOutputDevices(): Promise<ISynthOutputDevice[]> {
+        return [] as ISynthOutputDevice[];
+    }
+    public async setOutputDevice(_device: ISynthOutputDevice | null): Promise<void> {}
+    public async getOutputDevice(): Promise<ISynthOutputDevice | null> {
+        return null;
+    }
+}
+
+/**
+ * An external-media handler that records what alphaTab asks of it.
+ * @internal
+ */
+export class TestMediaHandler implements IExternalMediaHandler {
+    public backingTrackDuration: number = 42000;
+    public playbackRate: number = 1;
+    public masterVolume: number = 1;
+    public readonly seekTimes: number[] = [];
+    public plays: number = 0;
+    public pauses: number = 0;
+
+    public seekTo(time: number): void {
+        this.seekTimes.push(time);
+    }
+
+    public play(): void {
+        this.plays++;
+    }
+
+    public pause(): void {
+        this.pauses++;
+    }
+}
+```
+
+- [ ] **Step 2: Write the failing tests**
+
+Create `packages/alphatab/test/audio/MediaVolumes.test.ts`:
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { AlphaSynth } from '@coderline/alphatab/synth/AlphaSynth';
+import { AlphaSynthWrapper } from '@coderline/alphatab/synth/AlphaSynthWrapper';
+import { BackingTrackPlayer } from '@coderline/alphatab/synth/BackingTrackPlayer';
+import { ExternalMediaPlayer, type IExternalMediaSynthOutput } from '@coderline/alphatab/synth/ExternalMediaPlayer';
+import { TestMediaHandler, TestMediaOutput } from 'test/audio/TestMediaOutput';
+import { TestOutput } from 'test/audio/TestOutput';
+
+describe('MediaVolumesTests', () => {
+    it('backing-track-player-applies-master-times-backing-track-volume', () => {
+        const output = new TestMediaOutput();
+        const player = new BackingTrackPlayer(output, 500);
+        player.masterVolume = 0.8;
+        player.backingTrackVolume = 0.35;
+        expect(output.masterVolume).toBeCloseTo(0.28, 9);
+        player.masterVolume = 1;
+        expect(output.masterVolume).toBeCloseTo(0.35, 9);
+    });
+
+    it('external-media-handler-keeps-master-volume-alone', () => {
+        // §7, spike 9 §3
+        const player = new ExternalMediaPlayer(500);
+        const handler = new TestMediaHandler();
+        (player.output as IExternalMediaSynthOutput).handler = handler;
+        player.masterVolume = 0.8;
+        player.backingTrackVolume = 0.35;
+        expect(handler.masterVolume).toBeCloseTo(0.8, 9);
+    });
+
+    it('a-synthesizer-alone-keeps-both-and-ignores-them', () => {
+        const synth = new AlphaSynth(new TestOutput(), 500);
+        synth.masterVolume = 0.5;
+        synth.backingTrackVolume = 0.35;
+        synth.synthVolume = 2;
+        expect(synth.masterVolume).toBeCloseTo(0.5, 9);
+        expect(synth.backingTrackVolume).toBeCloseTo(0.35, 9);
+        expect(synth.synthVolume).toBe(2);
+    });
+
+    it('volumes-are-clamped-at-0', () => {
+        const player = new BackingTrackPlayer(new TestMediaOutput(), 500);
+        player.backingTrackVolume = -1;
+        player.synthVolume = -1;
+        expect(player.backingTrackVolume).toBe(0);
+        expect(player.synthVolume).toBe(0);
+    });
+
+    it('wrapper-remembers-the-media-volumes-across-player-switches', () => {
+        const wrapper = new AlphaSynthWrapper();
+        wrapper.backingTrackVolume = 0.4;
+        wrapper.synthVolume = 1.5;
+        const output = new TestMediaOutput();
+        const player = new BackingTrackPlayer(output, 500);
+        wrapper.instance = player;
+        expect(player.backingTrackVolume).toBeCloseTo(0.4, 9);
+        expect(player.synthVolume).toBeCloseTo(1.5, 9);
+        expect(output.masterVolume).toBeCloseTo(0.4, 9);
+        wrapper.backingTrackVolume = 0.2;
+        expect(output.masterVolume).toBeCloseTo(0.2, 9);
+    });
+});
+```
+
+- [ ] **Step 3: Run the tests to see them fail**
+
+Run: `npx vitest run test/audio/MediaVolumes.test.ts`
+Expected: FAIL — `backingTrackVolume` doesn't exist.
+
+- [ ] **Step 4: Implement**
+
+`IAlphaSynth.ts`, after `masterVolume`:
+
+```ts
+    /**
+     * Gets or sets the backing track's own level against the synthesizer (range: 0.0-3.0, default 1.0).
+     * {@link masterVolume} still scales both. Not applied to external media: set your own player's volume.
+     * @since 1.9.0
+     */
+    backingTrackVolume: number;
+
+    /**
+     * Gets or sets the synthesizer's level against the media while it plays along a backing track or external
+     * media (range: 0.0-3.0, default 1.0). Ignored otherwise: {@link masterVolume} already scales a lone synthesizer.
+     * @since 1.9.0
+     */
+    synthVolume: number;
+```
+
+`AlphaSynthBase` (after `countInVolume`):
+
+```ts
+    private _backingTrackVolume: number = 1;
+    private _synthVolume: number = 1;
+
+    public get backingTrackVolume(): number {
+        return this._backingTrackVolume;
+    }
+
+    public set backingTrackVolume(value: number) {
+        value = Math.max(value, SynthConstants.MinVolume);
+        this._backingTrackVolume = value;
+        this.updateBackingTrackVolume(value);
+    }
+
+    /**
+     * A synthesizer alone has no backing track.
+     */
+    protected updateBackingTrackVolume(_value: number): void {}
+
+    public get synthVolume(): number {
+        return this._synthVolume;
+    }
+
+    public set synthVolume(value: number) {
+        // a synthesizer alone ignores it: masterVolume already scales it
+        this._synthVolume = Math.max(value, SynthConstants.MinVolume);
+    }
+```
+
+`BackingTrackPlayer.ts`:
+
+```diff
+     protected override updateMasterVolume(value: number): void {
+         super.updateMasterVolume(value);
+-        this._backingTrackOutput.masterVolume = value;
++        this.applyMediaVolume();
++    }
++
++    protected override updateBackingTrackVolume(_value: number): void {
++        this.applyMediaVolume();
++    }
++
++    /**
++     * The media's own volume: masterVolume × backingTrackVolume (§7), so it also works without mixing.
++     */
++    protected applyMediaVolume(): void {
++        this._backingTrackOutput.masterVolume = this.masterVolume * this.backingTrackVolume;
+     }
+```
+
+`ExternalMediaPlayer.ts`, in the class:
+
+```ts
+    /**
+     * The handler keeps getting masterVolume alone: an app that writes its player's volume back into
+     * masterVolume (alphaTab's external-media sample does, on volumechange) would otherwise drive it toward 0
+     * (§7, spike 9 §3).
+     */
+    protected override applyMediaVolume(): void {
+        (this.output as IBackingTrackSynthOutput).masterVolume = this.masterVolume;
+    }
+```
+
+`AlphaSynthWebWorkerApi.ts`:
+
+```ts
+    private _backingTrackVolume: number = 1;
+    private _synthVolume: number = 1;
+
+    // a synthesizer alone ignores both: it has no backing track, and masterVolume already scales it
+    public get backingTrackVolume(): number {
+        return this._backingTrackVolume;
+    }
+
+    public set backingTrackVolume(value: number) {
+        this._backingTrackVolume = Math.max(value, SynthConstants.MinVolume);
+    }
+
+    public get synthVolume(): number {
+        return this._synthVolume;
+    }
+
+    public set synthVolume(value: number) {
+        this._synthVolume = Math.max(value, SynthConstants.MinVolume);
+    }
+```
+
+`AlphaSynthWrapper.ts` — remember, forward and restore like `masterVolume`:
+
+```diff
+     private _masterVolume: number = 1;
++    private _backingTrackVolume: number = 1;
++    private _synthVolume: number = 1;
+@@ (both "restore state on new player" blocks)
+                 value.masterVolume = this._masterVolume;
++                value.backingTrackVolume = this._backingTrackVolume;
++                value.synthVolume = this._synthVolume;
+```
+
+```ts
+    public get backingTrackVolume(): number {
+        return this._backingTrackVolume;
+    }
+
+    public set backingTrackVolume(value: number) {
+        value = Math.max(value, SynthConstants.MinVolume);
+        this._backingTrackVolume = value;
+        if (this._instance) {
+            this._instance.backingTrackVolume = value;
+        }
+    }
+
+    public get synthVolume(): number {
+        return this._synthVolume;
+    }
+
+    public set synthVolume(value: number) {
+        value = Math.max(value, SynthConstants.MinVolume);
+        this._synthVolume = value;
+        if (this._instance) {
+            this._instance.synthVolume = value;
+        }
+    }
+```
+
+`AlphaTabApiBase.ts`, after `masterVolume`:
+
+```ts
+    /**
+     * The backing track's own level against the synthesizer, as percentage (0-3).
+     * @remarks
+     * With {@link PlayerSettings.enableSynthesizerWithMedia} the synthesizer plays along a backing track. At the
+     * default levels the metronome sits about 8 dB under a mastered recording: lower this to bring the metronome or
+     * the synthesized tracks forward (0.35 is about −9 dB). {@link masterVolume} still scales both. Without mixing
+     * it scales the backing track alone. Not applied to external media: set your own player's volume there.
+     * @category Properties - Player
+     * @since 1.9.0
+     * @defaultValue `1`
+     * @example
+     * JavaScript
+     * ```js
+     * const api = new alphaTab.AlphaTabApi(document.querySelector('#alphaTab'));
+     * api.backingTrackVolume = 0.35;
+     * ```
+     *
+     * @example
+     * C#
+     * ```cs
+     * var api = new AlphaTabApi<MyControl>(...);
+     * api.BackingTrackVolume = 0.35;
+     * ```
+     *
+     * @example
+     * Android
+     * ```kotlin
+     * val api = AlphaTabApi<MyControl>(...)
+     * api.backingTrackVolume = 0.35
+     * ```
+     */
+    public get backingTrackVolume(): number {
+        return this._player.backingTrackVolume;
+    }
+
+    public set backingTrackVolume(value: number) {
+        this._player.backingTrackVolume = value;
+    }
+
+    /**
+     * The synthesizer's level against the media, as percentage (0-3).
+     * @remarks
+     * With {@link PlayerSettings.enableSynthesizerWithMedia} the synthesizer plays along a backing track or external
+     * media. Raise this to bring the metronome or the synthesized tracks forward; the output limiter keeps raised
+     * levels from clipping. Ignored without mixing: {@link masterVolume} already scales a lone synthesizer.
+     * @category Properties - Player
+     * @since 1.9.0
+     * @defaultValue `1`
+     * @example
+     * JavaScript
+     * ```js
+     * const api = new alphaTab.AlphaTabApi(document.querySelector('#alphaTab'));
+     * api.synthVolume = 2;
+     * ```
+     *
+     * @example
+     * C#
+     * ```cs
+     * var api = new AlphaTabApi<MyControl>(...);
+     * api.SynthVolume = 2;
+     * ```
+     *
+     * @example
+     * Android
+     * ```kotlin
+     * val api = AlphaTabApi<MyControl>(...)
+     * api.synthVolume = 2
+     * ```
+     */
+    public get synthVolume(): number {
+        return this._player.synthVolume;
+    }
+
+    public set synthVolume(value: number) {
+        this._player.synthVolume = value;
+    }
+```
+
+- [ ] **Step 5: Run the tests to see them pass**
+
+Run: `npx vitest run test/audio/MediaVolumes.test.ts`
+Expected: PASS (5 tests).
+
+- [ ] **Step 6: Run the repo gates and commit**
+
+```bash
+npm run lint && npm run typecheck && npm test
+git add packages/alphatab/src packages/alphatab/test/audio/TestMediaOutput.ts packages/alphatab/test/audio/MediaVolumes.test.ts
+git commit -m "feat(api): backingTrackVolume and synthVolume (#2397)"
+git push
+```
+
+---
+
+### Task 14: `WebAudioMixGraph` — gains, limiter and trim (F-13)
+
+**Files:**
+- Create: `packages/alphatab/src/platform/javascript/WebAudioMixGraph.ts`
+- Create: `packages/alphatab/test/audio/WebAudioMixGraph.test.ts`
+
+**Interfaces:**
+- Consumes: `IMediaMixGraph` (Task 5), `IExternalClockSource` (Task 11).
+- Produces (used by Task 20): `WebAudioMixGraph implements IMediaMixGraph, IExternalClockSource` with
+  `constructor(context)`, `connectMediaElement(element)`, `synthInput: AudioNode`, the gains, `heardContextTime()`,
+  `whenRunning(action)`, and the limiter values as statics.
+
+§3: `<audio> → mediaGain ┐ ├→ masterGain → limiter → destination; worklet → synthGain ┘`, mixing mode only.
+**F-13** (both; our design's problem; spiked in spike 8; High): a limiter at −1 dBFS, ratio 20, knee 0, attack 1 ms,
+release 100 ms, followed by a fixed −0.57 dB trim that cancels Web Audio's automatic make-up gain. Spike 8: the worst
+case peaked at −0.31 dBFS with `synthVolume` 3, and the recording keeps its own level. The spec's −3 dBFS would
+squash a mastered recording's own peaks (spike 5: −2.3 dBFS).
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `packages/alphatab/test/audio/WebAudioMixGraph.test.ts`:
+
+```ts
+/**
+ * The mixing graph's wiring and the limiter's values (F-13); the sound itself is checked with spike 8's script.
+ * @target web
+ */
+import { describe, expect, it } from 'vitest';
+import { WebAudioMixGraph } from '@coderline/alphatab/platform/javascript/WebAudioMixGraph';
+
+class FakeParam {
+    public value: number = 0;
+}
+
+class FakeNode {
+    public readonly name: string;
+    public readonly connections: FakeNode[] = [];
+    public constructor(name: string) {
+        this.name = name;
+    }
+    public connect(node: FakeNode): FakeNode {
+        this.connections.push(node);
+        return node;
+    }
+    public disconnect(): void {
+        this.connections.length = 0;
+    }
+}
+
+class FakeGain extends FakeNode {
+    public readonly gain: FakeParam = new FakeParam();
+    public constructor() {
+        super('gain');
+        this.gain.value = 1;
+    }
+}
+
+class FakeCompressor extends FakeNode {
+    public readonly threshold: FakeParam = new FakeParam();
+    public readonly ratio: FakeParam = new FakeParam();
+    public readonly knee: FakeParam = new FakeParam();
+    public readonly attack: FakeParam = new FakeParam();
+    public readonly release: FakeParam = new FakeParam();
+    public constructor() {
+        super('compressor');
+    }
+}
+
+class FakeContext {
+    public readonly destination: FakeNode = new FakeNode('destination');
+    public sampleRate: number = 48000;
+    public currentTime: number = 2;
+    public baseLatency: number = 0.0053;
+    public outputLatency: number = 0.02;
+    public state: string = 'running';
+    public mediaSources: number = 0;
+    public outputTimestamp: { contextTime: number; performanceTime: number } | undefined = undefined;
+    private _listeners: (() => void)[] = [];
+    public createGain(): FakeGain {
+        return new FakeGain();
+    }
+    public createDynamicsCompressor(): FakeCompressor {
+        return new FakeCompressor();
+    }
+    public createMediaElementSource(_element: unknown): FakeNode {
+        this.mediaSources++;
+        return new FakeNode('media');
+    }
+    public getOutputTimestamp(): { contextTime?: number; performanceTime?: number } {
+        return this.outputTimestamp ?? {};
+    }
+    public addEventListener(_type: string, listener: () => void): void {
+        this._listeners.push(listener);
+    }
+    public removeEventListener(_type: string, listener: () => void): void {
+        this._listeners = this._listeners.filter(l => l !== listener);
+    }
+    public setState(state: string): void {
+        this.state = state;
+        for (const listener of [...this._listeners]) {
+            listener();
+        }
+    }
+}
+
+function create(): { context: FakeContext; graph: WebAudioMixGraph } {
+    const context = new FakeContext();
+    return { context, graph: new WebAudioMixGraph(context as unknown as AudioContext) };
+}
+
+describe('WebAudioMixGraphTests', () => {
+    it('limiter-holds-the-spike-8-values', () => {
+        const { graph } = create();
+        const limiter = graph.limiterNode as unknown as FakeCompressor;
+        expect(limiter.threshold.value).toBe(-1);
+        expect(limiter.ratio.value).toBe(20);
+        expect(limiter.knee.value).toBe(0);
+        expect(limiter.attack.value).toBe(0.001);
+        expect(limiter.release.value).toBe(0.1);
+        expect((graph.trimNode as unknown as FakeGain).gain.value).toBeCloseTo(Math.pow(10, -0.57 / 20), 12);
+    });
+
+    it('wires-media-and-synth-through-master-limiter-and-trim', () => {
+        const { context, graph } = create();
+        const node = (n: unknown) => n as FakeNode;
+        expect(node(graph.mediaGainNode).connections).toEqual([graph.masterGainNode]);
+        expect(node(graph.synthGainNode).connections).toEqual([graph.masterGainNode]);
+        expect(node(graph.masterGainNode).connections).toEqual([graph.limiterNode]);
+        expect(node(graph.limiterNode).connections).toEqual([graph.trimNode]);
+        expect(node(graph.trimNode).connections).toEqual([context.destination]);
+        expect(graph.synthInput).toBe(graph.synthGainNode);
+    });
+
+    it('routes-a-media-element-once', () => {
+        // createMediaElementSource works once per element (§13)
+        const { context, graph } = create();
+        const element = {} as HTMLMediaElement;
+        graph.connectMediaElement(element);
+        graph.connectMediaElement(element);
+        expect(context.mediaSources).toBe(1);
+        expect((graph.mediaSourceNode as unknown as FakeNode).connections).toEqual([graph.mediaGainNode]);
+    });
+
+    it('gains-and-context-values', () => {
+        const { graph } = create();
+        graph.masterGain = 0.8;
+        graph.mediaGain = 0.35;
+        graph.synthGain = 2;
+        expect((graph.masterGainNode as unknown as FakeGain).gain.value).toBe(0.8);
+        expect(graph.mediaGain).toBe(0.35);
+        expect(graph.synthGain).toBe(2);
+        expect(graph.baseLatencyMs).toBeCloseTo(5.3, 9);
+        expect(graph.sampleRate).toBe(48000);
+        expect(graph.currentTime).toBe(2);
+    });
+
+    it('heard-context-time-uses-the-output-timestamp-else-the-output-latency', () => {
+        const { context, graph } = create();
+        expect(graph.heardContextTime()).toBeCloseTo(2 - 0.02, 9);
+        context.outputTimestamp = { contextTime: 1.9, performanceTime: performance.now() };
+        expect(graph.heardContextTime()).toBeCloseTo(1.9, 1);
+    });
+
+    it('when-running-waits-for-the-context', () => {
+        const { context, graph } = create();
+        context.state = 'suspended';
+        let ran = 0;
+        graph.whenRunning(() => ran++);
+        expect(graph.isRunning).toBe(false);
+        expect(ran).toBe(0);
+        context.setState('running');
+        expect(ran).toBe(1);
+        graph.whenRunning(() => ran++);
+        expect(ran).toBe(2);
+    });
+});
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `npx vitest run test/audio/WebAudioMixGraph.test.ts`
+Expected: FAIL — cannot resolve `WebAudioMixGraph`.
+
+- [ ] **Step 3: Implement**
+
+Create `packages/alphatab/src/platform/javascript/WebAudioMixGraph.ts`:
+
+```ts
+import type { IExternalClockSource } from '@coderline/alphatab/platform/javascript/MediaClock';
+import type { IMediaMixGraph } from '@coderline/alphatab/platform/javascript/MediaSynthTypes';
+
+/**
+ * The backing track (or external media) and the synthesizer in one AudioContext (spec §3):
+ * media → mediaGain and synth → synthGain, both into masterGain → limiter → trim → destination.
+ * @target web
+ * @internal
+ */
+export class WebAudioMixGraph implements IMediaMixGraph, IExternalClockSource {
+    // F-13, spike 8: the sum of a mastered recording and the synthesizer stays under 0 dBFS
+    public static readonly LimiterThresholdDb: number = -1;
+    public static readonly LimiterRatio: number = 20;
+    public static readonly LimiterKneeDb: number = 0;
+    public static readonly LimiterAttackS: number = 0.001;
+    public static readonly LimiterReleaseS: number = 0.1;
+    /**
+     * Cancels the compressor's automatic make-up gain (spike 8).
+     */
+    public static readonly TrimDb: number = -0.57;
+
+    public readonly context: AudioContext;
+    public readonly mediaGainNode: GainNode;
+    public readonly synthGainNode: GainNode;
+    public readonly masterGainNode: GainNode;
+    public readonly limiterNode: DynamicsCompressorNode;
+    public readonly trimNode: GainNode;
+    private _mediaSource: MediaElementAudioSourceNode | null = null;
+
+    public constructor(context: AudioContext) {
+        this.context = context;
+        this.mediaGainNode = context.createGain();
+        this.synthGainNode = context.createGain();
+        this.masterGainNode = context.createGain();
+        this.limiterNode = context.createDynamicsCompressor();
+        this.limiterNode.threshold.value = WebAudioMixGraph.LimiterThresholdDb;
+        this.limiterNode.ratio.value = WebAudioMixGraph.LimiterRatio;
+        this.limiterNode.knee.value = WebAudioMixGraph.LimiterKneeDb;
+        this.limiterNode.attack.value = WebAudioMixGraph.LimiterAttackS;
+        this.limiterNode.release.value = WebAudioMixGraph.LimiterReleaseS;
+        this.trimNode = context.createGain();
+        this.trimNode.gain.value = Math.pow(10, WebAudioMixGraph.TrimDb / 20);
+
+        this.mediaGainNode.connect(this.masterGainNode);
+        this.synthGainNode.connect(this.masterGainNode);
+        this.masterGainNode.connect(this.limiterNode);
+        this.limiterNode.connect(this.trimNode);
+        this.trimNode.connect(context.destination);
+    }
+
+    /**
+     * Routes an <audio> into the mix. createMediaElementSource works once per element (§13).
+     */
+    public connectMediaElement(element: HTMLMediaElement): void {
+        if (!this._mediaSource) {
+            this._mediaSource = this.context.createMediaElementSource(element);
+            this._mediaSource.connect(this.mediaGainNode);
+        }
+    }
+
+    /**
+     * Where the synthesizer's worklet connects.
+     */
+    public get synthInput(): AudioNode {
+        return this.synthGainNode;
+    }
+
+    public get mediaSourceNode(): AudioNode | null {
+        return this._mediaSource;
+    }
+
+    public get masterGain(): number {
+        return this.masterGainNode.gain.value;
+    }
+
+    public set masterGain(value: number) {
+        this.masterGainNode.gain.value = value;
+    }
+
+    public get mediaGain(): number {
+        return this.mediaGainNode.gain.value;
+    }
+
+    public set mediaGain(value: number) {
+        this.mediaGainNode.gain.value = value;
+    }
+
+    public get synthGain(): number {
+        return this.synthGainNode.gain.value;
+    }
+
+    public set synthGain(value: number) {
+        this.synthGainNode.gain.value = value;
+    }
+
+    public get currentTime(): number {
+        return this.context.currentTime;
+    }
+
+    public get sampleRate(): number {
+        return this.context.sampleRate;
+    }
+
+    public get baseLatencyMs(): number {
+        return (this.context.baseLatency ?? 0) * 1000;
+    }
+
+    public get isRunning(): boolean {
+        return this.context.state === 'running';
+    }
+
+    public whenRunning(action: () => void): void {
+        if (this.isRunning) {
+            action();
+            return;
+        }
+        const listener = () => {
+            if (this.isRunning) {
+                this.context.removeEventListener('statechange', listener);
+                action();
+            }
+        };
+        this.context.addEventListener('statechange', listener);
+    }
+
+    /**
+     * The context time (s) of the audio being heard now (gap G-6).
+     */
+    public heardContextTime(): number {
+        const timestamp = this.context.getOutputTimestamp?.();
+        if (timestamp && timestamp.contextTime !== undefined && timestamp.performanceTime !== undefined) {
+            return timestamp.contextTime + (performance.now() - timestamp.performanceTime) / 1000;
+        }
+        return this.context.currentTime - (this.context.outputLatency ?? 0);
+    }
+}
+```
+
+- [ ] **Step 4: Run the tests to see them pass**
+
+Run: `npx vitest run test/audio/WebAudioMixGraph.test.ts`
+Expected: PASS (6 tests).
+
+- [ ] **Step 5: Run the repo gates and commit**
+
+```bash
+npm run lint && npm run typecheck && npm test
+git add packages/alphatab/src/platform/javascript/WebAudioMixGraph.ts packages/alphatab/test/audio/WebAudioMixGraph.test.ts
+git commit -m "feat(web): mixing graph with an output limiter and trim (#2397, F-13)"
+git push
+```
+
+---
+
+### Task 15: `MediaSynthPlayer` — routing, readiness, media-only fallback, volumes, output, probe schedule
+
+**Files:**
+- Create: `packages/alphatab/src/platform/javascript/MediaSynthOutput.ts`
+- Create: `packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts`
+- Modify: `packages/alphatab/src/synth/BackingTrackPlayer.ts` (internal `seekMediaTo`, `tickToMediaTime`,
+  `mediaTimeOfPosition`)
+- Modify: `packages/alphatab/src/platform/javascript/AlphaTabApi.ts` (a failed SoundFont download is raised on the
+  player instance)
+- Create: `packages/alphatab/test/audio/MediaSyncFakes.ts`
+- Create: `packages/alphatab/test/audio/MediaSynthPlayer.Routing.test.ts`
+
+**Interfaces:**
+- Consumes: `IMediaSynth`, `IMediaFollowingOutput`, `IMediaMixGraph`, `IMediaTimer`, `IMediaLatencyProbe` (Task 5);
+  `MediaSyncController` (Tasks 9, 10); `IMediaClock`, `ExternalMediaClock` (Task 11); `MediaLatencyProbe`
+  (Task 12); `PerSpeedValues` (Task 8); the volumes (Task 13); `mainTickToMediaTime` (Task 2).
+- Produces (used by Tasks 16–21): `MediaSynthPlayerParts`, `MediaSynthPlayer` (with `controller` and
+  `diagnostics`), `MediaSynthDiagnostics`, `MediaSynthCountInRecord`, `MediaSynthProbeRecord`, `MediaSynthOutput`;
+  on `BackingTrackPlayer` (internal): `seekMediaTo(mediaTime)`, `tickToMediaTime(tick)`, `mediaTimeOfPosition`;
+  test helpers `MediaSynthHarness`, `FakeMediaTimer`, `FakeMixGraph`, `FakeMediaSynth`, `FakeFollowingOutput`,
+  `FakeBackingClock`, `FakeProbe`, `flush()`.
+
+This task builds the combined `IAlphaSynth` (§6.1) without the handshakes. Here `play()` starts the media alone;
+Task 16 adds the synthesizer's start, seek and speed handshakes, Task 17 the count-in, Task 18 the loop wrap,
+Task 19 external media. What this task settles:
+
+- **Routing (§6.1):** positions, `finished` and MIDI info come from the media; `midiEventsPlayed` and the
+  SoundFont events from the synth. `state` and `stateChanged` belong to the combined player itself: the inner
+  players' state changes never reach the app (spike 9 §2).
+- **Readiness and the media-only fallback (§6.1, F-8, FYI-4):** without a SoundFont, readiness follows the media
+  alone, and the warning says why. The same happens when the worker fails, the worklet fails, or the SoundFont
+  fails (including a failed download, now raised on the instance: spike 10 §3). A SoundFont loaded later
+  (`api.loadSoundFont()`) ends the fallback: warm-up and probe, and the synth joins from the next Play.
+- **Volumes (§6.1):** backing track — `masterGain` (both), `mediaGain` = `backingTrackVolume`,
+  `synthGain` = `synthVolume`, while the `<audio>` itself stays at 1. External — the handler gets `masterVolume`
+  alone, and `masterGain` scales the synth.
+- **`output` (§6.1):** the media output's members pass through (`audioElement`, `handler`, `updatePosition`,
+  `timeUpdate`); the device methods come from the synth output, because the media now plays through its
+  AudioContext.
+- **Probe schedule (§6.4):** 1, 0.5, 0.75, 1.25, 1.5× in the background after ready, one at a time, waiting for a
+  running AudioContext. A speed without a value goes to the front. A failure gives 0, cached per session.
+
+- [ ] **Step 1: BackingTrackPlayer helpers**
+
+Add to `BackingTrackPlayer` (all `@internal`):
+
+```ts
+    /**
+     * Seeks to a time on the media's own axis (the combined player's handshakes).
+     * @internal
+     */
+    public seekMediaTo(mediaTime: number): void {
+        this.timePosition = this.sequencer.mainTimePositionFromBackingTrack(
+            mediaTime,
+            this._backingTrackOutput.backingTrackDuration
+        );
+    }
+
+    /**
+     * The media time at which the main song reaches `tick` (the spec §4 mapping; without sync points the media
+     * time is the song time).
+     * @internal
+     */
+    public tickToMediaTime(tick: number): number {
+        return this.sequencer.mainTickToMediaTime(tick, this._backingTrackOutput.backingTrackDuration);
+    }
+
+    /**
+     * The media time this player seeks the media to for its current position.
+     * @internal
+     */
+    public get mediaTimeOfPosition(): number {
+        return this.sequencer.mainTimePositionToBackingTrack(
+            this.timePosition,
+            this._backingTrackOutput.backingTrackDuration
+        );
+    }
+```
+
+- [ ] **Step 2: Raise a failed SoundFont download on the player instance (F-8)**
+
+In `AlphaTabApi.loadSoundFontFromUrl` (`packages/alphatab/src/platform/javascript/AlphaTabApi.ts`):
+
+```diff
+         request.onerror = e => {
+             Logger.error('AlphaSynth', `Loading failed: ${(e as any).message}`);
+-            (player.soundFontLoadFailed as EventEmitterOfT<Error>).trigger(
++            // raised on the instance so a combined player can fall back to the media alone (spike 10 §3);
++            // the wrapper forwards it to the app as before
++            const instance = (player as AlphaSynthWrapper).instance ?? player;
++            (instance.soundFontLoadFailed as EventEmitterOfT<Error>).trigger(
+                 new FileLoadError((e as any).message, request)
+             );
+         };
+```
+
+(import `type AlphaSynthWrapper` from `@coderline/alphatab/synth/AlphaSynthWrapper`.)
+
+- [ ] **Step 3: The output passthrough**
+
+Create `packages/alphatab/src/platform/javascript/MediaSynthOutput.ts`:
+
+```ts
+import type { IEventEmitter, IEventEmitterOfT } from '@coderline/alphatab/EventEmitter';
+import type { BackingTrack } from '@coderline/alphatab/model/BackingTrack';
+import type { IAudioElementBackingTrackSynthOutput } from '@coderline/alphatab/platform/javascript/AudioElementBackingTrackSynthOutput';
+import type { IBackingTrackSynthOutput } from '@coderline/alphatab/synth/BackingTrackPlayer';
+import type { IExternalMediaHandler, IExternalMediaSynthOutput } from '@coderline/alphatab/synth/ExternalMediaPlayer';
+import type { ISynthOutput, ISynthOutputDevice } from '@coderline/alphatab/synth/ISynthOutput';
+
+/**
+ * MediaSynthPlayer.output (spec §6.1): the media output's members, so `output.audioElement` and an external-media
+ * `handler` keep working, with the synthesizer output's device methods, because the media now plays through the
+ * synthesizer's AudioContext. The transport members do nothing: each player drives its own output.
+ * @target web
+ * @internal
+ */
+export class MediaSynthOutput implements IExternalMediaSynthOutput {
+    private readonly _media: IBackingTrackSynthOutput;
+    private readonly _synth: ISynthOutput;
+
+    public constructor(media: IBackingTrackSynthOutput, synth: ISynthOutput) {
+        this._media = media;
+        this._synth = synth;
+    }
+
+    /**
+     * The backing track's <audio> (undefined for external media).
+     */
+    public get audioElement(): HTMLAudioElement | undefined {
+        return (this._media as Partial<IAudioElementBackingTrackSynthOutput>).audioElement;
+    }
+
+    public get handler(): IExternalMediaHandler | undefined {
+        return (this._media as Partial<IExternalMediaSynthOutput>).handler;
+    }
+
+    public set handler(value: IExternalMediaHandler | undefined) {
+        if ('handler' in this._media) {
+            (this._media as IExternalMediaSynthOutput).handler = value;
+        }
+    }
+
+    public updatePosition(currentTime: number): void {
+        (this._media as Partial<IExternalMediaSynthOutput>).updatePosition?.(currentTime);
+    }
+
+    public get timeUpdate(): IEventEmitterOfT<number> {
+        return this._media.timeUpdate;
+    }
+
+    public get backingTrackDuration(): number {
+        return this._media.backingTrackDuration;
+    }
+
+    public get playbackRate(): number {
+        return this._media.playbackRate;
+    }
+
+    public set playbackRate(value: number) {
+        this._media.playbackRate = value;
+    }
+
+    public get masterVolume(): number {
+        return this._media.masterVolume;
+    }
+
+    public set masterVolume(value: number) {
+        this._media.masterVolume = value;
+    }
+
+    public seekTo(time: number): void {
+        this._media.seekTo(time);
+    }
+
+    public loadBackingTrack(backingTrack: BackingTrack): void {
+        this._media.loadBackingTrack(backingTrack);
+    }
+
+    public get sampleRate(): number {
+        return this._synth.sampleRate;
+    }
+
+    public get ready(): IEventEmitter {
+        return this._media.ready;
+    }
+
+    public get samplesPlayed(): IEventEmitterOfT<number> {
+        return this._synth.samplesPlayed;
+    }
+
+    public get sampleRequest(): IEventEmitter {
+        return this._synth.sampleRequest;
+    }
+
+    public open(_bufferTimeInMilliseconds: number): void {}
+    public play(): void {}
+    public pause(): void {}
+    public destroy(): void {}
+    public addSamples(_samples: Float32Array): void {}
+    public resetSamples(): void {}
+
+    public activate(): void {
+        // resumes the shared AudioContext (a user gesture)
+        this._synth.activate();
+    }
+
+    public enumerateOutputDevices(): Promise<ISynthOutputDevice[]> {
+        return this._synth.enumerateOutputDevices();
+    }
+
+    public setOutputDevice(device: ISynthOutputDevice | null): Promise<void> {
+        return this._synth.setOutputDevice(device);
+    }
+
+    public getOutputDevice(): Promise<ISynthOutputDevice | null> {
+        return this._synth.getOutputDevice();
+    }
+}
+```
+
+- [ ] **Step 4: Write the test fakes**
+
+Create `packages/alphatab/test/audio/MediaSyncFakes.ts`:
+
+```ts
+/**
+ * Fakes for the combined player's parts.
+ * @target web
+ */
+import {
+    EventEmitter,
+    EventEmitterOfT,
+    type IEventEmitter,
+    type IEventEmitterOfT
+} from '@coderline/alphatab/EventEmitter';
+import { ScoreLoader } from '@coderline/alphatab/importer/ScoreLoader';
+import { LogLevel } from '@coderline/alphatab/LogLevel';
+import { AlphaSynthMidiFileHandler } from '@coderline/alphatab/midi/AlphaSynthMidiFileHandler';
+import type { MidiEventType } from '@coderline/alphatab/midi/MidiEvent';
+import { MidiFile } from '@coderline/alphatab/midi/MidiFile';
+import { MidiFileGenerator } from '@coderline/alphatab/midi/MidiFileGenerator';
+import type { Score } from '@coderline/alphatab/model/Score';
+import { ExternalMediaClock, type IExternalClockSource, type IMediaClock } from '@coderline/alphatab/platform/javascript/MediaClock';
+import {
+    MediaTimestampEventArgs,
+    type IMediaFollowingOutput,
+    type IMediaLatencyProbe,
+    type IMediaMixGraph,
+    type IMediaSynth,
+    type IMediaTimer
+} from '@coderline/alphatab/platform/javascript/MediaSynthTypes';
+import { MediaSynthPlayer, MediaSynthPlayerParts } from '@coderline/alphatab/platform/javascript/MediaSynthPlayer';
+import { PerSpeedValues } from '@coderline/alphatab/platform/javascript/PerSpeedValues';
+import { Settings } from '@coderline/alphatab/Settings';
+import { BackingTrackPlayer } from '@coderline/alphatab/synth/BackingTrackPlayer';
+import { ExternalMediaPlayer, type IExternalMediaSynthOutput } from '@coderline/alphatab/synth/ExternalMediaPlayer';
+import type { BackingTrackSyncPoint } from '@coderline/alphatab/synth/IAlphaSynth';
+import type { ISynthOutput } from '@coderline/alphatab/synth/ISynthOutput';
+import type { MediaSampleChunk } from '@coderline/alphatab/synth/MediaSampleOutput';
+import type { MidiEventsPlayedEventArgs } from '@coderline/alphatab/synth/MidiEventsPlayedEventArgs';
+import type { PlaybackRange } from '@coderline/alphatab/synth/PlaybackRange';
+import type { PlaybackRangeChangedEventArgs } from '@coderline/alphatab/synth/PlaybackRangeChangedEventArgs';
+import { PlayerState } from '@coderline/alphatab/synth/PlayerState';
+import type { PlayerStateChangedEventArgs } from '@coderline/alphatab/synth/PlayerStateChangedEventArgs';
+import { PositionChangedEventArgs } from '@coderline/alphatab/synth/PositionChangedEventArgs';
+import { TestMediaHandler, TestMediaOutput } from 'test/audio/TestMediaOutput';
+import { TestOutput } from 'test/audio/TestOutput';
+import { TestPlatform } from 'test/TestPlatform';
+
+export const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+
+/**
+ * Fake time: timers run when the test advances it.
+ */
+export class FakeMediaTimer implements IMediaTimer {
+    public time: number = 0;
+    private _nextId: number = 1;
+    private _timers: { id: number; at: number; action: () => void }[] = [];
+
+    public now(): number {
+        return this.time;
+    }
+
+    public setTimeout(action: () => void, ms: number): number {
+        const id = this._nextId++;
+        this._timers.push({ id, at: this.time + Math.max(0, ms), action });
+        return id;
+    }
+
+    public clearTimeout(id: number): void {
+        this._timers = this._timers.filter(t => t.id !== id);
+    }
+
+    public spinUntil(done: () => boolean, maxMs: number): void {
+        const until = this.time + maxMs;
+        while (!done() && this.time < until) {
+            this.time += 0.1;
+        }
+    }
+
+    /**
+     * Moves time forward, running the timers that come due, in order.
+     */
+    public advance(ms: number): void {
+        const end = this.time + ms;
+        for (;;) {
+            this._timers.sort((a, b) => a.at - b.at);
+            const next = this._timers[0];
+            if (!next || next.at > end) {
+                break;
+            }
+            this._timers.shift();
+            this.time = Math.max(this.time, next.at);
+            next.action();
+        }
+        this.time = Math.max(this.time, end);
+    }
+
+    public get pending(): number {
+        return this._timers.length;
+    }
+}
+
+/**
+ * A mixing graph whose clock is the fake timer (context time = timer ms / 1000).
+ */
+export class FakeMixGraph implements IMediaMixGraph {
+    public masterGain: number = 1;
+    public mediaGain: number = 1;
+    public synthGain: number = 1;
+    public sampleRate: number = 48000;
+    public baseLatencyMs: number = 0;
+    public running: boolean = true;
+    public readonly context: AudioContext | null = null;
+    public readonly mediaSourceNode: AudioNode | null = null;
+    public readonly masterGainNode: GainNode | null = null;
+    private readonly _timer: FakeMediaTimer;
+    private _whenRunning: (() => void)[] = [];
+
+    public constructor(timer: FakeMediaTimer) {
+        this._timer = timer;
+    }
+
+    public get currentTime(): number {
+        return this._timer.time / 1000;
+    }
+
+    public get isRunning(): boolean {
+        return this.running;
+    }
+
+    public whenRunning(action: () => void): void {
+        if (this.running) {
+            action();
+        } else {
+            this._whenRunning.push(action);
+        }
+    }
+
+    public start(): void {
+        this.running = true;
+        for (const action of this._whenRunning.splice(0)) {
+            action();
+        }
+    }
+}
+
+/**
+ * The worker synthesizer as the combined player drives it: records the calls.
+ */
+export class FakeMediaSynth implements IMediaSynth {
+    public readonly calls: string[] = [];
+    public readonly seeks: number[] = [];
+    public readonly corrections: number[] = [];
+    public readonly output: ISynthOutput = new TestOutput();
+    public isReady: boolean = false;
+    public isReadyForPlayback: boolean = false;
+    public state: PlayerState = PlayerState.Paused;
+    public logLevel: LogLevel = LogLevel.None;
+    public masterVolume: number = 1;
+    public metronomeVolume: number = 0;
+    public playbackSpeed: number = 1;
+    public tickPosition: number = 0;
+    public timePosition: number = 0;
+    public loadedMidiInfo?: PositionChangedEventArgs = undefined;
+    public currentPosition: PositionChangedEventArgs = new PositionChangedEventArgs(0, 0, 0, 0, false, 120, 120);
+    public playbackRange: PlaybackRange | null = null;
+    public isLooping: boolean = false;
+    public countInVolume: number = 0;
+    public midiEventsPlayedFilter: MidiEventType[] = [];
+    public backingTrackVolume: number = 1;
+    public synthVolume: number = 1;
+
+    public followMedia(enabled: boolean, _mediaDuration: number, _syncPoints: BackingTrackSyncPoint[]): void {
+        this.calls.push(`followMedia:${enabled}`);
+    }
+    public seekToMediaTime(mediaTime: number): void {
+        this.seeks.push(mediaTime);
+        this.calls.push(`seek:${mediaTime}`);
+    }
+    public setRateCorrection(factor: number): void {
+        this.corrections.push(factor);
+    }
+    public destroy(): void {
+        this.calls.push('destroy');
+    }
+    public play(): boolean {
+        this.calls.push(`play:countIn=${this.countInVolume}`);
+        this.state = PlayerState.Playing;
+        return true;
+    }
+    public pause(): void {
+        this.calls.push('pause');
+        this.state = PlayerState.Paused;
+    }
+    public playPause(): void {}
+    public stop(): void {
+        this.calls.push('stop');
+        this.state = PlayerState.Paused;
+    }
+    public playOneTimeMidiFile(_midi: MidiFile): void {
+        this.calls.push('playOneTimeMidiFile');
+    }
+    public loadSoundFont(_data: Uint8Array, _append: boolean): void {
+        this.calls.push('loadSoundFont');
+    }
+    public resetSoundFonts(): void {}
+    public loadMidiFile(_midi: MidiFile): void {
+        this.calls.push('loadMidiFile');
+    }
+    public loadBackingTrack(_score: Score): void {}
+    public updateSyncPoints(_syncPoints: BackingTrackSyncPoint[]): void {}
+    public applyTranspositionPitches(_transpositionPitches: Map<number, number>): void {}
+    public setChannelTranspositionPitch(_channel: number, _semitones: number): void {}
+    public setChannelMute(_channel: number, _mute: boolean): void {}
+    public resetChannelStates(): void {}
+    public setChannelSolo(_channel: number, _solo: boolean): void {}
+    public setChannelVolume(_channel: number, _volume: number): void {}
+
+    public readonly ready: IEventEmitter = new EventEmitter();
+    public readonly readyForPlayback: IEventEmitter = new EventEmitter();
+    public readonly finished: IEventEmitter = new EventEmitter();
+    public readonly soundFontLoaded: IEventEmitter = new EventEmitter();
+    public readonly soundFontLoadFailed: IEventEmitterOfT<Error> = new EventEmitterOfT<Error>();
+    public readonly midiLoaded: IEventEmitterOfT<PositionChangedEventArgs> = new EventEmitterOfT<PositionChangedEventArgs>();
+    public readonly midiLoadFailed: IEventEmitterOfT<Error> = new EventEmitterOfT<Error>();
+    public readonly stateChanged: IEventEmitterOfT<PlayerStateChangedEventArgs> =
+        new EventEmitterOfT<PlayerStateChangedEventArgs>();
+    public readonly positionChanged: IEventEmitterOfT<PositionChangedEventArgs> =
+        new EventEmitterOfT<PositionChangedEventArgs>();
+    public readonly midiEventsPlayed: IEventEmitterOfT<MidiEventsPlayedEventArgs> =
+        new EventEmitterOfT<MidiEventsPlayedEventArgs>();
+    public readonly playbackRangeChanged: IEventEmitterOfT<PlaybackRangeChangedEventArgs> =
+        new EventEmitterOfT<PlaybackRangeChangedEventArgs>();
+    public readonly countInStarted: IEventEmitterOfT<number> = new EventEmitterOfT<number>();
+    public readonly workerFailed: IEventEmitterOfT<Error> = new EventEmitterOfT<Error>();
+
+    public becomeReady(): void {
+        this.isReady = true;
+        (this.ready as EventEmitter).trigger();
+    }
+    public becomeReadyForPlayback(): void {
+        this.isReadyForPlayback = true;
+        (this.readyForPlayback as EventEmitter).trigger();
+    }
+    public startCountIn(lengthMs: number): void {
+        (this.countInStarted as EventEmitterOfT<number>).trigger(lengthMs);
+    }
+    public fail(message: string): void {
+        (this.workerFailed as EventEmitterOfT<Error>).trigger(new Error(message));
+    }
+    public count(prefix: string): number {
+        return this.calls.filter(c => c.startsWith(prefix)).length;
+    }
+    public lastSeek(): number {
+        return this.seeks[this.seeks.length - 1];
+    }
+}
+
+/**
+ * The worklet output as the combined player sees it.
+ */
+export class FakeFollowingOutput implements IMediaFollowingOutput {
+    public keepAlive: boolean = false;
+    public destinationNode: AudioNode | null = null;
+    public readonly workletNode: AudioNode | null = null;
+    public warmUps: number = 0;
+    public readonly mediaTimestamp: IEventEmitterOfT<MediaTimestampEventArgs> =
+        new EventEmitterOfT<MediaTimestampEventArgs>();
+    public readonly countInEnd: IEventEmitterOfT<number> = new EventEmitterOfT<number>();
+    public readonly workletFailed: IEventEmitterOfT<Error> = new EventEmitterOfT<Error>();
+
+    public warmUp(): void {
+        this.warmUps++;
+    }
+    public addMediaSamples(_samples: Float32Array, _chunk: MediaSampleChunk): void {}
+    public stamp(frame: number, mediaTime: number): void {
+        (this.mediaTimestamp as EventEmitterOfT<MediaTimestampEventArgs>).trigger(
+            new MediaTimestampEventArgs(frame, mediaTime)
+        );
+    }
+    public endCountIn(frame: number): void {
+        (this.countInEnd as EventEmitterOfT<number>).trigger(frame);
+    }
+    public fail(message: string): void {
+        (this.workletFailed as EventEmitterOfT<Error>).trigger(new Error(message));
+    }
+}
+
+/**
+ * A backing-track clock on a TestMediaOutput: the media time is its position (plus a latency) while it plays.
+ */
+export class FakeBackingClock implements IMediaClock {
+    public speed: number = 1;
+    public isSeeking: boolean = false;
+    public latencyMs: number = 0;
+    private readonly _output: TestMediaOutput;
+    private _seeked: (() => void)[] = [];
+
+    public constructor(output: TestMediaOutput) {
+        this._output = output;
+    }
+
+    public get position(): number {
+        return this._output.currentTime;
+    }
+
+    public whenSeeked(action: () => void): void {
+        if (this.isSeeking) {
+            this._seeked.push(action);
+        } else {
+            action();
+        }
+    }
+
+    public finishSeek(): void {
+        this.isSeeking = false;
+        for (const action of this._seeked.splice(0)) {
+            action();
+        }
+    }
+
+    public mediaTimeAt(_frame: number): number {
+        return this._output.isPlaying && !this.isSeeking
+            ? this._output.currentTime + this.latencyMs * this.speed
+            : Number.NaN;
+    }
+
+    public mediaTimeNow(): number {
+        return this.mediaTimeAt(0);
+    }
+}
+
+/**
+ * A latency probe the test answers.
+ */
+export class FakeProbe implements IMediaLatencyProbe {
+    public readonly requests: number[] = [];
+    private _pending: { resolve: (value: number) => void; reject: (error: Error) => void }[] = [];
+
+    public measure(speed: number): Promise<number> {
+        this.requests.push(speed);
+        return new Promise<number>((resolve, reject) => this._pending.push({ resolve, reject }));
+    }
+    public resolveNext(value: number): void {
+        this._pending.shift()!.resolve(value);
+    }
+    public rejectNext(error: Error): void {
+        this._pending.shift()!.reject(error);
+    }
+}
+
+/**
+ * The heard context time of the external clock, from the fake timer.
+ */
+export class TimerHeardTime implements IExternalClockSource {
+    public readonly sampleRate: number = 48000;
+    private readonly _timer: FakeMediaTimer;
+
+    public constructor(timer: FakeMediaTimer) {
+        this._timer = timer;
+    }
+
+    public heardContextTime(): number {
+        return this._timer.time / 1000;
+    }
+}
+
+/**
+ * A combined player on fakes: a real BackingTrackPlayer (or ExternalMediaPlayer) and fake synth, worklet, graph,
+ * timer and probe.
+ */
+export class MediaSynthHarness {
+    public readonly timer: FakeMediaTimer = new FakeMediaTimer();
+    public readonly graph: FakeMixGraph;
+    public readonly synth: FakeMediaSynth = new FakeMediaSynth();
+    public readonly synthOutput: FakeFollowingOutput = new FakeFollowingOutput();
+    public readonly probe: FakeProbe = new FakeProbe();
+    public readonly probeLatencies: PerSpeedValues = new PerSpeedValues();
+    public readonly media: BackingTrackPlayer;
+    public readonly mediaOutput: TestMediaOutput | null = null;
+    public readonly handler: TestMediaHandler | null = null;
+    public readonly backingClock: FakeBackingClock | null = null;
+    public readonly externalClock: ExternalMediaClock | null = null;
+    public readonly player: MediaSynthPlayer;
+    /**
+     * 'Playing', 'Paused' or 'Stopped' per stateChanged.
+     */
+    public readonly states: string[] = [];
+    public readonly positions: number[] = [];
+    public finished: number = 0;
+
+    public constructor(external: boolean = false, hasSoundFont: boolean = true) {
+        this.graph = new FakeMixGraph(this.timer);
+        const parts = new MediaSynthPlayerParts();
+        if (external) {
+            const media = new ExternalMediaPlayer(500);
+            const handler = new TestMediaHandler();
+            (media.output as IExternalMediaSynthOutput).handler = handler;
+            const clock = new ExternalMediaClock(new TimerHeardTime(this.timer), () => 0);
+            this.media = media;
+            this.handler = handler;
+            this.externalClock = clock;
+            parts.clock = clock;
+            parts.externalClock = clock;
+        } else {
+            const output = new TestMediaOutput();
+            const clock = new FakeBackingClock(output);
+            this.media = new BackingTrackPlayer(output, 500);
+            this.mediaOutput = output;
+            this.backingClock = clock;
+            parts.clock = clock;
+            parts.probe = this.probe;
+        }
+        parts.media = this.media;
+        parts.synth = this.synth;
+        parts.synthOutput = this.synthOutput;
+        parts.graph = this.graph;
+        parts.timer = this.timer;
+        parts.probeLatencies = this.probeLatencies;
+        parts.hasSoundFont = hasSoundFont;
+        this.player = new MediaSynthPlayer(parts);
+        this.player.stateChanged.on(e =>
+            this.states.push(e.state === PlayerState.Playing ? 'Playing' : e.stopped ? 'Stopped' : 'Paused')
+        );
+        this.player.positionChanged.on(e => this.positions.push(e.currentTime));
+        this.player.finished.on(() => this.finished++);
+    }
+
+    /**
+     * Loads syncpoints-testfile.gp; with `synthReady` the synthesizer is then ready (the usual start).
+     */
+    public async loadSong(synthReady: boolean = true): Promise<MidiFile> {
+        const data = await TestPlatform.loadFile('test-data/audio/syncpoints-testfile.gp');
+        const score = ScoreLoader.loadScoreFromBytes(data, new Settings());
+        const midi = new MidiFile();
+        const generator = new MidiFileGenerator(score, new Settings(), new AlphaSynthMidiFileHandler(midi));
+        generator.generate();
+        this.player.loadMidiFile(midi);
+        this.player.loadBackingTrack(score);
+        this.player.updateSyncPoints(generator.syncPoints);
+        if (synthReady) {
+            this.synth.becomeReady();
+            this.synth.becomeReadyForPlayback();
+        }
+        return midi;
+    }
+
+    /**
+     * External media: the handler reports its position (alphaTab's YouTube sample does this every 50 ms).
+     */
+    public report(position: number): void {
+        (this.media.output as IExternalMediaSynthOutput).updatePosition(position);
+    }
+}
+```
+
+- [ ] **Step 5: Write the failing tests**
+
+Create `packages/alphatab/test/audio/MediaSynthPlayer.Routing.test.ts`:
+
+```ts
+/**
+ * The combined player: routing, readiness, the media-only fallback, volumes, output, probe schedule (spec §6.1).
+ * @target web
+ */
+import { describe, expect, it } from 'vitest';
+import { EventEmitterOfT } from '@coderline/alphatab/EventEmitter';
+import type { IExternalMediaSynthOutput } from '@coderline/alphatab/synth/ExternalMediaPlayer';
+import { MidiEventsPlayedEventArgs } from '@coderline/alphatab/synth/MidiEventsPlayedEventArgs';
+import { PlayerState } from '@coderline/alphatab/synth/PlayerState';
+import { PlayerStateChangedEventArgs } from '@coderline/alphatab/synth/PlayerStateChangedEventArgs';
+import { PositionChangedEventArgs } from '@coderline/alphatab/synth/PositionChangedEventArgs';
+import { flush, MediaSynthHarness } from 'test/audio/MediaSyncFakes';
+
+describe('MediaSynthPlayerRoutingTests', () => {
+    it('routes-the-media-and-the-synth-events', async () => {
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        (h.synth.positionChanged as EventEmitterOfT<PositionChangedEventArgs>).trigger(
+            new PositionChangedEventArgs(999, 0, 0, 0, false, 120, 120)
+        );
+        expect(h.positions).not.toContain(999);
+        h.player.timePosition = 1000;
+        expect(h.positions[h.positions.length - 1]).toBeCloseTo(1000, 6);
+
+        let played = 0;
+        h.player.midiEventsPlayed.on(() => played++);
+        (h.synth.midiEventsPlayed as EventEmitterOfT<MidiEventsPlayedEventArgs>).trigger(new MidiEventsPlayedEventArgs([]));
+        expect(played).toBe(1);
+    });
+
+    it('the-inner-players-states-never-reach-the-app', async () => {
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        (h.synth.stateChanged as EventEmitterOfT<PlayerStateChangedEventArgs>).trigger(
+            new PlayerStateChangedEventArgs(PlayerState.Playing, false)
+        );
+        h.media.play();
+        h.media.pause();
+        expect(h.states).toEqual([]);
+    });
+
+    it('ready-waits-for-both-and-fires-once', () => {
+        const h = new MediaSynthHarness();
+        let ready = 0;
+        h.player.ready.on(() => ready++);
+        expect(h.player.isReady).toBe(false);
+        expect(ready).toBe(0);
+        h.synth.becomeReady();
+        expect(ready).toBe(1);
+        h.synth.becomeReady();
+        expect(ready).toBe(1);
+    });
+
+    it('ready-for-playback-warms-up-the-worklet-and-starts-the-probe', async () => {
+        const h = new MediaSynthHarness();
+        await h.loadSong(false);
+        h.synth.becomeReady();
+        expect(h.player.isReadyForPlayback).toBe(false); // waiting for the SoundFont, as in synth mode
+        h.synth.becomeReadyForPlayback();
+        expect(h.player.isReadyForPlayback).toBe(true);
+        expect(h.synthOutput.keepAlive).toBe(true);
+        expect(h.synthOutput.warmUps).toBe(1);
+        expect(h.probe.requests).toEqual([1]);
+    });
+
+    it('probe-waits-for-a-running-context', async () => {
+        // Review Focus 3: the autoplay policy keeps the context suspended until a gesture
+        const h = new MediaSynthHarness();
+        h.graph.running = false;
+        await h.loadSong();
+        expect(h.probe.requests).toEqual([]);
+        h.graph.start();
+        expect(h.probe.requests).toEqual([1]);
+    });
+
+    it('probe-measures-the-background-speeds-in-turn', async () => {
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        const values: [number, number][] = [
+            [1, 0],
+            [0.5, 60],
+            [0.75, 27],
+            [1.25, -4],
+            [1.5, -4]
+        ];
+        for (const [speed, value] of values) {
+            expect(h.probe.requests[h.probe.requests.length - 1]).toBe(speed);
+            h.probe.resolveNext(value);
+            await flush();
+        }
+        expect(h.probeLatencies.get(0.5)).toBe(60);
+        expect(h.probe.requests.length).toBe(5);
+        expect(h.player.diagnostics.probes.map(p => p.speed)).toEqual([1, 0.5, 0.75, 1.25, 1.5]);
+    });
+
+    it('a-failed-probe-uses-0', async () => {
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        h.probe.rejectNext(new Error('no media'));
+        await flush();
+        expect(h.probeLatencies.has(1)).toBe(true);
+        expect(h.probeLatencies.get(1)).toBe(0);
+        expect(h.probe.requests).toEqual([1, 0.5]);
+    });
+
+    it('a-speed-without-a-value-is-probed-next', async () => {
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        h.player.playbackSpeed = 0.875;
+        h.probe.resolveNext(0);
+        await flush();
+        expect(h.probe.requests).toEqual([1, 0.875]);
+    });
+
+    it('no-soundfont-plays-the-media-alone-until-one-is-loaded', async () => {
+        // FYI-4, spike 10 §6
+        const h = new MediaSynthHarness(false, false);
+        await h.loadSong(false);
+        h.synth.becomeReady();
+        expect(h.player.isReadyForPlayback).toBe(true);
+        expect(h.synthOutput.warmUps).toBe(0);
+        h.synth.becomeReadyForPlayback(); // api.loadSoundFont() reached the synth
+        expect(h.synthOutput.warmUps).toBe(1);
+        expect(h.probe.requests).toEqual([1]);
+    });
+
+    it('a-failing-worker-falls-back-to-the-media-alone', async () => {
+        // F-8, spike 10 §1
+        const h = new MediaSynthHarness();
+        await h.loadSong(false);
+        h.synth.fail('alphaTab.worker.mjs: 404');
+        expect(h.player.isReady).toBe(true);
+        expect(h.player.isReadyForPlayback).toBe(true);
+        h.player.play();
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+        expect(h.synth.count('play')).toBe(0);
+    });
+
+    it('a-failing-worklet-falls-back-to-the-media-alone', async () => {
+        // F-8, spike 10 §2
+        const h = new MediaSynthHarness();
+        await h.loadSong(false);
+        h.synth.becomeReady();
+        h.synthOutput.fail('Audio Worklet operation failed');
+        expect(h.player.isReadyForPlayback).toBe(true);
+    });
+
+    it('a-failed-soundfont-download-falls-back-to-the-media-alone', async () => {
+        // F-8, spike 10 §3: raised on the instance by AlphaTabApi.loadSoundFontFromUrl
+        const h = new MediaSynthHarness();
+        await h.loadSong(false);
+        h.synth.becomeReady();
+        (h.player.soundFontLoadFailed as EventEmitterOfT<Error>).trigger(new Error('connection refused'));
+        expect(h.player.isReadyForPlayback).toBe(true);
+        h.synth.becomeReadyForPlayback(); // a later SoundFont works: mixing again
+        expect(h.synthOutput.warmUps).toBe(1);
+    });
+
+    it('volumes-go-to-the-gains', async () => {
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        h.player.masterVolume = 0.8;
+        h.player.backingTrackVolume = 0.35;
+        h.player.synthVolume = 2;
+        expect(h.graph.masterGain).toBeCloseTo(0.8, 9);
+        expect(h.graph.mediaGain).toBeCloseTo(0.35, 9);
+        expect(h.graph.synthGain).toBe(2);
+        expect(h.mediaOutput!.masterVolume).toBe(1); // the <audio> stays at full volume
+    });
+
+    it('external-media-gets-master-volume-alone', async () => {
+        const h = new MediaSynthHarness(true);
+        await h.loadSong();
+        h.player.masterVolume = 0.8;
+        h.player.backingTrackVolume = 0.35;
+        expect(h.handler!.masterVolume).toBeCloseTo(0.8, 9);
+        expect(h.graph.mediaGain).toBe(1);
+        expect(h.graph.masterGain).toBeCloseTo(0.8, 9); // the synth, through masterGain
+    });
+
+    it('output-passes-the-media-members-through', async () => {
+        const h = new MediaSynthHarness(true);
+        await h.loadSong();
+        const output = h.player.output as IExternalMediaSynthOutput;
+        expect(output.handler).toBe(h.handler);
+        const times: number[] = [];
+        output.timeUpdate.on(t => times.push(t));
+        output.updatePosition(1234);
+        expect(times).toEqual([1234]);
+        expect(await output.enumerateOutputDevices()).toEqual([]); // the synth output's (TestOutput)
+    });
+});
+```
+
+- [ ] **Step 6: Run the tests to see them fail**
+
+Run: `npx vitest run test/audio/MediaSynthPlayer.Routing.test.ts`
+Expected: FAIL — cannot resolve `MediaSynthPlayer`.
+
+- [ ] **Step 7: Implement the combined player**
+
+Create `packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts`:
+
+```ts
+import {
+    EventEmitter,
+    EventEmitterOfT,
+    type IEventEmitter,
+    type IEventEmitterOfT
+} from '@coderline/alphatab/EventEmitter';
+import { Logger } from '@coderline/alphatab/Logger';
+import type { LogLevel } from '@coderline/alphatab/LogLevel';
+import type { MidiEventType } from '@coderline/alphatab/midi/MidiEvent';
+import type { MidiFile } from '@coderline/alphatab/midi/MidiFile';
+import type { Score } from '@coderline/alphatab/model/Score';
+import type { ExternalMediaClock, IMediaClock } from '@coderline/alphatab/platform/javascript/MediaClock';
+import { MediaLatencyProbe } from '@coderline/alphatab/platform/javascript/MediaLatencyProbe';
+import { MediaSyncController, type MediaSyncStats } from '@coderline/alphatab/platform/javascript/MediaSyncController';
+import { MediaSynthOutput } from '@coderline/alphatab/platform/javascript/MediaSynthOutput';
+import type {
+    IMediaFollowingOutput,
+    IMediaLatencyProbe,
+    IMediaMixGraph,
+    IMediaSynth,
+    IMediaTimer
+} from '@coderline/alphatab/platform/javascript/MediaSynthTypes';
+import { PerSpeedValues } from '@coderline/alphatab/platform/javascript/PerSpeedValues';
+import type { BackingTrackPlayer, IBackingTrackSynthOutput } from '@coderline/alphatab/synth/BackingTrackPlayer';
+import type { BackingTrackSyncPoint, IAlphaSynth } from '@coderline/alphatab/synth/IAlphaSynth';
+import type { ISynthOutput } from '@coderline/alphatab/synth/ISynthOutput';
+import type { MidiEventsPlayedEventArgs } from '@coderline/alphatab/synth/MidiEventsPlayedEventArgs';
+import type { PlaybackRange } from '@coderline/alphatab/synth/PlaybackRange';
+import { PlaybackRangeChangedEventArgs } from '@coderline/alphatab/synth/PlaybackRangeChangedEventArgs';
+import { PlayerState } from '@coderline/alphatab/synth/PlayerState';
+import { PlayerStateChangedEventArgs } from '@coderline/alphatab/synth/PlayerStateChangedEventArgs';
+import type { PositionChangedEventArgs } from '@coderline/alphatab/synth/PositionChangedEventArgs';
+import { SynthConstants } from '@coderline/alphatab/synth/SynthConstants';
+
+/**
+ * The parts a combined player is built from (BrowserUiFacade builds the real ones; tests build fakes).
+ * @target web
+ * @internal
+ */
+export class MediaSynthPlayerParts {
+    /**
+     * A BackingTrackPlayer, or an ExternalMediaPlayer.
+     */
+    public media!: BackingTrackPlayer;
+    public synth!: IMediaSynth;
+    public synthOutput!: IMediaFollowingOutput;
+    public graph!: IMediaMixGraph;
+    public clock!: IMediaClock;
+    /**
+     * External media only: the same object as `clock`.
+     */
+    public externalClock: ExternalMediaClock | null = null;
+    public timer!: IMediaTimer;
+    /**
+     * Backing track only.
+     */
+    public probe: IMediaLatencyProbe | null = null;
+    /**
+     * The probe's values (MediaLatencyProbe.cache in the browser); the backing-track clock reads them too.
+     */
+    public probeLatencies: PerSpeedValues = new PerSpeedValues();
+    /**
+     * Whether settings.player.soundFont is set.
+     */
+    public hasSoundFont: boolean = true;
+}
+
+/**
+ * @target web
+ * @internal
+ */
+export class MediaSynthCountInRecord {
+    public readonly speed: number;
+    /** How late the media's play() was issued against its planned time, ms. */
+    public readonly lateMs: number;
+
+    public constructor(speed: number, lateMs: number) {
+        this.speed = speed;
+        this.lateMs = lateMs;
+    }
+}
+
+/**
+ * @target web
+ * @internal
+ */
+export class MediaSynthProbeRecord {
+    public readonly speed: number;
+    public readonly latencyMs: number;
+    public readonly time: number;
+
+    public constructor(speed: number, latencyMs: number, time: number) {
+        this.speed = speed;
+        this.latencyMs = latencyMs;
+        this.time = time;
+    }
+}
+
+/**
+ * The sync lab's view into the combined player (spec §3). Not public API.
+ * @target web
+ * @internal
+ */
+export class MediaSynthDiagnostics {
+    public readonly wraps: number[] = [];
+    public readonly countIns: MediaSynthCountInRecord[] = [];
+    public readonly probes: MediaSynthProbeRecord[] = [];
+    private readonly _parts: MediaSynthPlayerParts;
+    private readonly _controller: MediaSyncController;
+
+    public constructor(parts: MediaSynthPlayerParts, controller: MediaSyncController) {
+        this._parts = parts;
+        this._controller = controller;
+    }
+
+    public get audioContext(): AudioContext | null {
+        return this._parts.graph.context;
+    }
+
+    public get mediaSourceNode(): AudioNode | null {
+        return this._parts.graph.mediaSourceNode;
+    }
+
+    public get synthNode(): AudioNode | null {
+        return this._parts.synthOutput.workletNode;
+    }
+
+    public get masterGainNode(): GainNode | null {
+        return this._parts.graph.masterGainNode;
+    }
+
+    public get stats(): MediaSyncStats {
+        return this._controller.stats;
+    }
+
+    public get startLeads(): Record<string, number> {
+        return this._controller.startLeads.toRecord();
+    }
+
+    public get mediaStartLatencies(): Record<string, number> {
+        return this._controller.mediaStartLatencies.toRecord();
+    }
+
+    public get probeLatencies(): Record<string, number> {
+        return this._parts.probeLatencies.toRecord();
+    }
+
+    /**
+     * The drift log grows with every reading: only on while the lab measures.
+     */
+    public enableDriftLog(enabled: boolean): void {
+        this._controller.stats.driftLog = enabled ? [] : null;
+    }
+
+    public forgetStartLead(speed: number): void {
+        this._controller.startLeads.delete(speed);
+    }
+
+    public forgetProbeLatency(speed: number): void {
+        this._parts.probeLatencies.delete(speed);
+    }
+
+    /**
+     * Measures a speed now without caching it (the lab's 0.25× and 2×).
+     */
+    public measureLatency(speed: number): Promise<number> {
+        const probe = this._parts.probe;
+        return probe ? probe.measure(speed) : Promise.resolve(0);
+    }
+}
+
+/**
+ * One IAlphaSynth over a media player (the clock) and the worker synthesizer that follows it (spec §6.1).
+ * It owns the transport state and the loop wrap; MediaSyncController keeps the two together.
+ * @target web
+ * @internal
+ */
+export class MediaSynthPlayer implements IAlphaSynth {
+    private static readonly _soundFontFailure: string = 'the SoundFont failed to load';
+
+    public readonly controller: MediaSyncController;
+    public readonly diagnostics: MediaSynthDiagnostics;
+
+    private readonly _media: BackingTrackPlayer;
+    private readonly _synth: IMediaSynth;
+    private readonly _synthOutput: IMediaFollowingOutput;
+    private readonly _graph: IMediaMixGraph;
+    private readonly _clock: IMediaClock;
+    private readonly _externalClock: ExternalMediaClock | null;
+    private readonly _timer: IMediaTimer;
+    private readonly _probe: IMediaLatencyProbe | null;
+    private readonly _probeLatencies: PerSpeedValues;
+    private readonly _output: MediaSynthOutput;
+    private readonly _unsubscribe: (() => void)[] = [];
+
+    private _state: PlayerState = PlayerState.Paused;
+    private _midiLoaded: boolean = false;
+    private _hasSoundFont: boolean;
+    private _synthReadyForPlayback: boolean = false;
+    private _synthFailure: string = '';
+    private _readyFired: boolean = false;
+    private _destroyed: boolean = false;
+
+    private _masterVolume: number = 1;
+    private _backingTrackVolume: number = 1;
+    private _synthVolume: number = 1;
+    private _countInVolume: number = 0;
+    private _playbackRange: PlaybackRange | null = null;
+    private _isLooping: boolean = false;
+    private _syncPoints: BackingTrackSyncPoint[] = [];
+
+    private _probeQueue: number[] = [];
+    private _probing: boolean = false;
+    private _waitingForContext: boolean = false;
+
+    public constructor(parts: MediaSynthPlayerParts) {
+        this._media = parts.media;
+        this._synth = parts.synth;
+        this._synthOutput = parts.synthOutput;
+        this._graph = parts.graph;
+        this._clock = parts.clock;
+        this._externalClock = parts.externalClock;
+        this._timer = parts.timer;
+        this._probe = parts.probe;
+        this._probeLatencies = parts.probeLatencies;
+        this._hasSoundFont = parts.hasSoundFont;
+        this.controller = new MediaSyncController(this._synth, this._clock, this._timer);
+        this.controller.baseLatencyMs = this._graph.baseLatencyMs;
+        this.diagnostics = new MediaSynthDiagnostics(parts, this.controller);
+        this._output = new MediaSynthOutput(this._media.output as IBackingTrackSynthOutput, this._synth.output);
+
+        this.ready = new EventEmitter(() => this.isReady);
+        this.readyForPlayback = new EventEmitter(() => this.isReadyForPlayback);
+        this.midiLoaded = new EventEmitterOfT<PositionChangedEventArgs>(() => this._media.loadedMidiInfo ?? null);
+        this.stateChanged = new EventEmitterOfT<PlayerStateChangedEventArgs>(
+            () => new PlayerStateChangedEventArgs(this._state, false)
+        );
+        this.positionChanged = new EventEmitterOfT<PositionChangedEventArgs>(() => this._media.currentPosition);
+        this.playbackRangeChanged = new EventEmitterOfT<PlaybackRangeChangedEventArgs>(() =>
+            this._playbackRange ? new PlaybackRangeChangedEventArgs(this._playbackRange) : null
+        );
+
+        // the inner players run without a range, looping, count-in or volumes of their own (§6.1)
+        this._media.isLooping = false;
+        this._media.countInVolume = 0;
+        this._synth.isLooping = false;
+        this._synth.countInVolume = 0;
+        this._synth.masterVolume = 1;
+
+        const media = this._media;
+        const synth = this._synth;
+        const subscribe = (unsubscribe: () => void) => this._unsubscribe.push(unsubscribe);
+        subscribe(media.positionChanged.on(e => this._onMediaPosition(e)));
+        subscribe(media.finished.on(() => this._onMediaFinished()));
+        subscribe(media.midiLoaded.on(e => (this.midiLoaded as EventEmitterOfT<PositionChangedEventArgs>).trigger(e)));
+        subscribe(media.midiLoadFailed.on(e => (this.midiLoadFailed as EventEmitterOfT<Error>).trigger(e)));
+        subscribe(media.ready.on(() => this._checkReady()));
+        subscribe(media.readyForPlayback.on(() => this._checkReadyForPlayback()));
+        subscribe(synth.ready.on(() => this._checkReady()));
+        subscribe(synth.readyForPlayback.on(() => this._onSynthReadyForPlayback()));
+        subscribe(
+            synth.midiEventsPlayed.on(e =>
+                (this.midiEventsPlayed as EventEmitterOfT<MidiEventsPlayedEventArgs>).trigger(e)
+            )
+        );
+        subscribe(synth.soundFontLoaded.on(() => (this.soundFontLoaded as EventEmitter).trigger()));
+        // the synth's own failure and a failed download (raised on this instance, F-8) both arrive here
+        subscribe(synth.soundFontLoadFailed.on(e => (this.soundFontLoadFailed as EventEmitterOfT<Error>).trigger(e)));
+        subscribe(
+            this.soundFontLoadFailed.on(e =>
+                this._fallBackToMediaOnly(`${MediaSynthPlayer._soundFontFailure}: ${e.message}`)
+            )
+        );
+        subscribe(synth.workerFailed.on(e => this._fallBackToMediaOnly(e.message)));
+        subscribe(this._synthOutput.workletFailed.on(e => this._fallBackToMediaOnly(e.message)));
+        subscribe(this._synthOutput.mediaTimestamp.on(e => this.controller.onStamp(e.frame, e.mediaTime)));
+        this._applyVolumes();
+    }
+
+    // ---- readiness and the media-only fallback (§6.1) ----
+
+    public get isReady(): boolean {
+        return this._media.isReady && (this._synth.isReady || this._synthFailure !== '');
+    }
+
+    public get isReadyForPlayback(): boolean {
+        return this._media.isReadyForPlayback && (this._synthReadyForPlayback || this._isMediaOnly);
+    }
+
+    /**
+     * The synthesizer can't play now: it failed, or there is no SoundFont yet.
+     */
+    private get _isMediaOnly(): boolean {
+        return this._synthFailure !== '' || !this._hasSoundFont;
+    }
+
+    /**
+     * Both play: the synthesizer is ready and nothing failed.
+     */
+    private get _isMixing(): boolean {
+        return !this._isMediaOnly && this._synthReadyForPlayback;
+    }
+
+    private _checkReady(): void {
+        if (!this._readyFired && this.isReady) {
+            this._readyFired = true;
+            (this.ready as EventEmitter).trigger();
+        }
+    }
+
+    private _checkReadyForPlayback(): void {
+        if (this.isReadyForPlayback) {
+            (this.readyForPlayback as EventEmitter).trigger();
+        }
+    }
+
+    private _onSynthReadyForPlayback(): void {
+        this._synthReadyForPlayback = true;
+        // a SoundFont loaded later (api.loadSoundFont(), FYI-4) ends the fallback
+        this._hasSoundFont = true;
+        if (this._synthFailure.startsWith(MediaSynthPlayer._soundFontFailure)) {
+            this._synthFailure = '';
+        }
+        if (this._synthFailure === '') {
+            // build the worklet before the first Play, measure the media latency in the background (§6.1, §6.4)
+            this._synthOutput.keepAlive = true;
+            this._synthOutput.warmUp();
+            this._startBackgroundProbe();
+        }
+        this._checkReadyForPlayback();
+    }
+
+    private _fallBackToMediaOnly(reason: string): void {
+        if (this._synthFailure !== '') {
+            return;
+        }
+        this._synthFailure = reason;
+        Logger.warning('Player', `The synthesizer can't play along the media; playing the media only: ${reason}`);
+        if (this._state === PlayerState.Playing) {
+            // the media keeps playing alone
+            this.controller.stopped();
+            this._synth.pause();
+        }
+        this._checkReady();
+        this._checkReadyForPlayback();
+    }
+
+    // ---- volumes (§6.1, §7) ----
+
+    public get masterVolume(): number {
+        return this._masterVolume;
+    }
+
+    public set masterVolume(value: number) {
+        this._masterVolume = Math.max(value, SynthConstants.MinVolume);
+        this._applyVolumes();
+    }
+
+    public get backingTrackVolume(): number {
+        return this._backingTrackVolume;
+    }
+
+    public set backingTrackVolume(value: number) {
+        this._backingTrackVolume = Math.max(value, SynthConstants.MinVolume);
+        this._applyVolumes();
+    }
+
+    public get synthVolume(): number {
+        return this._synthVolume;
+    }
+
+    public set synthVolume(value: number) {
+        this._synthVolume = Math.max(value, SynthConstants.MinVolume);
+        this._applyVolumes();
+    }
+
+    private _applyVolumes(): void {
+        const graph = this._graph;
+        graph.masterGain = this._masterVolume;
+        graph.synthGain = this._synthVolume;
+        if (this._externalClock) {
+            // the external player isn't in the graph: its handler gets masterVolume alone, as today (§7)
+            this._media.masterVolume = this._masterVolume;
+            graph.mediaGain = 1;
+        } else {
+            // the <audio> stays at full volume; the gains mix
+            this._media.masterVolume = 1;
+            this._media.backingTrackVolume = 1;
+            graph.mediaGain = this._backingTrackVolume;
+        }
+    }
+
+    // ---- the latency probe's schedule (§6.4) ----
+
+    private _startBackgroundProbe(): void {
+        for (const speed of MediaLatencyProbe.backgroundSpeeds) {
+            this._queueProbe(speed, false);
+        }
+        this._probeNext();
+    }
+
+    private _queueProbe(speed: number, first: boolean): void {
+        if (!this._probe || this._probeLatencies.has(speed)) {
+            return;
+        }
+        const key = PerSpeedValues.key(speed);
+        const index = this._probeQueue.indexOf(key);
+        if (index >= 0) {
+            this._probeQueue.splice(index, 1);
+        }
+        if (first) {
+            this._probeQueue.unshift(key);
+        } else {
+            this._probeQueue.push(key);
+        }
+    }
+
+    private _probeNext(): void {
+        const probe = this._probe;
+        if (!probe || this._probing || this._destroyed || this._probeQueue.length === 0) {
+            return;
+        }
+        if (!this._graph.isRunning) {
+            // the probe waits until the AudioContext runs (§13)
+            if (!this._waitingForContext) {
+                this._waitingForContext = true;
+                this._graph.whenRunning(() => {
+                    this._waitingForContext = false;
+                    this._probeNext();
+                });
+            }
+            return;
+        }
+        const speed = this._probeQueue.shift()!;
+        if (this._probeLatencies.has(speed)) {
+            this._probeNext();
+            return;
+        }
+        this._probing = true;
+        probe.measure(speed).then(
+            latency => this._onProbed(speed, latency),
+            e => {
+                Logger.warning('Player', `Measuring the media latency at ${speed}x failed, using 0: ${e}`);
+                this._onProbed(speed, 0);
+            }
+        );
+    }
+
+    private _onProbed(speed: number, latency: number): void {
+        this._probing = false;
+        if (this._destroyed) {
+            return;
+        }
+        this._probeLatencies.set(speed, latency);
+        this.diagnostics.probes.push(new MediaSynthProbeRecord(speed, latency, this._timer.now()));
+        if (this._state === PlayerState.Playing && PerSpeedValues.key(this.playbackSpeed) === speed) {
+            // a measured value replaced the guess mid-playback: settle, no forced re-sync (F-9a, D-1)
+            this.controller.latencyChanged();
+        }
+        this._probeNext();
+    }
+
+    // ---- transport ----
+
+    public get state(): PlayerState {
+        return this._state;
+    }
+
+    public play(): boolean {
+        if (this._state !== PlayerState.Paused || !this._media.isReadyForPlayback) {
+            return false;
+        }
+        this._setState(PlayerState.Playing, false);
+        this._startPlayback();
+        return true;
+    }
+
+    public pause(): void {
+        if (this._state === PlayerState.Paused) {
+            return;
+        }
+        this._interrupt();
+        this._setState(PlayerState.Paused, false);
+    }
+
+    public playPause(): void {
+        if (this._state !== PlayerState.Paused) {
+            this.pause();
+        } else {
+            this.play();
+        }
+    }
+
+    public stop(): void {
+        if (!this._midiLoaded) {
+            return;
+        }
+        this._interrupt();
+        this._media.stop();
+        this._synth.stop();
+        if (this._playbackRange) {
+            // back to the range start, as today
+            this._media.tickPosition = this._playbackRange.startTick;
+        }
+        this._setState(PlayerState.Paused, true);
+    }
+
+    public get timePosition(): number {
+        return this._media.timePosition;
+    }
+
+    public set timePosition(value: number) {
+        this._seek(() => {
+            this._media.timePosition = value;
+        });
+    }
+
+    public get tickPosition(): number {
+        return this._media.tickPosition;
+    }
+
+    public set tickPosition(value: number) {
+        this._seek(() => {
+            this._media.tickPosition = value;
+        });
+    }
+
+    public get playbackSpeed(): number {
+        return this._media.playbackSpeed;
+    }
+
+    public set playbackSpeed(value: number) {
+        this._media.playbackSpeed = value;
+        const speed = this._media.playbackSpeed;
+        this._synth.playbackSpeed = speed;
+        this._clock.speed = speed;
+        this._queueProbe(speed, true);
+        this._probeNext();
+    }
+
+    public get playbackRange(): PlaybackRange | null {
+        return this._playbackRange;
+    }
+
+    public set playbackRange(value: PlaybackRange | null) {
+        this._playbackRange = value;
+        if (value) {
+            // seeks to the range start, as AlphaSynthBase does
+            this.tickPosition = value.startTick;
+        }
+        (this.playbackRangeChanged as EventEmitterOfT<PlaybackRangeChangedEventArgs>).trigger(
+            new PlaybackRangeChangedEventArgs(value)
+        );
+    }
+
+    public get isLooping(): boolean {
+        return this._isLooping;
+    }
+
+    public set isLooping(value: boolean) {
+        this._isLooping = value;
+    }
+
+    public playOneTimeMidiFile(midi: MidiFile): void {
+        this._media.playOneTimeMidiFile(midi);
+    }
+
+    private _setState(state: PlayerState, stopped: boolean): void {
+        this._state = state;
+        (this.stateChanged as EventEmitterOfT<PlayerStateChangedEventArgs>).trigger(
+            new PlayerStateChangedEventArgs(state, stopped)
+        );
+    }
+
+    private _startPlayback(): void {
+        this._playMedia();
+    }
+
+    private _seek(apply: () => void): void {
+        apply();
+    }
+
+    /**
+     * Stops whatever is in flight; both end paused.
+     */
+    private _interrupt(): void {
+        this.controller.stopped();
+        this._pauseMedia();
+        this._synth.pause();
+    }
+
+    private _playMedia(): void {
+        this._externalClock?.setPlaying(true);
+        this._media.play();
+    }
+
+    private _pauseMedia(): void {
+        this._externalClock?.setPlaying(false);
+        this._media.pause();
+    }
+
+    private get _mediaDuration(): number {
+        return (this._media.output as IBackingTrackSynthOutput).backingTrackDuration;
+    }
+
+    private _sendFollowConfig(): void {
+        this._synth.followMedia(true, this._mediaDuration, this._syncPoints);
+    }
+
+    private _onMediaPosition(e: PositionChangedEventArgs): void {
+        (this.positionChanged as EventEmitterOfT<PositionChangedEventArgs>).trigger(e);
+    }
+
+    private _onMediaFinished(): void {
+        (this.finished as EventEmitter).trigger();
+    }
+
+    // ---- delegation ----
+
+    public get output(): ISynthOutput {
+        return this._output;
+    }
+
+    public get logLevel(): LogLevel {
+        return this._synth.logLevel;
+    }
+
+    public set logLevel(value: LogLevel) {
+        this._media.logLevel = value;
+        this._synth.logLevel = value;
+    }
+
+    public get metronomeVolume(): number {
+        return this._synth.metronomeVolume;
+    }
+
+    public set metronomeVolume(value: number) {
+        this._synth.metronomeVolume = value;
+    }
+
+    public get countInVolume(): number {
+        return this._countInVolume;
+    }
+
+    public set countInVolume(value: number) {
+        // applied by the combined player itself: only an app Play from Paused counts in (§6.1)
+        this._countInVolume = Math.max(value, SynthConstants.MinVolume);
+    }
+
+    public get midiEventsPlayedFilter(): MidiEventType[] {
+        return this._synth.midiEventsPlayedFilter;
+    }
+
+    public set midiEventsPlayedFilter(value: MidiEventType[]) {
+        this._synth.midiEventsPlayedFilter = value;
+    }
+
+    public get loadedMidiInfo(): PositionChangedEventArgs | undefined {
+        return this._media.loadedMidiInfo;
+    }
+
+    public get currentPosition(): PositionChangedEventArgs {
+        return this._media.currentPosition;
+    }
+
+    public destroy(): void {
+        this._destroyed = true;
+        this._interrupt();
+        for (const unsubscribe of this._unsubscribe) {
+            unsubscribe();
+        }
+        this._unsubscribe.length = 0;
+        this._media.destroy();
+        this._synth.destroy();
+    }
+
+    public loadSoundFont(data: Uint8Array, append: boolean): void {
+        this._synth.loadSoundFont(data, append);
+    }
+
+    public resetSoundFonts(): void {
+        this.stop();
+        this._synth.resetSoundFonts();
+    }
+
+    public loadMidiFile(midi: MidiFile): void {
+        this.stop();
+        this._midiLoaded = true;
+        this._media.loadMidiFile(midi);
+        this._synth.loadMidiFile(midi);
+    }
+
+    public loadBackingTrack(score: Score): void {
+        this._media.loadBackingTrack(score);
+    }
+
+    public updateSyncPoints(syncPoints: BackingTrackSyncPoint[]): void {
+        this._syncPoints = syncPoints;
+        this._media.updateSyncPoints(syncPoints);
+        // loading a MIDI file drops the worker's sync points: send them again
+        this._sendFollowConfig();
+    }
+
+    public applyTranspositionPitches(transpositionPitches: Map<number, number>): void {
+        this._synth.applyTranspositionPitches(transpositionPitches);
+    }
+
+    public setChannelTranspositionPitch(channel: number, semitones: number): void {
+        this._synth.setChannelTranspositionPitch(channel, semitones);
+    }
+
+    public setChannelMute(channel: number, mute: boolean): void {
+        this._synth.setChannelMute(channel, mute);
+    }
+
+    public resetChannelStates(): void {
+        this._synth.resetChannelStates();
+    }
+
+    public setChannelSolo(channel: number, solo: boolean): void {
+        this._synth.setChannelSolo(channel, solo);
+    }
+
+    public setChannelVolume(channel: number, volume: number): void {
+        this._synth.setChannelVolume(channel, volume);
+    }
+
+    public readonly ready: IEventEmitter;
+    public readonly readyForPlayback: IEventEmitter;
+    public readonly finished: IEventEmitter = new EventEmitter();
+    public readonly soundFontLoaded: IEventEmitter = new EventEmitter();
+    public readonly soundFontLoadFailed: IEventEmitterOfT<Error> = new EventEmitterOfT<Error>();
+    public readonly midiLoaded: IEventEmitterOfT<PositionChangedEventArgs>;
+    public readonly midiLoadFailed: IEventEmitterOfT<Error> = new EventEmitterOfT<Error>();
+    public readonly stateChanged: IEventEmitterOfT<PlayerStateChangedEventArgs>;
+    public readonly positionChanged: IEventEmitterOfT<PositionChangedEventArgs>;
+    public readonly midiEventsPlayed: IEventEmitterOfT<MidiEventsPlayedEventArgs> =
+        new EventEmitterOfT<MidiEventsPlayedEventArgs>();
+    public readonly playbackRangeChanged: IEventEmitterOfT<PlaybackRangeChangedEventArgs>;
+}
+```
+
+Notes for the implementer:
+- `soundFontLoadFailed` is declared with an initializer, and the constructor subscribes to it. Field initializers run
+  before the constructor body, so the subscription is safe.
+- `_startPlayback` and `_seek` are their final selves only in media-only mode. Task 16 gives them the synthesizer's
+  handshakes.
+
+- [ ] **Step 8: Run the tests to see them pass**
+
+Run: `npx vitest run test/audio/MediaSynthPlayer.Routing.test.ts`
+Expected: PASS (15 tests).
+
+- [ ] **Step 9: Run the repo gates and commit**
+
+```bash
+npm run lint && npm run typecheck && npm test
+git add packages/alphatab/src packages/alphatab/test/audio/MediaSyncFakes.ts packages/alphatab/test/audio/MediaSynthPlayer.Routing.test.ts
+git commit -m "feat(web): combined player: routing, readiness, media-only fallback, volumes, probe schedule (#2397)"
+git push
+```
+
+---
+
+### Task 16: `MediaSynthPlayer` — start, seek and speed handshakes; one-time MIDI; song end
+
+**Files:**
+- Modify: `packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts`
+- Create: `packages/alphatab/test/audio/MediaSynthPlayer.Transport.test.ts`
+
+**Interfaces:**
+- Consumes: Task 15's player; `MediaSyncController.planStart/started/speedChanged` (Task 10); `IMediaClock.whenSeeked`
+  (Task 11); `BackingTrackPlayer.seekMediaTo` (Task 15).
+- Produces (used by Tasks 17–19): `_startPlayback()`, `_runStart(plan, learnStartLead)`, `_interrupt()` with the
+  handshake counter, `_holdBefore` for positions, `_mediaDelayTimer`.
+
+§6.2. **Start:** follow config, then plan the start. The media seeks to the plan's start, and only after the seek
+the synth seeks and plays and the media plays (delayed by L when the synth is slower). The controller settles.
+**Seek while playing (backing track):** pause both, seek, restart through the start handshake, with no count-in and
+no `stateChanged`. **Speed change while playing:** both get the new speed and the clock its latency, then a re-sync
+and settle (spike 11: Chrome's media lands 15–43 ms behind on every change). **Cursor:** positions from before the
+start are held back during the media's pre-roll, so the cursor doesn't jump back. **`playBeat` / `playNote` while
+playing (§6.1, spike 7):** pause both (the app sees Paused); the synth leaves follow mode and plays the beat on its
+own clock; the next Play follows the media again. **Song end:** when the media reaches its own end, `finished`
+fires once and both stop, as today. **Today's behavior kept:** `BackingTrackPlayer.updatePlaybackSpeed` also seeks
+the `<audio>` to the same place. That is the media player's own logic (§4, "not changed"); the clock reads no time
+while that seek runs, so the re-sync waits for it.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `packages/alphatab/test/audio/MediaSynthPlayer.Transport.test.ts`:
+
+```ts
+/**
+ * The combined player's start, seek and speed handshakes (spec §6.2).
+ * @target web
+ */
+import { describe, expect, it } from 'vitest';
+import { flush, MediaSynthHarness } from 'test/audio/MediaSyncFakes';
+
+async function playing(at: number = 5000, speed: number = 1): Promise<MediaSynthHarness> {
+    const h = new MediaSynthHarness();
+    await h.loadSong();
+    h.player.playbackSpeed = speed;
+    h.mediaOutput!.currentTime = at;
+    h.player.play();
+    return h;
+}
+
+describe('MediaSynthPlayerTransportTests', () => {
+    it('play-reports-playing-at-once-and-starts-both-at-the-target', async () => {
+        const h = await playing(5000);
+        expect(h.states).toEqual(['Playing']);
+        expect(h.synth.calls.slice(-4)).toEqual(['followMedia:true', 'pause', 'seek:5000', 'play:countIn=0']);
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+        expect(h.player.controller.isActive).toBe(true);
+    });
+
+    it('a-slower-synth-delays-the-media', async () => {
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        h.player.controller.startLeads.set(1, 8);
+        h.mediaOutput!.currentTime = 5000;
+        h.player.play();
+        expect(h.mediaOutput!.isPlaying).toBe(false);
+        h.timer.advance(7);
+        expect(h.mediaOutput!.isPlaying).toBe(false);
+        h.timer.advance(1);
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+    });
+
+    it('other-speeds-pre-roll-the-media-and-start-the-synth-where-it-is-heard', async () => {
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        h.probeLatencies.set(0.5, 60);
+        h.player.playbackSpeed = 0.5;
+        h.mediaOutput!.currentTime = 5000;
+        h.player.play();
+        expect(h.mediaOutput!.seekTimes[h.mediaOutput!.seekTimes.length - 1]).toBeCloseTo(4940, 3);
+        expect(h.synth.lastSeek()).toBeCloseTo(4940 + 30, 3);
+    });
+
+    it('the-media-pre-roll-does-not-move-the-cursor-back', async () => {
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        h.probeLatencies.set(0.5, 60);
+        h.player.playbackSpeed = 0.5;
+        h.player.timePosition = 10000;
+        const start = h.player.timePosition;
+        h.positions.length = 0;
+        h.player.play();
+        expect(h.positions.filter(p => p < start - 1)).toEqual([]);
+        for (let i = 0; i < 10; i++) {
+            h.timer.advance(50);
+            h.mediaOutput!.advance(50);
+        }
+        expect(h.positions.length).toBeGreaterThan(0);
+        expect(Math.min(...h.positions)).toBeGreaterThanOrEqual(start - 1);
+    });
+
+    it('pause-during-the-media-delay-cancels-the-media-start', async () => {
+        // Review Focus 2
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        h.player.controller.startLeads.set(1, 50);
+        h.player.play();
+        h.player.pause();
+        h.timer.advance(100);
+        expect(h.mediaOutput!.isPlaying).toBe(false);
+        expect(h.states).toEqual(['Playing', 'Paused']);
+    });
+
+    it('a-seek-while-playing-restarts-without-state-change-or-count-in', async () => {
+        const h = await playing(5000);
+        h.player.countInVolume = 1;
+        h.player.timePosition = 20000;
+        expect(h.states).toEqual(['Playing']);
+        expect(h.synth.calls[h.synth.calls.length - 1]).toBe('play:countIn=0');
+        expect(h.synth.lastSeek()).toBeCloseTo(h.mediaOutput!.currentTime, 3);
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+    });
+
+    it('a-speed-change-while-playing-re-syncs', async () => {
+        const h = await playing(5000);
+        const seeks = h.synth.seeks.length;
+        h.player.playbackSpeed = 0.75;
+        expect(h.synth.seeks.length).toBe(seeks + 1);
+        expect(h.synth.playbackSpeed).toBe(0.75);
+        expect(h.player.controller.isSettling).toBe(true);
+        // the new speed is probed next, after the measurement already running (1x)
+        h.probe.resolveNext(0);
+        await flush();
+        expect(h.probe.requests).toEqual([1, 0.75]);
+    });
+
+    it('a-probe-value-during-playback-settles', async () => {
+        // Review Focus 3, F-9a (D-1)
+        const h = await playing(5000);
+        h.timer.advance(2000);
+        expect(h.player.controller.isSettling).toBe(false);
+        const seeks = h.synth.seeks.length;
+        h.probe.resolveNext(3); // the background probe of 1x lands now
+        await flush();
+        expect(h.player.controller.isSettling).toBe(true);
+        expect(h.synth.seeks.length).toBe(seeks);
+    });
+
+    it('stamps-reach-the-controller', async () => {
+        const h = await playing(5000);
+        h.timer.advance(2000);
+        const seeks = h.synth.seeks.length;
+        h.synthOutput.stamp(0, h.mediaOutput!.currentTime + 200);
+        h.timer.advance(50);
+        h.synthOutput.stamp(0, h.mediaOutput!.currentTime + 200);
+        expect(h.synth.seeks.length).toBe(seeks + 1);
+    });
+
+    it('one-time-midi-pauses-both-and-leaves-follow-mode', async () => {
+        const h = new MediaSynthHarness();
+        const midi = await h.loadSong();
+        h.mediaOutput!.currentTime = 5000;
+        h.player.play();
+        h.player.playOneTimeMidiFile(midi);
+        expect(h.states[h.states.length - 1]).toBe('Paused');
+        expect(h.synth.calls.slice(-2)).toEqual(['followMedia:false', 'playOneTimeMidiFile']);
+        h.player.play();
+        expect(h.synth.calls.slice(-4)).toEqual(['followMedia:true', 'pause', `seek:${h.synth.lastSeek()}`, 'play:countIn=0']);
+    });
+
+    it('the-media-end-stops-both-once', async () => {
+        // Review Focus 1
+        const h = await playing(41950);
+        h.mediaOutput!.advance(100);
+        expect(h.finished).toBe(1);
+        expect(h.states).toEqual(['Playing', 'Stopped']);
+        expect(h.synth.count('stop')).toBeGreaterThan(0);
+    });
+
+    it('destroy-clears-pending-timers', async () => {
+        // Review Focus 5
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        h.player.controller.startLeads.set(1, 50);
+        h.player.play();
+        h.player.destroy();
+        h.timer.advance(100);
+        expect(h.mediaOutput!.isPlaying).toBe(false);
+        expect(h.timer.pending).toBe(0);
+    });
+});
+```
+
+- [ ] **Step 2: Run the tests to see them fail**
+
+Run: `npx vitest run test/audio/MediaSynthPlayer.Transport.test.ts`
+Expected: FAIL — e.g. `play-reports-playing-at-once-and-starts-both-at-the-target` sees no synth calls.
+
+- [ ] **Step 3: Implement the handshakes**
+
+In `MediaSynthPlayer.ts` import `type MediaStartPlan` from `MediaSyncController`, and add the fields:
+
+```ts
+    private _handshake: number = 0;
+    private _holdBefore: number = -1;
+    private _mediaDelayTimer: number = 0;
+```
+
+Replace `_startPlayback`, `_seek`, `_interrupt`, `_onMediaPosition` and `_onMediaFinished`, and add `_runStart` and
+`_mediaLatency`:
+
+```ts
+    /**
+     * Starts from the media's position (§6.2 start handshake).
+     */
+    private _startPlayback(): void {
+        const speed = this.playbackSpeed;
+        this._queueProbe(speed, true);
+        this._probeNext();
+        if (!this._isMixing) {
+            this._playMedia();
+            return;
+        }
+        this._sendFollowConfig();
+        this._runStart(this.controller.planStart(this._clock.position, speed, this._mediaLatency(speed)), true);
+    }
+
+    private _runStart(plan: MediaStartPlan, learnStartLead: boolean): void {
+        // the cursor stays at the start position while the media pre-rolls
+        this._holdBefore = this._media.timePosition;
+        // ends a one-time MIDI the synth may still play (spike 7)
+        this._synth.pause();
+        if (plan.mediaSeekTo !== this._clock.position) {
+            this._media.seekMediaTo(plan.mediaSeekTo);
+        }
+        const handshake = this._handshake;
+        this._clock.whenSeeked(() => {
+            if (handshake !== this._handshake) {
+                // a pause or another handshake came first
+                return;
+            }
+            this._synth.seekToMediaTime(plan.synthSeekTo);
+            this._synth.play();
+            if (plan.mediaDelayMs > 0) {
+                this._mediaDelayTimer = this._timer.setTimeout(() => {
+                    this._mediaDelayTimer = 0;
+                    this._playMedia();
+                }, plan.mediaDelayMs);
+            } else {
+                this._playMedia();
+            }
+            this.controller.started(plan, learnStartLead);
+        });
+    }
+
+    private _seek(apply: () => void): void {
+        if (this._state !== PlayerState.Playing) {
+            apply();
+            return;
+        }
+        // pause both, seek, restart through the start handshake: no count-in, no stateChanged (§6.2)
+        this._interrupt();
+        apply();
+        this._startPlayback();
+    }
+
+    /**
+     * Stops whatever a handshake has in flight; both end paused.
+     */
+    private _interrupt(): void {
+        this._handshake++;
+        this._timer.clearTimeout(this._mediaDelayTimer);
+        this._mediaDelayTimer = 0;
+        this._holdBefore = -1;
+        this.controller.stopped();
+        this._pauseMedia();
+        this._synth.pause();
+    }
+
+    private _mediaLatency(speed: number): number {
+        return this._externalClock ? 0 : this._probeLatencies.get(speed);
+    }
+
+    private _onMediaPosition(e: PositionChangedEventArgs): void {
+        if (this._holdBefore >= 0) {
+            if (e.currentTime < this._holdBefore - 1) {
+                // the media's pre-roll: keep the cursor at the start position (§6.1)
+                return;
+            }
+            this._holdBefore = -1;
+        }
+        (this.positionChanged as EventEmitterOfT<PositionChangedEventArgs>).trigger(e);
+    }
+
+    private _onMediaFinished(): void {
+        // the media reached the song's end by itself (no range, not looping): finished, and both stop, as today
+        (this.finished as EventEmitter).trigger();
+        if (this._state === PlayerState.Playing) {
+            this._interrupt();
+            this._synth.stop();
+            this._setState(PlayerState.Paused, true);
+        }
+    }
+```
+
+The speed setter gets the handshake:
+
+```diff
+         this._clock.speed = speed;
+         this._queueProbe(speed, true);
+         this._probeNext();
++        if (this._state === PlayerState.Playing && this._isMixing) {
++            // both at the new speed with its latency: re-sync and settle (§6.2; spike 11)
++            this.controller.speedChanged(speed);
++        }
+     }
+```
+
+and the one-time MIDI:
+
+```ts
+    public playOneTimeMidiFile(midi: MidiFile): void {
+        if (!this._isMixing) {
+            // the media player's own behavior, as today (§8)
+            this._media.playOneTimeMidiFile(midi);
+            return;
+        }
+        // pause both (the app sees Paused); the synth leaves follow mode and plays it on its own clock; the next
+        // Play follows the media again through the start handshake (§6.1, spike 7)
+        this.pause();
+        this._synth.followMedia(false, this._mediaDuration, this._syncPoints);
+        this._synth.playOneTimeMidiFile(midi);
+    }
+```
+
+`destroy()` already calls `_interrupt()`, which now clears the media-delay timer.
+
+- [ ] **Step 4: Run the tests to see them pass**
+
+Run: `npx vitest run test/audio/MediaSynthPlayer.Transport.test.ts test/audio/MediaSynthPlayer.Routing.test.ts`
+Expected: PASS. If `the-media-end-stops-both-once` sees no `finished`, check that `TestMediaOutput.advance` crosses the
+media's end (42000 ms): `BackingTrackPlayer.checkForFinish` fires `finished` once the tick passes the song's end.
+
+- [ ] **Step 5: Run the repo gates and commit**
+
+```bash
+npm run lint && npm run typecheck && npm test
+git add packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts packages/alphatab/test/audio/MediaSynthPlayer.Transport.test.ts
+git commit -m "feat(web): combined player start, seek and speed handshakes (#2397)"
 git push
 ```
 
