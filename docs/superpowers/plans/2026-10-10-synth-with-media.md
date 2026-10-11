@@ -10590,30 +10590,42 @@ npm pack --workspace=packages/alphatab
 Expected: a `coderline-alphatab-<version>.tgz` in the worktree root. Set `ALPHATAB_PACK` in your shell to its
 absolute path.
 
-- [ ] **Step 2: Try it in alphaTabWebsite (a throwaway branch, not committed)**
+- [ ] **Step 2: Try it in alphaTabWebsite (a new branch in a throwaway worktree, not committed)**
 
 ```bash
-git switch -c try/2397-synth-with-media
+git fetch origin
+git worktree add ../alphaTabWebsite-try-2397 -b try/2397-synth-with-media origin/rhythm-game
+cd ../alphaTabWebsite-try-2397
+npm ci
 npm install "$ALPHATAB_PACK"
 ```
+
+Run these from the alphaTabWebsite checkout. The try gets a new branch in its own worktree, so your checkout and
+any uncommitted work in it are never touched. Never run `git restore`, `git checkout .`, `git stash`,
+`git reset --hard` or `git clean` in an app checkout.
 
 Turn `player.enableSynthesizerWithMedia` on where the rhythm game creates the API (Task 26 Step 5 shows the change).
 Play a backing-track song with the metronome on, by ear, and then the YouTube flow. Then throw the branch away:
 
 ```bash
-git restore --staged --worktree .
-git switch -
+cd -
+git worktree remove --force ../alphaTabWebsite-try-2397
 git branch -D try/2397-synth-with-media
 ```
 
-- [ ] **Step 3: Try it in notation-hero/web (throwaway, not committed)**
+- [ ] **Step 3: Try it in notation-hero/web (a new branch in a throwaway worktree, not committed)**
 
 ```bash
-git switch -c try/2397-synth-with-media
+git fetch origin
+git worktree add ../notation-hero-try-2397 -b try/2397-synth-with-media origin/master
+cd ../notation-hero-try-2397
+pnpm install
 pnpm --filter web add "file:$ALPHATAB_PACK"
 ```
 
-Same check. Then restore and delete the branch as in Step 2.
+Run these from the notation-hero checkout. Same check, and the same rule: the try lives in its own worktree, and
+nothing touches the checkout's uncommitted work. Then go back (`cd -`), remove the worktree
+(`git worktree remove --force ../notation-hero-try-2397`) and delete the branch.
 
 If either try fails, stop here, fix it on `feat/2397-synth-with-media` (with a test), and come back to Step 1.
 
