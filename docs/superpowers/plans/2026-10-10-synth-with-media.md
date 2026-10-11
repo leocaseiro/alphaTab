@@ -9646,8 +9646,8 @@ git push
   `MediaSyncConstants` (Task 9), the public API.
 - Produces (used by Tasks 22–24): `http://localhost:5188/demos/sync-lab/` with `window.syncLab` (the tests below,
   `results`, `created`), and page controls for a run without a console (Task 24): a count-in box, **Start test**,
-  **Loop test** and **Count-in test** buttons, a `tappedStart` report after a tapped Play, and alphaTab's warnings in
-  the page's log.
+  **Loop test**, **Count-in test**, **Seek test** and **Speed-change test** buttons, a `tappedStart` report after a
+  tapped Play, and alphaTab's warnings in the page's log.
 
 §9: the spike's measurement page, cleaned up and moved onto the real player. It doesn't carry the spike's modes.
 It reads the player through the `@internal` diagnostics only (§3). The default file is the repo's
@@ -9655,6 +9655,7 @@ It reads the player through the `@internal` diagnostics only (§3). The default 
 New compared with the spike:
 
 - the real count-in;
+- seeks and speed changes during playback on a beat (S4b), and a full-song click count (S5);
 - the F-9d tests: an auto-BPM loop, a held sweep, a first Play at an unprobed speed;
 - a probe value landing mid-playback (D-1);
 - the count-in pre-roll comparison (D-3);
@@ -9715,6 +9716,8 @@ Create `packages/playground/demos/sync-lab/index.html`:
             <button id="startTestButton">Start test</button>
             <button id="loopTestButton">Loop test</button>
             <button id="countInTestButton">Count-in test</button>
+            <button id="seekTestButton">Seek test</button>
+            <button id="speedTestButton">Speed-change test</button>
         </div>
         <div class="bar" id="live" style="font-family: ui-monospace, monospace; font-size: 13px;">live: —</div>
         <pre id="log">loading…</pre>
@@ -10140,10 +10143,14 @@ function alphaTabTimeForMedia(mediaTime: number) {
 }
 
 /**
- * S4's first-click tolerance: max(±11 ms, ±2 × baseLatency) at 1× (F-3), ±20 ms at other speeds.
+ * S4's first-click tolerance: max(±11 ms, ±2 × baseLatency) at 1× (F-3), ±25 ms below 1× (the media's
+ * time-stretch, spikes 12–13), ±20 ms above.
  */
 function firstClickToleranceMs(speed: number): number {
-    return speed === 1 ? Math.max(11, 2 * ctx().baseLatency * 1000) : 20;
+    if (speed === 1) {
+        return Math.max(11, 2 * ctx().baseLatency * 1000);
+    }
+    return speed < 1 ? 25 : 20;
 }
 
 function measuringSetup(speed: number) {
@@ -10183,7 +10190,7 @@ async function segment(name: string, action: () => void, durationMs: number, set
 }
 
 /**
- * S1-S3: steady playback, a seek at 1x, a seek with 0.5x and with 1.5x.
+ * S1-S3: steady playback, a seek at 1x, a seek with 0.5x, with 0.75x and with 1.5x.
  */
 async function runMeasurement() {
     if (src !== 'beeps') {
@@ -10192,7 +10199,7 @@ async function runMeasurement() {
     }
     api.stop();
     measuringSetup(1);
-    await waitForProbe([1, 0.5, 1.5]);
+    await waitForProbe([1, 0.5, 0.75, 1.5]);
     tapOnsets.media.length = 0;
     tapOnsets.synth.length = 0;
     const segments: SegmentStats[] = [];
@@ -10204,6 +10211,16 @@ async function runMeasurement() {
             () => {
                 api.playbackSpeed = 0.5;
                 api.timePosition = alphaTabTimeForMedia(durationMs * 0.6);
+            },
+            15000
+        )
+    );
+    segments.push(
+        await segment(
+            'seek + 0.75x',
+            () => {
+                api.playbackSpeed = 0.75;
+                api.timePosition = alphaTabTimeForMedia(durationMs * 0.2);
             },
             15000
         )
@@ -10232,7 +10249,7 @@ async function runMeasurement() {
 }
 
 /**
- * S4, S4b, S5: n plays from different beats, `beforeBeatMs` before the beat; checks the first clicks, the skip
+ * S4, S5: n plays from different beats, `beforeBeatMs` before the beat; checks the first clicks, the skip
  * (the first beep after Play must have its own click) and the lock time.
  */
 async function startTest(n: number, beforeBeatMs: number, speed = 1) {
@@ -10252,7 +10269,8 @@ async function startTest(n: number, beforeBeatMs: number, speed = 1) {
     for (let i = 0; i < n; i++) {
         api.pause();
         await sleep(400);
-        const beat = beatMediaTimes[Math.min(beatMediaTimes.length - 10, 40 + i * 23)];
+        // a different beat each time, at least 12 beats before the end (the default file has 64 beats)
+        const beat = beatMediaTimes[8 + ((i * 23) % Math.max(1, beatMediaTimes.length - 20))];
         const startMedia = beat - beforeBeatMs;
         api.timePosition = alphaTabTimeForMedia(startMedia);
         await sleep(300);
@@ -10294,6 +10312,109 @@ async function startTest(n: number, beforeBeatMs: number, speed = 1) {
 }
 
 /**
+ * S4b: n seeks or speed changes during playback, each `beforeBeatMs` before a beat; checks the first click after
+ * each one (the first beep after it must have its own click) against S4's tolerance. 'seek' jumps 12 beats on;
+ * 'speed' changes from `fromSpeed` to `speed` in place, timed from the media's currentTime (a few ms off).
+ */
+async function midPlaybackTest(n: number, beforeBeatMs: number, action: 'seek' | 'speed', speed = 1, fromSpeed = speed) {
+    const sr = ctx().sampleRate;
+    const element = (api.player!.output as unknown as { audioElement: HTMLAudioElement }).audioElement;
+    const mediaNow = () => element.currentTime * 1000;
+    const tolerance = firstClickToleranceMs(speed);
+    const rows: object[] = [];
+    for (let i = 0; i < n; i++) {
+        api.pause();
+        measuringSetup(fromSpeed);
+        await sleep(400);
+        // a different place each time, with enough beats left after the action (the default file has 64 beats)
+        api.timePosition = alphaTabTimeForMedia(beatMediaTimes[4 + ((i * 23) % Math.max(1, beatMediaTimes.length - 40))]);
+        await sleep(300);
+        api.play();
+        await sleep(fromSpeed < 1 ? 4500 : 2500); // settled before the action
+        const next = beatMediaTimes.find(t => t > mediaNow() + 200 * fromSpeed)!;
+        const k = beatMediaTimes.indexOf(next);
+        const last = beatMediaTimes.length - 1;
+        // a seek comes between two beats, so no beep or click of the old place follows it; a speed change comes
+        // beforeBeatMs before a beat
+        const actAt = action === 'seek' ? (next + beatMediaTimes[Math.min(k + 1, last)]) / 2 : next - beforeBeatMs;
+        await sleep((actAt - mediaNow()) / fromSpeed);
+        const target = action === 'seek' ? beatMediaTimes[Math.min(k + 12, last - 1)] : next;
+        tapOnsets.media.length = 0;
+        tapOnsets.synth.length = 0;
+        const actionFrame = ctx().currentTime * sr;
+        const actionT = performance.now();
+        if (action === 'seek') {
+            api.timePosition = alphaTabTimeForMedia(target - beforeBeatMs);
+        } else {
+            api.playbackSpeed = speed;
+        }
+        await sleep(speed < 1 ? 4500 : 2500);
+        const media = [...tapOnsets.media].sort((a, b) => a - b);
+        const synth = [...tapOnsets.synth].sort((a, b) => a - b);
+        const mediaAfter = media.filter(f => f > actionFrame);
+        const synthAfter = synth.filter(f => f > actionFrame);
+        const firstGap =
+            mediaAfter.length > 0 && synthAfter.length > 0
+                ? r1(((nearest(synthAfter, mediaAfter[0]) - mediaAfter[0]) / sr) * 1000)
+                : null;
+        const skipped = firstGap === null || Math.abs(firstGap) > 50;
+        rows.push({
+            target: Math.round(target),
+            firstGap,
+            skipped,
+            withinTolerance: !skipped && Math.abs(firstGap!) <= tolerance,
+            after: synthAfter.slice(1, 5).map(f => r1(((f - nearest(media, f)) / sr) * 1000)!),
+            resyncs: lab().stats.resyncTimes.filter(t => t > actionT).length,
+            counts: `${synthAfter.length}/${mediaAfter.length}`
+        });
+    }
+    restore();
+    record('midPlaybackTest', { action, speed, fromSpeed, beforeBeatMs, toleranceMs: r1(tolerance), rows });
+    return rows;
+}
+
+/**
+ * S5: the whole song from the start; every beep must have its own click, and every click its beep.
+ */
+async function fullSongTest(speed = 1) {
+    const sr = ctx().sampleRate;
+    measuringSetup(speed);
+    api.pause();
+    await sleep(400);
+    api.timePosition = 0;
+    await sleep(300);
+    tapOnsets.media.length = 0;
+    tapOnsets.synth.length = 0;
+    const playFrame = ctx().currentTime * sr;
+    let finished = false;
+    const unsubscribe = api.playerFinished.on(() => {
+        finished = true;
+    });
+    api.play();
+    const limit = performance.now() + durationMs / speed + 5000;
+    while (!finished && performance.now() < limit) {
+        await sleep(200);
+    }
+    unsubscribe();
+    await sleep(300);
+    restore();
+    const media = tapOnsets.media.filter(f => f > playFrame).sort((a, b) => a - b);
+    const synth = tapOnsets.synth.filter(f => f > playFrame).sort((a, b) => a - b);
+    const apart = (a: number, b: number) => Math.abs(((a - b) / sr) * 1000) > 50;
+    const row = {
+        speed,
+        finished,
+        beats: beatMediaTimes.length,
+        beeps: media.length,
+        clicks: synth.length,
+        missing: synth.length === 0 ? media.length : media.filter(m => apart(nearest(synth, m), m)).length,
+        extra: media.length === 0 ? synth.length : synth.filter(s => apart(s, nearest(media, s))).length
+    };
+    record('fullSongTest', row);
+    return row;
+}
+
+/**
  * S6: Play with the real count-in on a beat; counts the count-in clicks, the downbeat (click vs the media's first
  * beep) and the next clicks.
  */
@@ -10305,7 +10426,9 @@ async function countInTest(n: number, speed = 1) {
     for (let i = 0; i < n; i++) {
         api.pause();
         await sleep(400);
-        const target = beatMediaTimes[Math.min(beatMediaTimes.length - 10, 40 + i * 23)];
+        // a different beat each time, as in startTest (the default file has 64 beats)
+        const k = 8 + ((i * 23) % Math.max(1, beatMediaTimes.length - 20));
+        const target = beatMediaTimes[k];
         api.timePosition = alphaTabTimeForMedia(target);
         await sleep(300);
         tapOnsets.media.length = 0;
@@ -10314,7 +10437,8 @@ async function countInTest(n: number, speed = 1) {
         const playT = performance.now();
         const handOffs = lab().countIns.length;
         api.play();
-        await sleep(speed < 1 ? 9000 : 6000);
+        // a 4/4 count-in bar and four more beats at this place's tempo (the default file runs from 60 to 240 BPM)
+        await sleep((8 * (beatMediaTimes[k + 1] - target)) / speed + 1000);
         const media = [...tapOnsets.media].sort((a, b) => a - b);
         const synthAfter = tapOnsets.synth.filter(f => f > playFrame).sort((a, b) => a - b);
         const firstBeep = media.find(f => f > playFrame) ?? null;
@@ -10714,6 +10838,14 @@ const selectedSpeed = () => Number.parseFloat((document.getElementById('speed') 
 document.getElementById('startTestButton')!.addEventListener('click', () => startTest(10, 30, selectedSpeed()));
 document.getElementById('loopTestButton')!.addEventListener('click', () => loopTest(selectedSpeed()));
 document.getElementById('countInTestButton')!.addEventListener('click', () => countInTest(6, selectedSpeed()));
+document.getElementById('seekTestButton')!.addEventListener('click', () => {
+    midPlaybackTest(10, 30, 'seek', selectedSpeed());
+});
+document.getElementById('speedTestButton')!.addEventListener('click', () => {
+    // from another speed: setting the speed the player already has changes nothing
+    const speed = selectedSpeed();
+    midPlaybackTest(10, 30, 'speed', speed, speed === 1 ? 0.75 : 1);
+});
 document.getElementById('speed')!.addEventListener('change', e => {
     api.playbackSpeed = Number.parseFloat((e.target as HTMLSelectElement).value);
 });
@@ -10793,6 +10925,8 @@ setInterval(() => {
     mediaSynth,
     runMeasurement,
     startTest,
+    midPlaybackTest,
+    fullSongTest,
     countInTest,
     countInPreRollTest,
     loopTest,
@@ -10822,9 +10956,9 @@ npm run dev --workspace=packages/playground -- --port 5188 --strictPort
 ```
 
 Open `http://localhost:5188/demos/sync-lab/`, click the page once, wait for "player ready", then in the console
-run `await syncLab.startTest(2, 30, 1)`.
-Expected: two rows, `skipped: false`, first clicks within ±11 ms. Reload, tick **count-in** and tap **Play / Pause**:
-the log shows a `tappedStart` row with `mediaStartedAfterMs` about one bar. Then open
+run `await syncLab.startTest(2, 30, 1)` and `await syncLab.midPlaybackTest(1, 30, 'seek', 1)`.
+Expected: three rows, `skipped: false`, first clicks within ±11 ms. Reload, tick **count-in** and tap
+**Play / Pause**: the log shows a `tappedStart` row with `mediaStartedAfterMs` about one bar. Then open
 `http://localhost:5188/demos/sync-lab/?mixing=0`: the log shows `created: {"synthWorkers":0,"synthWorklets":0}`
 (S7).
 
@@ -10854,19 +10988,37 @@ first runs its measurement, then puts the choice as a picker (see "How to run th
 
 - [ ] **Step 1: S1–S3, steady playback**
 
-Run `await syncLab.runMeasurement()`.
-Pass: S1 p95 ≤ 3 ms at 1×, S2 p95 ≤ 5 ms at 1.5× (also run `syncLab.loopTest(1.25, 4, 3)` for a 1.25× figure), S3
-p95 ≤ 20 ms at 0.5× (and `syncLab.startTest(5, 30, 0.75)` for 0.75×).
+Run `await syncLab.runMeasurement()`. Pass, on each segment's `settled.p95AbsMs`: S1 ≤ 3 ms ('start@0s 1.0x' and
+'seek 1.0x'), S2 ≤ 5 ms ('seek + 1.5x'; also run `syncLab.loopTest(1.25, 4, 3)` for a 1.25× figure), S3 ≤ 20 ms
+('seek + 0.5x' and 'seek + 0.75x').
 
 - [ ] **Step 2: S4, S4b, S5 — starts, seeks and speed changes on a beat**
 
+S4 and S5, 15 start cycles per speed:
+
 ```text
-await syncLab.startTest(10, 30, 1); await syncLab.startTest(10, 30, 0.5); await syncLab.startTest(10, 30, 1.5)
-await syncLab.startTest(10, 0, 1)        (exactly on a beat)
+await syncLab.startTest(15, 30, 1); await syncLab.startTest(15, 30, 0.5); await syncLab.startTest(15, 30, 1.5)
+await syncLab.startTest(15, 0, 1)        (exactly on a beat)
 ```
 
-Pass: no `skipped`, `withinTolerance` everywhere, counts equal (one click per beat, S5). For S4b, the seek
-segments of Step 1 and the sweep in Step 6 cover seeks and speed changes during playback.
+S4b, seeks and speed changes during playback, 30 ms before a beat:
+
+```text
+await syncLab.midPlaybackTest(10, 30, 'seek', 1); await syncLab.midPlaybackTest(10, 30, 'seek', 0.5)
+await syncLab.midPlaybackTest(10, 30, 'seek', 1.5)
+await syncLab.midPlaybackTest(10, 30, 'speed', 0.75, 1); await syncLab.midPlaybackTest(10, 30, 'speed', 1, 0.75)
+await syncLab.midPlaybackTest(10, 30, 'speed', 1.5, 1)
+```
+
+S5, a full song: `await syncLab.fullSongTest(1)`.
+
+Pass:
+- S4: every `startTest` row has `skipped: false` and `withinTolerance: true` (S4's limits: ±11 ms at 1×, ±25 ms
+  below 1×, ±20 ms above).
+- S4b: every `midPlaybackTest` row has `skipped: false` and `withinTolerance: true`. Spike 11 saw the media land
+  15–43 ms behind right after each speed change: record what this run sees; don't tune the test to pass.
+- S5: every `startTest` row's `counts` match (15/15 start cycles at each speed), and `fullSongTest` reads
+  `finished: true`, `missing: 0` and `extra: 0`.
 
 §9 also asks for speeds outside the probed list. Run:
 
@@ -11076,13 +11228,17 @@ ready", tick **count-in**, keep **Speed** at 1 and tap **Play / Pause** once. Th
 the media start, and how long after the tap) and any player warning, such as "The media did not start". Reload, untick **count-in**, set **Speed** to 0.75 and tap **Play / Pause** once (a start below 1× seeks the
 media and plays it after the seek, also outside the tap). Record both rows.
 
-Then the measured runs, with the page's **Start test**, **Loop test** and **Count-in test** buttons (**Speed** sets the
-speed; the rows print in the log), or from the console where there is one:
+Then the measured runs, with the page's **Start test**, **Loop test**, **Count-in test**, **Seek test** and
+**Speed-change test** buttons (**Speed** sets the speed; the rows print in the log), or from the console where there is
+one:
 
 ```text
 await syncLab.startTest(10, 30, 1); await syncLab.startTest(10, 30, 0.5)
 await syncLab.loopTest(1); await syncLab.countInTest(6, 1)
+await syncLab.midPlaybackTest(10, 30, 'seek', 1); await syncLab.midPlaybackTest(10, 30, 'speed', 0.75, 1)
 ```
+
+Run **Seek test** and **Speed-change test** at 1× and at 0.5×: they are S4b, which spec §9 asks of the devices too.
 
 Then do the listening check: the file's audio, synth tracks on; Play, a seek, a speed change. Listen for cut notes
 and dropouts. Put the results beside the §1 targets in the dated `.md`.
