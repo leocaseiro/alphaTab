@@ -222,7 +222,8 @@ synthVolume: number = 1;                         // the synth's level against th
 
 `backingTrackVolume` is added to `IAlphaSynth` (public interface, so a minor break for third-party
 implementations): `AlphaSynth` / worker synth ignore it; `BackingTrackPlayer` applies
-`masterVolume × backingTrackVolume` to its `<audio>` (so it also works without mixing); `ExternalMediaPlayer`
+`masterVolume × backingTrackVolume` to its `<audio>`, capped at 1 because the element's volume stops there (so
+it also works without mixing; a level above 1 needs mixing); `ExternalMediaPlayer`
 ignores it and its handler keeps getting `masterVolume` alone, as today: an app that writes its player's
 volume back into `masterVolume` (alphaTab's external-media sample does, on `volumechange`) would otherwise
 drive the media and the synth toward 0;

@@ -4969,7 +4969,8 @@ git push
   and `TestMediaHandler` (an external-media handler that records `seekTimes`, `plays`, `pauses`).
 
 §7: `backingTrackVolume` scales the backing track's own level (`masterVolume` still scales both). It works without
-mixing too: `BackingTrackPlayer` applies `masterVolume × backingTrackVolume` to its `<audio>`. `ExternalMediaPlayer`
+mixing too: `BackingTrackPlayer` applies `masterVolume × backingTrackVolume` to its `<audio>`, capped at 1 (the
+element's volume stops there; a level above 1 needs mixing). `ExternalMediaPlayer`
 ignores it, and its handler keeps getting `masterVolume` alone. Otherwise an app that writes its player's volume
 back into `masterVolume` drives both toward 0 (spike 9 §3: 239 `volumechange` events, master ~1e-110). Adding
 members to `IAlphaSynth` is a minor break for third-party implementations (§7).
@@ -5110,6 +5111,19 @@ describe('MediaVolumesTests', () => {
         expect(output.masterVolume).toBeCloseTo(0.35, 9);
     });
 
+    it('backing-track-player-caps-the-audio-element-at-1', () => {
+        // an <audio> element's volume stops at 1 (the browser throws IndexSizeError above it); above 1 needs mixing
+        const output = new TestMediaOutput();
+        const player = new BackingTrackPlayer(output, 500);
+        player.backingTrackVolume = 2;
+        expect(output.masterVolume).toBe(1);
+        player.masterVolume = 0.4;
+        expect(output.masterVolume).toBeCloseTo(0.8, 9);
+        player.masterVolume = 3;
+        player.backingTrackVolume = 1;
+        expect(output.masterVolume).toBe(1);
+    });
+
     it('external-media-handler-keeps-master-volume-alone', () => {
         // §7, spike 9 §3
         const player = new ExternalMediaPlayer(500);
@@ -5224,10 +5238,12 @@ Expected: FAIL — `backingTrackVolume` doesn't exist.
 +    }
 +
 +    /**
-+     * The media's own volume: masterVolume × backingTrackVolume (§7), so it also works without mixing.
++     * The media's own volume: masterVolume × backingTrackVolume (§7), so it also works without mixing. An
++     * `<audio>` element's volume stops at 1 (the browser throws `IndexSizeError` above it), so a level above 1
++     * needs mixing, where the gains apply it.
 +     */
 +    protected applyMediaVolume(): void {
-+        this._backingTrackOutput.masterVolume = this.masterVolume * this.backingTrackVolume;
++        this._backingTrackOutput.masterVolume = Math.min(1, this.masterVolume * this.backingTrackVolume);
      }
 ```
 
