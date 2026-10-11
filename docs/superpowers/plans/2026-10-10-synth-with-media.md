@@ -129,7 +129,7 @@ recommendation as it stands. "Spiked" says whether a run backs it.
 | F-10 | both | Turn the flag on in both apps where Task 24's platform rule allows (`supportsMixing()`). Rhythm game: YouTube player with `controls: 0`, `disablekb: 1`. notation-hero: Metronome, Count-In and the Tracks mixer open over a recording (the score's tracks play; mute them there); it has no external player yet (J-2), so its spec delta keeps that player's controls and F-6 for later. | Tasks 24, 26, 27 | manual, in each app | no | Medium |
 | F-18 | both | Acceptance list becomes "S1–S6 (S6: backing track), S4b, S10, S12" after D-3 and D-4 | Task 22 | lab | n/a | High |
 | R-1 | both | iPad with the Ring/Silent switch on: is the backing track still heard? Remedy to try: `navigator.audioSession.type = 'playback'`. | Task 24 (D-8) | iPad, manual | no | Low |
-| R-2 | both | WebKit may refuse a `play()` that comes a bar after the gesture. Safety net: a media start that never happens pauses both and warns (Task 17). The real fallback is decided at D-7. | Task 17 (safety net) · Task 24 (D-7) | unit + iPad | no | Low |
+| R-2 | both | WebKit may refuse a `play()` that comes a bar after the gesture (the count-in) or after the pre-roll seek (speeds other than 1×). Safety net: a media start that never happens pauses both and warns (Task 17). The real fallback is decided at D-7. | Task 17 (safety net) · Task 24 (D-7) | unit + iPad | no | Low |
 
 ### Gaps the plan fills (not in the spec, carried from the spikes)
 
@@ -7855,9 +7855,10 @@ the boundary chunk is buffered the worklet reports its context frame (Task 7). T
 `frame / sampleRate − (mediaStartLatency(speed) + preRoll / speed)`. **G-5:** the timer fires 12 ms early, then
 waits on the audio clock for at most 30 ms (spike 6: `play()` 0.2–4.8 ms after its time). If the hand-off doesn't
 come by the count-in's length + 250 ms, the media starts anyway and this player turns media-only. The cursor stays
-at the start position. **R-2 safety net** (not spiked; Low): WebKit may refuse a `play()` a bar after the gesture.
-If the media isn't running 500 ms after its planned start, both pause and a warning is logged. Decision D-7 (Task 24)
-picks the real fallback.
+at the start position. **R-2 safety net** (not spiked; Low): WebKit may refuse a `play()` a bar after the gesture,
+and any other `play()` that runs after the Play call returned: away from 1× the start handshake plays the media from
+the pre-roll seek's `'seeked'` event, and a learned media delay plays it from a timer. If the media isn't running
+500 ms after any planned start, both pause and a warning is logged. Decision D-7 (Task 24) picks the real fallback.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -7868,7 +7869,8 @@ Create `packages/alphatab/test/audio/MediaSynthPlayer.CountIn.test.ts`:
  * The count-in hand-off (spec §6.2) and the refused-start safety net (R-2).
  * @target web
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { Logger } from '@coderline/alphatab/Logger';
 import { MediaSynthHarness } from 'test/audio/MediaSyncFakes';
 
 async function countingIn(speed: number = 1, at: number = 5000): Promise<MediaSynthHarness> {
@@ -8042,6 +8044,26 @@ describe('MediaSynthPlayerCountInTests', () => {
         h.timer.advance(600);
         expect(h.states).toEqual(['Playing', 'Paused']);
     });
+
+    it('a-refused-media-start-away-from-1x-pauses-both', async () => {
+        // R-2: away from 1x the media's play() runs in the pre-roll seek's 'seeked' event, after Play returned
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        h.player.playbackSpeed = 0.75;
+        h.mediaOutput!.currentTime = 5000;
+        const warning = vi.spyOn(Logger, 'warning');
+        h.backingClock!.isSeeking = true; // the pre-roll seek ends with 'seeked' a moment later
+        h.player.play();
+        expect(h.mediaOutput!.isPlaying).toBe(false);
+        h.backingClock!.finishSeek();
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+        h.mediaOutput!.isPlaying = false; // the browser refused the play()
+        h.timer.advance(600);
+        expect(h.states).toEqual(['Playing', 'Paused']);
+        expect(h.synth.calls[h.synth.calls.length - 1]).toBe('pause');
+        expect(warning.mock.calls.some(c => String(c[1]).startsWith('The media did not start'))).toBe(true);
+        warning.mockRestore();
+    });
 });
 ```
 
@@ -8134,6 +8156,18 @@ Only an app Play counts in:
 +        this._mediaStartCheckTimer = 0;
 +        this._cancelCountIn();
          this._holdBefore = -1;
+```
+
+`_runStart` checks every media start, not only the count-in's (R-2):
+
+```diff
+             this.controller.started(plan, learnStartLead);
++            // R-2: away from 1x (after the pre-roll seek) or after the media delay, the media's play() runs after the
++            // Play call returned; check that the media runs, as after a count-in
++            this._watchMediaStart(
++                plan.mediaDelayMs + this.controller.mediaStartLatencies.get(plan.speed) + MediaSyncConstants.MediaStartCheckMs
++            );
+         });
 ```
 
 A speed change during the count-in doesn't re-sync. The worker plays the clicks still to come at the new speed (its
@@ -8276,7 +8310,7 @@ New methods:
                 return;
             }
             // R-2: the browser refused the media's play(); decision D-7 picks the real fallback
-            Logger.warning('Player', 'The media did not start after the count-in; pausing');
+            Logger.warning('Player', 'The media did not start; pausing (the browser may have refused its play())');
             this.pause();
         }, delayMs);
     }
@@ -8461,7 +8495,7 @@ Schedule the wrap wherever playback (re)starts or its timing changes:
 @@ _runStart (inside whenSeeked, after controller.started)
              this.controller.started(plan, learnStartLead);
 +            this._scheduleWrap(plan.mediaDelayMs);
-         });
+             // R-2: away from 1x (after the pre-roll seek) or after the media delay, the media's play() runs after the
 @@ _handOff (at the end)
          this._watchMediaStart(this.controller.mediaStartLatencies.get(countIn.speed) + MediaSyncConstants.MediaStartCheckMs);
 +        this._scheduleWrap(0);
@@ -8781,18 +8815,8 @@ Subscribe to the media's position updates (constructor):
          this._sendFollowConfig();
 ```
 
-`_runStart` watches an external start (inside `whenSeeked`, after `controller.started`):
-
-```diff
-             this.controller.started(plan, learnStartLead);
-             this._scheduleWrap(plan.mediaDelayMs);
-+            if (this._externalClock) {
-+                this._watchMediaStart(
-+                    plan.mediaDelayMs + this.controller.mediaStartLatencies.get(plan.speed) + MediaSyncConstants.MediaStartCheckMs
-+                );
-+            }
-         });
-```
+`_runStart` already checks every media start (Task 17); for external media the check silences the synth instead of
+pausing (next).
 
 `_watchMediaStart` — external media restarts the synth when it moves, instead of pausing:
 
@@ -9320,7 +9344,9 @@ git push
 - Consumes: `MediaSynthPlayer.diagnostics` and `controller` (Task 15), `MediaLatencyProbe` (Task 12),
   `MediaSyncConstants` (Task 9), the public API.
 - Produces (used by Tasks 22–24): `http://localhost:5188/demos/sync-lab/` with `window.syncLab` (the tests below,
-  `results`, `created`).
+  `results`, `created`), and page controls for a run without a console (Task 24): a count-in box, **Start test**,
+  **Loop test** and **Count-in test** buttons, a `tappedStart` report after a tapped Play, and alphaTab's warnings in
+  the page's log.
 
 §9: the spike's measurement page, cleaned up and moved onto the real player. It doesn't carry the spike's modes.
 It reads the player through the `@internal` diagnostics only (§3). The default file is the repo's
@@ -9368,6 +9394,7 @@ Create `packages/playground/demos/sync-lab/index.html`:
             <label><input type="checkbox" id="listen" checked /> sound on</label>
             <button id="play">Play / Pause</button>
             <label><input type="checkbox" id="metronome" checked /> metronome</label>
+            <label><input type="checkbox" id="countIn" /> count-in</label>
             <label>Metronome vol <input type="range" id="metronomeVol" min="0" max="3" step="0.1" value="1" /></label>
             <label><input type="checkbox" id="drums" /> synth tracks</label>
             <label>Speed
@@ -9384,6 +9411,9 @@ Create `packages/playground/demos/sync-lab/index.html`:
             <label>Backing track vol <input type="range" id="mediaVol" min="0" max="1" step="0.05" value="1" /></label>
             <label>Synth vol <input type="range" id="synthVol" min="0" max="3" step="0.1" value="1" /></label>
             <button id="measure">Run measurement</button>
+            <button id="startTestButton">Start test</button>
+            <button id="loopTestButton">Loop test</button>
+            <button id="countInTestButton">Count-in test</button>
         </div>
         <div class="bar" id="live" style="font-family: ui-monospace, monospace; font-size: 13px;">live: —</div>
         <pre id="log">loading…</pre>
@@ -9423,6 +9453,10 @@ const params = new URL(window.location.href).searchParams;
 const src = params.get('src') ?? 'beeps';
 const mixing = params.get('mixing') !== '0';
 const file = params.get('file') ?? '/test-data/audio/syncpoints-testfile.gp';
+// D-8 (R-1): ?audioSession=playback sets iOS's audio session before any Play (Safari 16.4+), no console needed
+if (params.get('audioSession') === 'playback' && 'audioSession' in navigator) {
+    (navigator as unknown as { audioSession: { type: string } }).audioSession.type = 'playback';
+}
 const results: { name: string; value: unknown; at: string }[] = [];
 
 const logEl = document.getElementById('log')!;
@@ -9437,11 +9471,28 @@ function record(name: string, value: unknown) {
     log({ [name]: value });
 }
 
+// D-7, D-8: the player's warnings on the page too ("The media did not start", "playing the media
+// only"): on the iPad the lab runs inside the Web MIDI Browser app, which may have no console
+const consoleLogger = alphaTab.Logger.log;
+alphaTab.Logger.log = {
+    debug: (category, msg, ...details) => consoleLogger.debug(category, msg, ...details),
+    info: (category, msg, ...details) => consoleLogger.info(category, msg, ...details),
+    warning: (category, msg, ...details) => {
+        log(`warning [${category}] ${msg}`);
+        consoleLogger.warning(category, msg, ...details);
+    },
+    error: (category, msg, ...details) => {
+        log(`error [${category}] ${msg}`);
+        consoleLogger.error(category, msg, ...details);
+    }
+};
+
 const input = (id: string) => document.getElementById(id) as HTMLInputElement;
 (document.getElementById('src') as HTMLSelectElement).value = src;
 input('listen').checked = params.get('listen') !== '0';
 input('drums').checked = params.has('drums') ? params.get('drums') === '1' : src === 'mp3';
 input('metronome').checked = params.get('metronome') !== '0';
+input('countIn').checked = params.get('countIn') === '1';
 document.getElementById('src')!.addEventListener('change', () => {
     const url = new URL(window.location.href);
     url.searchParams.set('src', (document.getElementById('src') as HTMLSelectElement).value);
@@ -10328,16 +10379,50 @@ async function playBeatTest(n = 4, speed = 1) {
     return rows;
 }
 
-document.getElementById('play')!.addEventListener('click', () => api.playPause());
+/**
+ * D-7 (R-2): after a TAPPED Play, whether the media started, how long after the tap, and the player's state. WebKit may
+ * refuse a media play() that runs after the tap (after a count-in, or after the seek of a start below 1x), and only
+ * for an element that never played from a gesture: so this is the first start on a fresh page.
+ */
+async function reportTappedStart(tapFrame: number) {
+    const sr = ctx().sampleRate;
+    const countIn = api.countInVolume > 0;
+    const speed = api.playbackSpeed;
+    await sleep(speed < 1 ? 9000 : 6000);
+    const firstBeep = tapOnsets.media.find(f => f > tapFrame);
+    record('tappedStart', {
+        speed,
+        countIn,
+        mediaStartedAfterMs: firstBeep === undefined ? null : Math.round(((firstBeep - tapFrame) / sr) * 1000),
+        playing: api.playerState === alphaTab.synth.PlayerState.Playing
+    });
+}
+
+document.getElementById('play')!.addEventListener('click', () => {
+    // api.playPause() runs inside the tap, as an app's Play button does
+    const starting = api.playerState !== alphaTab.synth.PlayerState.Playing;
+    const tapFrame = mixing && tapsReady ? ctx().currentTime * ctx().sampleRate : Number.NaN;
+    api.playPause();
+    if (starting && !Number.isNaN(tapFrame)) {
+        void reportTappedStart(tapFrame);
+    }
+});
 document.getElementById('measure')!.addEventListener('click', () => runMeasurement());
+// the device runs (Task 24) need no console: the speed comes from the Speed select, the rows print in the log
+const selectedSpeed = () => Number.parseFloat((document.getElementById('speed') as HTMLSelectElement).value);
+document.getElementById('startTestButton')!.addEventListener('click', () => startTest(10, 30, selectedSpeed()));
+document.getElementById('loopTestButton')!.addEventListener('click', () => loopTest(selectedSpeed()));
+document.getElementById('countInTestButton')!.addEventListener('click', () => countInTest(6, selectedSpeed()));
 document.getElementById('speed')!.addEventListener('change', e => {
     api.playbackSpeed = Number.parseFloat((e.target as HTMLSelectElement).value);
 });
 const metronomeEl = input('metronome');
 const drumsEl = input('drums');
 const metronomeVolEl = input('metronomeVol');
+const countInEl = input('countIn');
 function applyMix() {
     api.metronomeVolume = metronomeEl.checked ? Number.parseFloat(metronomeVolEl.value) : 0;
+    api.countInVolume = countInEl.checked ? 1 : 0;
     if (api.score) {
         api.changeTrackMute(api.score.tracks, !drumsEl.checked);
     }
@@ -10345,6 +10430,7 @@ function applyMix() {
 metronomeEl.addEventListener('change', applyMix);
 metronomeVolEl.addEventListener('input', applyMix);
 drumsEl.addEventListener('change', applyMix);
+countInEl.addEventListener('change', applyMix);
 const mediaVolEl = input('mediaVol');
 const synthVolEl = input('synthVol');
 function applyVolumes() {
@@ -10436,7 +10522,8 @@ npm run dev --workspace=packages/playground -- --port 5188 --strictPort
 
 Open `http://localhost:5188/demos/sync-lab/`, click the page once, wait for "player ready", then in the console
 run `await syncLab.startTest(2, 30, 1)`.
-Expected: two rows, `skipped: false`, first clicks within ±11 ms. Then open
+Expected: two rows, `skipped: false`, first clicks within ±11 ms. Reload, tick **count-in** and tap **Play / Pause**:
+the log shows a `tappedStart` row with `mediaStartedAfterMs` about one bar. Then open
 `http://localhost:5188/demos/sync-lab/?mixing=0`: the log shows `created: {"synthWorkers":0,"synthWorklets":0}`
 (S7).
 
@@ -10682,6 +10769,15 @@ runs at all: the log must not show "playing the media only".
 
 - [ ] **Step 2: The runs on each device**
 
+First, before anything plays on that page, a tapped start (D-7's case). WebKit lets an element play without a gesture
+once it has played from one, so a refused delayed `play()` only shows on a fresh page. Load the lab, wait for "player
+ready", tick **count-in**, keep **Speed** at 1 and tap **Play / Pause** once. The log prints a `tappedStart` row (did
+the media start, and how long after the tap) and any player warning, such as "The media did not start". Reload, untick **count-in**, set **Speed** to 0.75 and tap **Play / Pause** once (a start below 1× seeks the
+media and plays it after the seek, also outside the tap). Record both rows.
+
+Then the measured runs, with the page's **Start test**, **Loop test** and **Count-in test** buttons (**Speed** sets the
+speed; the rows print in the log), or from the console where there is one:
+
 ```text
 await syncLab.startTest(10, 30, 1); await syncLab.startTest(10, 30, 0.5)
 await syncLab.loopTest(1); await syncLab.countInTest(6, 1)
@@ -10693,8 +10789,8 @@ and dropouts. Put the results beside the §1 targets in the dated `.md`.
 - [ ] **Step 3: STOP — decision gate D-8 (R-1), iOS's Ring/Silent switch**
 
 On the iPad, turn the Silent switch on and play. Is the backing track still heard? (Web Audio is muted in silent
-mode; a plain `<audio>` is not.) If it isn't heard, try `navigator.audioSession.type = 'playback'` (Safari 16.4+)
-in the lab's console before Play and listen again. Put to the person as `[Q-D8]`:
+mode; a plain `<audio>` is not.) If it isn't heard, reload the lab with `?audioSession=playback` (it sets
+`navigator.audioSession.type = 'playback'`, Safari 16.4+, before any Play) and listen again. Put to the person as `[Q-D8]`:
 
 - **Scenario:** a student practices on an iPad with the Silent switch on; with mixing, the recording falls silent.
 - **Option 1:** set `navigator.audioSession.type = 'playback'` while mixing on iOS (a small change in
@@ -10706,15 +10802,20 @@ Confidence and spiked status come from this run.
 
 - [ ] **Step 4: STOP — decision gate D-7 (R-2), a refused delayed `play()`**
 
-On the iPad, run `await syncLab.countInTest(6, 1)`. Does WebKit refuse the backing track's `play()` a bar after the
-gesture? The safety net (Task 17) then pauses both and logs "The media did not start after the count-in". Put to
-the person as `[Q-D7]`, with the result:
+On the iPad, use Step 2's two tapped rows: they are the only starts on a fresh page, and a later `countInTest` or
+`startTest` can't show a refusal (by then the backing track has played from a gesture). Did WebKit refuse the backing
+track's `play()` a bar after the tap (count-in), or after the pre-roll seek (0.75×)? A refusal shows as
+`mediaStartedAfterMs: null`, and the safety net (Task 17) pauses both and logs "The media did not start" on the page.
+Put to the person as `[Q-D7]`, with the result:
 
-- **Scenario:** in the rhythm game on the iPad you press Play with the count-in on; after one bar of clicks
-  nothing plays.
+- **Scenario:** in the rhythm game on the iPad you press Play with the count-in on, or at a practice speed such as
+  0.75×; WebKit refuses the backing track's later `play()`, so playback pauses with a warning instead of starting.
 - **Option 1:** unlock the media in the gesture: call the `<audio>`'s `play()` and `pause()` synchronously inside
-  the Play handler, so the later `play()` is allowed (a change in `MediaSynthPlayer._startCountIn`, with a test).
-- **Option 2:** no count-in on WebKit: start the media at once and skip the count-in there.
+  the Play handler, so a later `play()` is allowed (a change in `MediaSynthPlayer.play()`, for every app Play: the
+  count-in hand-off, the pre-roll seek away from 1× and a learned media delay all call `play()` after the gesture;
+  with a test).
+- **Option 2:** no count-in on WebKit: start the media at once and skip the count-in there (starts away from 1×
+  still call `play()` after the pre-roll seek).
 - **Option 3:** keep the safety net only.
 
 If it is not refused, record that and keep the safety net.
@@ -10778,7 +10879,10 @@ any uncommitted work in it are never touched. Never run `git restore`, `git chec
 `git reset --hard` or `git clean` in an app checkout.
 
 Turn `player.enableSynthesizerWithMedia` on where the rhythm game creates the API (Task 26 Step 5 shows the change).
-Play a backing-track song with the metronome on, by ear, and then the YouTube flow. Then throw the branch away:
+Play a backing-track song with the metronome on, by ear, and then the YouTube flow. If you can serve this try over
+HTTPS to the iPad (as in Task 24 Step 1), on a fresh load turn the count-in on and tap Play on a YouTube song: does
+the video start after the count-in bar? A refused start is D-7's case for external media; note it in Task 24's
+dated `.md`. Then throw the branch away:
 
 ```bash
 cd -
@@ -10982,8 +11086,9 @@ Opening a PR in alphaTabWebsite is your call in that repo.
 `patches/@coderline__alphatab@<alpha>.patch` (written by pnpm) and `patchedDependencies`,
 `web/lib/alphatab/synth-with-media.ts` and its test (new), `web/app/play/PlayerShell.tsx`,
 `web/app/play/TransportRow.tsx` and `web/app/play/TracksPopover.tsx` (one prop comment each),
-`web/lib/alphatab/settings-schema.ts` (two ranges), `docs/specs/2026-09-10-v0-local-file-player-design.md` (the spec
-delta).
+`web/app/play/SettingsPopover.tsx` (the level rows' reasons), `web/lib/alphatab/settings-schema.ts` (two ranges, two
+rows), `web/lib/alphatab/transport-storage.ts` (two bounds), `docs/specs/2026-09-10-v0-local-file-player-design.md`
+(the spec delta).
 
 notation-hero is a pnpm workspace, so it uses `pnpm patch`. patch-package only writes patches next to an npm or yarn
 lockfile. **F-10:** notation-hero has no external player yet: it plays a file's own recording or the synthesizer
@@ -11071,7 +11176,41 @@ notation-hero has no platform helper and no external player. All new logic goes 
 4. **Levels** (chosen in the plan review). In `web/lib/alphatab/settings-schema.ts`, the `player-metronome-volume`
    and `player-count-in-volume` rows go from `max: 1` to `max: 3`, alphaTab's documented range. The click sits about
    8 dB under a mastered recording (spike 5); 2.5 is about +8 dB, and with Sonivox the click alone peaks at −1.6 dBFS
-   at 3. Master volume stays at `max: 1`.
+   at 3. Master volume stays at `max: 1`. In `web/lib/alphatab/transport-storage.ts`, `TRANSPORT_BOUNDS` gives
+   `metronomeVolume` and `countInVolume` the same `max: 3`, and its comment stops calling them 0-1 ratios: otherwise a
+   stored 2.5 is clamped back to 1 on the next visit, with a "corrected" warning.
+
+   The score's tracks play over a recording (item 3) about 8 dB under a mastered one (the notes peak at −9.5 dBFS with
+   Sonivox), and a track's own volume tops out at its channel's full level. So Settings ▸ Player gains two rows next
+   to Master volume, as the rhythm game does (Task 26 Step 5):
+
+   ```ts
+   // settings-schema.ts: ApiValueKey gains 'synthVolume' | 'backingTrackVolume'
+   {
+     id: 'player-synth-volume',
+     source: 'api',
+     key: 'synthVolume',
+     label: 'Synth volume (with a recording)',
+     control: { kind: 'range', min: 0, max: 3, step: 0.05 },
+   },
+   {
+     id: 'player-recording-volume',
+     source: 'api',
+     key: 'backingTrackVolume',
+     label: 'Recording volume',
+     control: { kind: 'range', min: 0, max: 1, step: 0.05 },
+   },
+   ```
+
+   A row that does nothing is greyed out and says why, both from the same value (`SettingsPopover`'s existing rule).
+   In `PlayerShell.tsx`, derive one reason per new row and pass both to `SettingsPopover`: Recording volume is
+   unavailable without a recording ("Only for a file that plays its own recording"), and Synth volume also while the
+   recording plays alone (`recordingAlone`: "The synthesizer doesn't play along recordings on this device"). In
+   `web/app/play/SettingsPopover.tsx`, the row loop picks the reason by key (`metronomeVolume` and `countInVolume`:
+   `mixUnavailable`; `synthVolume` and `backingTrackVolume`: the new reasons) and uses it for both `description` and
+   `disabled`. The comment on the metronome row in `settings-schema.ts` stops saying they are the only two Player
+   rows that disable. The two new levels are not stored: they start at 1 on every visit, and the stored transport
+   values stay the four they are.
 
 Then add the spec delta to `docs/specs/2026-09-10-v0-local-file-player-design.md` (notation-hero) as a dated "Spec
 deltas" blockquote after the 2026-09-20 one, and mark §4's and §7's "render disabled" sentences as superseded for
@@ -11083,7 +11222,8 @@ this case, in that file's existing style. The delta says:
 > Settings rows and the Tracks mixer then work over the recording; §4's and §7's "render disabled" rule applies only
 > while the recording plays alone. The score's tracks play over the recording by default; mute them in Tracks. Audio
 > transposition moves the synthesizer's tracks only; the recording keeps its key. The metronome and count-in volumes
-> go to 3. notation-hero has no external player yet (YouTube sync, J-2). When J-2 adds one: keep that player's own
+> go to 3, and Settings ▸ Player gains Synth volume (0–3) and Recording volume (0–1) for a recording. notation-hero
+> has no external player yet (YouTube sync, J-2). When J-2 adds one: keep that player's own
 > controls enabled; a start pressed inside it plays the synthesizer from the player's position without a count-in,
 > and the count-in plays only for starts through the app's Play button; the integration calls `updatePosition()`
 > right before `api.play()` in its media-started handler (alphaTab's F-6).
@@ -11092,8 +11232,9 @@ this case, in that file's existing style. The delta says:
 
 Run the app's tests, then Task 26 Step 6's by-ear checks on a file with its own recording: the metronome, a loop, a
 speed change (notation-hero has no YouTube flow). Also check that over that recording, Metronome, Count-In and the
-Tracks mixer are live (mute a track), that the Metronome volume row goes to 3, and that a file without a recording
-plays as before.
+Tracks mixer are live (mute a track), that the Metronome volume row goes to 3 and keeps 2.5 after a reload, that
+Synth volume lifts the score's tracks over the recording, and that a file without a recording plays as before (Synth
+volume and Recording volume greyed out, with their reason).
 
 ```bash
 git add -A

@@ -418,6 +418,6 @@ or do, the recommended answer and its evidence (spikes in `docs/spikes/issue-239
 - **R-1** (both): iOS's Ring/Silent switch mutes Web Audio but not a plain `<audio>`, so mixing could
   silence a backing track that plays today on an iPad in silent mode. Remedy to try: Safari 16.4+'s
   `navigator.audioSession.type = 'playback'` **(untested)**.
-- **R-2** (both): WebKit may refuse the backing track's `play()` a bar after the Play gesture (the
-  count-in hand-off). Playback would then stall after the count-in; a fallback for a refused `play()`
-  is still open **(untested)**.
+- **R-2** (both): WebKit may refuse the backing track's `play()` when it runs after the Play gesture: a bar
+  later (the count-in hand-off), or a moment later at speeds other than 1× (after the start handshake's pre-roll
+  seek). Playback would then stall; a fallback for a refused `play()` is still open **(untested)**.
