@@ -123,7 +123,7 @@ recommendation as it stands. "Spiked" says whether a run backs it.
 | F-11 | alphaTabWebsite | Both clocks subtract `mediaSyncOffsetInMilliseconds × speed`. The spec states the sign (+ = synth later) and the unit (ms of real time). | Task 11 (code, spec edit) | unit | no (arithmetic) | High |
 | F-13 | both | Limiter: −1 dBFS, ratio 20, knee 0, attack 1 ms, release 100 ms, then a fixed −0.57 dB trim | Task 14 · lab check in Task 22 | unit (node params) + lab (spike 8 script) | yes (spike 8) | High |
 | FYI-3 | both | Keeps `synthVolume` public (D-6, settled in the plan review) | Task 13 (D-6, settled) | none needed | n/a | High |
-| F-10 | both | Turn the flag on in both apps where Task 24's platform rule allows (`supportsMixing()`). Rhythm game: YouTube player with `controls: 0`, `disablekb: 1`. notation-hero keeps its controls (a notation-hero spec delta). | Tasks 24, 26, 27 | manual, in each app | no | Medium |
+| F-10 | both | Turn the flag on in both apps where Task 24's platform rule allows (`supportsMixing()`). Rhythm game: YouTube player with `controls: 0`, `disablekb: 1`. notation-hero: Metronome, Count-In and the Tracks mixer open over a recording (the score's tracks play; mute them there); it has no external player yet (J-2), so its spec delta keeps that player's controls and F-6 for later. | Tasks 24, 26, 27 | manual, in each app | no | Medium |
 | F-18 | both | Acceptance list becomes "S1–S6 (S6: backing track), S4b, S10, S12" after D-3 and D-4 | Task 22 | lab | n/a | High |
 | R-1 | both | iPad with the Ring/Silent switch on: is the backing track still heard? Remedy to try: `navigator.audioSession.type = 'playback'`. | Task 24 (D-8) | iPad, manual | no | Low |
 | R-2 | both | WebKit may refuse a `play()` that comes a bar after the gesture. Safety net: a media start that never happens pauses both and warns (Task 17). The real fallback is decided at D-7. | Task 17 (safety net) · Task 24 (D-7) | unit + iPad | no | Low |
@@ -10623,9 +10623,12 @@ pnpm install
 pnpm --filter web add "file:$ALPHATAB_PACK"
 ```
 
-Run these from the notation-hero checkout. Same check, and the same rule: the try lives in its own worktree, and
-nothing touches the checkout's uncommitted work. Then go back (`cd -`), remove the worktree
-(`git worktree remove --force ../notation-hero-try-2397`) and delete the branch.
+Run these from the notation-hero checkout. The same rule: the try lives in its own worktree, and nothing touches the
+checkout's uncommitted work. Turn the flag on where the app builds its alphaTab settings (Task 27 Step 3 shows
+where). notation-hero has no YouTube flow, so check a file with its own recording, by ear, with the metronome on. Its
+Metronome button is greyed out for a recording until Task 27, so turn the metronome on from DevTools: select the
+notation box and run `$0.at.metronomeVolume = 1` (the app keeps its live api there). Then go back (`cd -`), remove
+the worktree (`git worktree remove --force ../notation-hero-try-2397`) and delete the branch.
 
 If either try fails, stop here, fix it on `feat/2397-synth-with-media` (with a test), and come back to Step 1.
 
@@ -10636,7 +10639,7 @@ If either try fails, stop here, fix it on `feat/2397-synth-with-media` (with a t
 **Files (alphaTabWebsite):** `package.json`, its lockfile, `patches/@coderline+alphatab+<alpha>.patch` (new),
 `patches/@coderline+alphatab+1.8.1.patch` (delete), the rhythm game's API settings and YouTube player options,
 `cross-markers.tsx`, `src/utils.ts` (`supportsMixing()`), `src/components/AlphaTabRhythmGame/youtube-player.tsx` (the
-volume scale).
+volume scale), `src/components/AlphaTabRhythmGame/playground-settings.tsx` (the level sliders).
 
 **F-10** (both apps; our design's problem; not spiked; Medium): §11 step 4 turns the feature on in each app. The
 rhythm game creates its YouTube player with `controls: 0` and `disablekb: 1`, so starts go through the app's Play
@@ -10745,6 +10748,42 @@ set volume(value: number) {
 Check: in YouTube mode, set the Volume slider to 0.5: the video plays at half volume, not near silence; and with
 mixing on, the video keeps its volume once the synthesizer is ready.
 
+**The level sliders** (chosen in the plan review). At the default levels the click sits about 8 dB under a mastered
+recording (spike 5), and the game's sliders stop at 1. In `src/components/AlphaTabRhythmGame/playground-settings.tsx`
+(the Player group), Metronome and Count-In go to 3, alphaTab's documented range: 2.5 is about +8 dB, and with Sonivox
+the click alone peaks at −1.6 dBFS at 3. Two new sliders reach the new levels:
+
+```diff
+ {
+   label: "Metronome Volume",
+   ...factory.apiAccessors("metronomeVolume"),
+-  control: { type: "number-range", min: 0, max: 1, step: 0.1 },
++  control: { type: "number-range", min: 0, max: 3, step: 0.1 },
+ },
+ {
+   label: "Count-In Volume",
+   ...factory.apiAccessors("countInVolume"),
+-  control: { type: "number-range", min: 0, max: 1, step: 0.1 },
++  control: { type: "number-range", min: 0, max: 3, step: 0.1 },
+ },
++{
++  label: "Synth Volume (with media)",
++  ...factory.apiAccessors("synthVolume"),
++  control: { type: "number-range", min: 0, max: 3, step: 0.1 },
++},
++{
++  label: "Backing Track Volume",
++  ...factory.apiAccessors("backingTrackVolume"),
++  control: { type: "number-range", min: 0, max: 1, step: 0.1 },
++},
+```
+
+Volume (`masterVolume`) stays at `max: 1`. It also drives YouTube's level, which stops at 100%, so above 1 only the
+synthesizer would get louder over a video. Volume and Synth Volume together reach every balance. There is no
+YouTube-only slider: alphaTab sets YouTube's level from `masterVolume` (spike 9 §3). Check, with mixing on: Metronome
+at 2.5 brings the click level with a mastered backing track, and Backing Track Volume at 0.3 lowers the recording,
+not the click.
+
 - [ ] **Step 6: Check, commit, push**
 
 Run the app's tests. By ear: a backing-track song with the metronome, a loop, a speed change; the YouTube flow.
@@ -10762,12 +10801,18 @@ Opening a PR in alphaTabWebsite is your call in that repo.
 ### Task 27: notation-hero/web — the patch (`pnpm patch`) and turning the feature on (F-10)
 
 **Files (notation-hero):** `pnpm-workspace.yaml` (`minimumReleaseAgeExclude`), `web/package.json`, `pnpm-lock.yaml`,
-`patches/@coderline__alphatab@<alpha>.patch` (written by pnpm) and `patchedDependencies`, the app's alphaTab
-settings, a notation-hero spec delta.
+`patches/@coderline__alphatab@<alpha>.patch` (written by pnpm) and `patchedDependencies`,
+`web/lib/alphatab/synth-with-media.ts` and its test (new), `web/app/play/PlayerShell.tsx`,
+`web/app/play/TransportRow.tsx` and `web/app/play/TracksPopover.tsx` (one prop comment each),
+`web/lib/alphatab/settings-schema.ts` (two ranges), `docs/specs/2026-09-10-v0-local-file-player-design.md` (the spec
+delta).
 
 notation-hero is a pnpm workspace, so it uses `pnpm patch`. patch-package only writes patches next to an npm or yarn
-lockfile. **F-10:** notation-hero keeps the external player's controls enabled while mixing is on. A start inside the
-player then plays without a count-in (F-6). That is a notation-hero spec delta.
+lockfile. **F-10:** notation-hero has no external player yet: it plays a file's own recording or the synthesizer
+(`PlayerMode.EnabledAutomatic`; its "External audio" playback source plays nothing), and YouTube sync is a later
+milestone (its `docs/feature-freeze.md`, J-2). So this task turns mixing on for recordings and opens the controls
+notation-hero greys out for a recording. The rule for an external player (keep its controls; a start inside it plays
+without a count-in, F-6) goes into the notation-hero spec delta, for when J-2 is built.
 
 - [ ] **Step 1: A branch; let the alpha past the release-age rule**
 
@@ -10802,20 +10847,69 @@ pnpm patch-commit "<printed folder>"
 
 Expected: a patch file under `patches/` and a `patchedDependencies` entry.
 
-- [ ] **Step 3: Turn it on, and write the spec delta**
+- [ ] **Step 3: Turn it on where Task 24's platform rule allows, open the controls over a recording, write the spec delta**
 
-Set `player.enableSynthesizerWithMedia: true` where the app builds its alphaTab settings. Keep the external player's
-controls enabled. Wire the media-started path to call `updatePosition()` right before `api.play()` (F-6). Then add
-the spec delta to notation-hero's own spec docs, in that repo's existing format and folder. If the folder isn't
-obvious, ask with a picker. The delta says:
+notation-hero has no platform helper and no external player. All new logic goes in
+`web/lib/alphatab/synth-with-media.ts`, with a co-located `synth-with-media.test.ts` (the app's style, like
+`playback-selection.ts`):
 
-> With mixing on, notation-hero keeps the external player's own controls: a start pressed inside the player plays
-> the synthesizer from the player's position without a count-in; the count-in plays only for starts through the
-> app's Play button.
+1. **The flag (F-10).** Add the same `supportsMixing()` as Task 26 Step 5, with the same `MIXING_ON` values (Task
+   24's platform rule), and copy the fork's `isIOS()` (alphaTabWebsite `src/utils.ts`) into the file: notation-hero
+   has no platform helper. Test it in `synth-with-media.test.ts`, stubbing `navigator` and `window` for each row of
+   the platform rule. In `web/app/play/PlayerShell.tsx`'s `useAlphaTab` callback, next to
+   `engineSettings.player.playerMode` (before the stored settings are applied), set
+   `engineSettings.player.enableSynthesizerWithMedia = supportsMixing();`.
+2. **The controls over a recording.** notation-hero greys out Metronome, Count-In, their two Settings rows and the
+   Tracks mixer while a file plays its own recording (its v0 spec §4 and §7). With mixing on, alphaTab still builds
+   its backing-track player, so they would stay greyed out while a stored metronome or count-in level clicks over the
+   recording, and the button can't turn it off. Grey them out only while the recording plays alone:
+
+   ```ts
+   export function recordingPlaysAlone(
+     api: AlphaTabApi | null | undefined,
+     hasBackingTrack: boolean,
+   ): boolean {
+     const mixing = api?.settings.player.enableSynthesizerWithMedia ?? false;
+     return hasBackingTrack && !mixing;
+   }
+   ```
+
+   Test it: flag on, false; flag off, true; no recording, false. In `PlayerShell.tsx`, compute
+   `const recordingAlone = recordingPlaysAlone(api, hasBackingTrack);` and pass it wherever the recording gates a
+   control: `TransportRow`'s `hasBackingTrack` (Metronome, Count-In), `SettingsPopover`'s `mixUnavailable`
+   (`recordingAlone ? RECORDING : undefined`) and `TracksPopover`'s `hasBackingTrack` (solo, mute, volume, audio
+   transposition). In `TransportRow.tsx` and `TracksPopover.tsx`, the `hasBackingTrack` prop's comment becomes "plays
+   an embedded recording without the synthesizer".
+3. **The score's tracks over a recording: they play, and the mixer works on them** (chosen in the plan review). With
+   the synthesizer along a recording, the score's tracks play (alphaTab's default), and the Tracks popover's solo,
+   mute and volume, opened by item 2, choose what plays. The mix still resets per score, so each file opens with its
+   tracks audible.
+4. **Levels** (chosen in the plan review). In `web/lib/alphatab/settings-schema.ts`, the `player-metronome-volume`
+   and `player-count-in-volume` rows go from `max: 1` to `max: 3`, alphaTab's documented range. The click sits about
+   8 dB under a mastered recording (spike 5); 2.5 is about +8 dB, and with Sonivox the click alone peaks at −1.6 dBFS
+   at 3. Master volume stays at `max: 1`.
+
+Then add the spec delta to `docs/specs/2026-09-10-v0-local-file-player-design.md` (notation-hero) as a dated "Spec
+deltas" blockquote after the 2026-09-20 one, and mark §4's and §7's "render disabled" sentences as superseded for
+this case, in that file's existing style. The delta says:
+
+> **Spec deltas — <date> (alphaTab #2397, the synthesizer along a recording).** Where notation-hero turns alphaTab's
+> `enableSynthesizerWithMedia` on (every platform except the classes alphaTab's target-device run failed), a file
+> that plays its own recording also runs the synthesizer, locked to it. The metronome, the count-in, their two
+> Settings rows and the Tracks mixer then work over the recording; §4's and §7's "render disabled" rule applies only
+> while the recording plays alone. The score's tracks play over the recording by default; mute them in Tracks. Audio
+> transposition moves the synthesizer's tracks only; the recording keeps its key. The metronome and count-in volumes
+> go to 3. notation-hero has no external player yet (YouTube sync, J-2). When J-2 adds one: keep that player's own
+> controls enabled; a start pressed inside it plays the synthesizer from the player's position without a count-in,
+> and the count-in plays only for starts through the app's Play button; the integration calls `updatePosition()`
+> right before `api.play()` in its media-started handler (alphaTab's F-6).
 
 - [ ] **Step 4: Check, commit, push**
 
-Run the app's tests, then the same by-ear checks as Task 26 Step 6.
+Run the app's tests, then Task 26 Step 6's by-ear checks on a file with its own recording: the metronome, a loop, a
+speed change (notation-hero has no YouTube flow). Also check that over that recording, Metronome, Count-In and the
+Tracks mixer are live (mute a track), that the Metronome volume row goes to 3, and that a file without a recording
+plays as before.
 
 ```bash
 git add -A
