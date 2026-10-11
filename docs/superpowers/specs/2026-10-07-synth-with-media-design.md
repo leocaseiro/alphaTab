@@ -397,8 +397,10 @@ or do, the recommended answer and its evidence (spikes in `docs/spikes/issue-239
 - **F-13** (both): the limiter is −1 dBFS, ratio 20, knee 0, attack 1 ms, release 100 ms, followed by a
   fixed −0.57 dB trim that cancels Web Audio's make-up gain (spike 8: worst case −0.31 dBFS at
   `synthVolume` 3, and the recording keeps its own level).
-- **FYI-3** (both): `synthVolume` can be expressed with `backingTrackVolume` and `masterVolume`; decide
-  whether it stays public (this reopens the lap-1 pick).
+- **FYI-3** (both): **decided in the plan review: `synthVolume` stays public.** It can be expressed with
+  `backingTrackVolume` and `masterVolume` only for a backing track. With external media `backingTrackVolume` is not
+  applied and `masterVolume` sets the player's volume and the synth's together, so there it is the only way to raise
+  the synth against the media.
 
 **Delivery and acceptance**
 

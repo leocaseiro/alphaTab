@@ -62,7 +62,7 @@ Copied from the spec; every task's requirements include these.
 - Base: `develop` @ `25ef76d3` (alphaTab 1.9.0 alpha); consumers upgrade (§2 Base).
 - Switch: `player.enableSynthesizerWithMedia: boolean = false` (§2, §7).
 - Public additions: `player.mediaSyncOffsetInMilliseconds: number = 0` (+ = synth plays later); runtime
-  `api.backingTrackVolume = 1` and `api.synthVolume = 1` (`synthVolume` pending decision D-6). New settings and API
+  `api.backingTrackVolume = 1` and `api.synthVolume = 1` (D-6: `synthVolume` stays public). New settings and API
   members get doc comments in the repo's style and `@since 1.9.0`; `PlayerSettings` changes need
   `npm run generate-typescript` (§7).
 - Mixing requires `PlayerOutputMode.WebAudioAudioWorklets` (the default) and working AudioWorklets (an
@@ -122,7 +122,7 @@ recommendation as it stands. "Spiked" says whether a run backs it.
 | F-17 | alphaTabWebsite | Stall rule: the same position for ≥ 100 ms silences the synth. Once the position moves, the fit restarts and the synth restarts at the media's position. | Tasks 11, 19 | unit | modeled (spike 9 §4) | Medium |
 | F-11 | alphaTabWebsite | Both clocks subtract `mediaSyncOffsetInMilliseconds × speed`. The spec states the sign (+ = synth later) and the unit (ms of real time). | Task 11 (code, spec edit) | unit | no (arithmetic) | High |
 | F-13 | both | Limiter: −1 dBFS, ratio 20, knee 0, attack 1 ms, release 100 ms, then a fixed −0.57 dB trim | Task 14 · lab check in Task 22 | unit (node params) + lab (spike 8 script) | yes (spike 8) | High |
-| FYI-3 | both | Whether `synthVolume` stays public | Task 13 (D-6, before any code) | none needed | n/a | — |
+| FYI-3 | both | Keeps `synthVolume` public (D-6, settled in the plan review) | Task 13 (D-6, settled) | none needed | n/a | High |
 | F-10 | both | Turn the flag on in both apps. Rhythm game: YouTube player with `controls: 0`, `disablekb: 1`. notation-hero keeps its controls (a notation-hero spec delta). | Tasks 26, 27 | manual, in each app | no | Medium |
 | F-18 | both | Acceptance list becomes "S1–S6 (S6: backing track), S4b, S10, S12" after D-3 and D-4 | Task 22 | lab | n/a | High |
 | R-1 | both | iPad with the Ring/Silent switch on: is the backing track still heard? Remedy to try: `navigator.audioSession.type = 'playback'`. | Task 24 (D-8) | iPad, manual | no | Low |
@@ -156,7 +156,7 @@ Each one is flagged where it is used. Keep or drop them during the plan review.
 | D-3 | F-14: count-in pre-roll below 1× = 120 ms **or** 60 ms | Task 22 | 120 ms |
 | D-4 | Q-1: S4 gates the first Play at an unlearned speed **or** only reports it | Task 22 (or the plan review) | report only |
 | D-5 | F-15: S10 gate = every wrap ≤ 30 ms **or** median ≤ 30 ms plus an ear check | Task 22 | median + ear |
-| D-6 | FYI-3: `synthVolume` stays public **or** is dropped (apps use `backingTrackVolume` + `masterVolume`) | Task 13 (or the plan review) | public (as §7 says) |
+| D-6 | FYI-3: `synthVolume` stays public **or** is dropped (apps use `backingTrackVolume` + `masterVolume`) | settled in the plan review | public (as §7 says) |
 | D-7 | R-2: the fallback when WebKit refuses the delayed `play()` | Task 24 | safety net only |
 | D-8 | R-1: whether to set `navigator.audioSession.type = 'playback'` while mixing on iOS | Task 24 | not set |
 
@@ -4974,20 +4974,11 @@ ignores it, and its handler keeps getting `masterVolume` alone. Otherwise an app
 back into `masterVolume` drives both toward 0 (spike 9 §3: 239 `volumechange` events, master ~1e-110). Adding
 members to `IAlphaSynth` is a minor break for third-party implementations (§7).
 
-- [ ] **Step 0: STOP — decision gate D-6 (FYI-3): does `synthVolume` stay public?**
+- [ ] **Step 0: Decision gate D-6 (FYI-3) — settled in the plan review: `synthVolume` stays public**
 
-Settle this before any code, ideally during the plan review. Put it to the person as `[Q-D6]`:
-
-- **Scenario:** in notation-hero you want the metronome louder than the recording, so you call one of the levels.
-- **Option 1 — keep `synthVolume` public (as §7 says; implemented default).** Apps raise the synth directly.
-  The limiter (Task 14) keeps raised levels from clipping. Cost: one more public member to document, for both apps.
-  Confidence High; nothing to spike (an API shape).
-- **Option 2 — drop it.** Apps lower `backingTrackVolume` and raise `masterVolume`, which gives the same mix:
-  `synth = master`, `media = master × backingTrackVolume`. Cost: two calls for one intent, and `masterVolume` above 1
-  leans on the limiter. Confidence High; nothing to spike.
-
-If the answer is Option 2, leave out every `synthVolume` line in this task and in Tasks 15 and 20, and edit spec §2
-("Public additions") and §7 in the same commit.
+Option 1, as §7 says. `backingTrackVolume` and `masterVolume` can't stand in for it with external media:
+`backingTrackVolume` is not applied there, and `masterVolume` sets the player's volume and the synth's together
+(`_applyVolumes`, Task 15). Nothing to do in this step.
 
 - [ ] **Step 1: Write the test helpers**
 
