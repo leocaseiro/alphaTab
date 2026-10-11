@@ -4046,8 +4046,8 @@ git push
 - Produces (used by Tasks 15–20): `IMediaClock` (see "Shared interfaces"); `IBackingTrackClockSource`,
   `AudioElementClockSource`, `BackingTrackMediaClock(source, latencies, offsetMs: () => number)`;
   `IExternalClockSource`, `ExternalMediaClock(source, offsetMs)` with `addSample(positionMs)`,
-  `setPlaying(playing)`, `notePausedPosition(position)`, `restartFit()`, `expectJumpTo(target)`, `isStalled`,
-  `movedSincePause()`.
+  `setPlaying(playing)`, `notePausedPosition(position)`, `restartFit()`, `expectJumpTo(target)`,
+  `isFromBeforeJump(positionMs)`, `isStalled`, `movedSincePause()`.
 
 §6.3: backing track `mediaTimeAt(frame) = currentTime·1000 − (ctx.currentTime − frame/sampleRate)·1000·speed +
 latency(speed)·speed`. External media: a robust line over the last ~2 s of `updatePosition()` calls. Theil–Sen, as
@@ -4247,6 +4247,19 @@ describe('ExternalMediaClockTests', () => {
         expect(clock.movedSincePause()).toBe(false);
     });
 
+    it('a-seek-while-paused-moves-the-position', () => {
+        // the integration reports positions only while the media plays
+        const time = new FakeHeardTime();
+        const clock = new ExternalMediaClock(time, () => 0);
+        time.heard = 1;
+        clock.addSample(1000);
+        clock.expectJumpTo(20000); // a seek while playing, paused before an update showed it
+        clock.notePausedPosition(9000); // a seek while paused; no update follows
+        expect(clock.position).toBe(9000);
+        expect(clock.isSeeking).toBe(false);
+        expect(clock.movedSincePause()).toBe(false);
+    });
+
     it('expect-jump-ignores-updates-from-before-the-seek', () => {
         const time = new FakeHeardTime();
         const clock = new ExternalMediaClock(time, () => 0);
@@ -4259,6 +4272,21 @@ describe('ExternalMediaClockTests', () => {
         feed(clock, time, 1.15, 1.3, t => 20000 + (t - 1.15) * 1000);
         expect(clock.isSeeking).toBe(false);
         expect(clock.mediaTimeAt(1.3 * 48000)).toBeCloseTo(20150, 6);
+    });
+
+    it('a-seek-the-media-never-shows-is-given-up-after-a-second', () => {
+        const time = new FakeHeardTime();
+        const clock = new ExternalMediaClock(time, () => 0);
+        clock.setPlaying(true);
+        feed(clock, time, 0, 1, t => t * 1000);
+        clock.expectJumpTo(20000);
+        expect(clock.isFromBeforeJump(1100)).toBe(true);
+        expect(clock.isFromBeforeJump(20100)).toBe(false);
+        feed(clock, time, 1.05, 1.9, t => t * 1000); // the media didn't go there: still its old positions
+        expect(clock.isSeeking).toBe(true);
+        feed(clock, time, 2.1, 2.4, t => t * 1000);
+        expect(clock.isSeeking).toBe(false); // given up: the media's own position counts again
+        expect(clock.mediaTimeAt(2.4 * 48000)).toBeCloseTo(2400, 6);
     });
 });
 ```
@@ -4443,6 +4471,8 @@ export class ExternalMediaClock implements IMediaClock {
     public static readonly MovedToleranceMs: number = 5;
     /** After a seek, updates further than this from the target still show the old position. */
     public static readonly JumpToleranceMs: number = 500;
+    /** A seek the media hasn't shown after this long (one it didn't do) is given up: its updates count again. */
+    public static readonly JumpWaitMaxS: number = 1;
     /** The fitted rate must be within this fraction of the speed for the media to count as playing. */
     public static readonly RateTolerance: number = 0.5;
 
@@ -4460,6 +4490,7 @@ export class ExternalMediaClock implements IMediaClock {
     private _sawMovement: boolean = false;
     private _positionAtPause: number = Number.NaN;
     private _jumpTarget: number = Number.NaN;
+    private _jumpAt: number = 0;
 
     public constructor(source: IExternalClockSource, offsetMs: () => number) {
         this._source = source;
@@ -4470,12 +4501,10 @@ export class ExternalMediaClock implements IMediaClock {
      * An updatePosition() call: the media's position now (ms).
      */
     public addSample(positionMs: number): void {
-        if (!Number.isNaN(this._jumpTarget)) {
-            if (Math.abs(positionMs - this._jumpTarget) > ExternalMediaClock.JumpToleranceMs) {
-                return;
-            }
-            this._jumpTarget = Number.NaN;
+        if (this.isFromBeforeJump(positionMs)) {
+            return;
         }
+        this._jumpTarget = Number.NaN;
         const time = this._source.heardContextTime();
         if (Number.isNaN(this._positionAtPause) && !this._playing) {
             this._positionAtPause = positionMs;
@@ -4527,10 +4556,16 @@ export class ExternalMediaClock implements IMediaClock {
     }
 
     /**
-     * alphaTab seeked the paused media: its new position is not a start.
+     * alphaTab seeked the paused media: its new position is not a start, and the next start begins there even when
+     * the integration reports positions only while the media plays.
      */
     public notePausedPosition(position: number): void {
         this._positionAtPause = position;
+        this._lastPosition = position;
+        // a jump the media never showed (paused right after a seek) is replaced by this one; the samples from before
+        // the seek are from another position
+        this._jumpTarget = Number.NaN;
+        this.restartFit();
     }
 
     /**
@@ -4546,7 +4581,24 @@ export class ExternalMediaClock implements IMediaClock {
      */
     public expectJumpTo(target: number): void {
         this._jumpTarget = target;
+        this._jumpAt = this._source.heardContextTime();
         this.restartFit();
+    }
+
+    /**
+     * Whether an update at `positionMs` still shows the position from before the seek that {@link expectJumpTo}
+     * waits for. After {@link JumpWaitMaxS} without the seek showing, the media's own position counts again.
+     */
+    public isFromBeforeJump(positionMs: number): boolean {
+        if (Number.isNaN(this._jumpTarget)) {
+            return false;
+        }
+        if (this._source.heardContextTime() - this._jumpAt > ExternalMediaClock.JumpWaitMaxS) {
+            // the media never showed the seek: take its position as it is
+            this._jumpTarget = Number.NaN;
+            return false;
+        }
+        return Math.abs(positionMs - this._jumpTarget) > ExternalMediaClock.JumpToleranceMs;
     }
 
     /**
@@ -4629,7 +4681,7 @@ export class ExternalMediaClock implements IMediaClock {
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `npx vitest run test/audio/MediaClock.test.ts`
-Expected: PASS (13 tests). If `fits-a-line-that-one-late-update-does-not-bend` misses by more than 0.5 ms, check
+Expected: PASS (15 tests). If `fits-a-line-that-one-late-update-does-not-bend` misses by more than 0.5 ms, check
 that the late sample is the only one changed (`Math.abs(t - 0.5) < 1e-6` must match exactly one step of the loop).
 
 - [ ] **Step 5: State the offset's sign and unit in the spec (F-11, G-6)**
@@ -5979,7 +6031,16 @@ export class MediaSynthOutput implements IExternalMediaSynthOutput {
         }
     }
 
+    /**
+     * External media: whether a position update still shows the position from before a seek (set by the combined
+     * player). Such an update never reaches the media player, so neither its cursor nor its end check jumps back.
+     */
+    public skipPosition: ((currentTime: number) => boolean) | null = null;
+
     public updatePosition(currentTime: number): void {
+        if (this.skipPosition?.(currentTime)) {
+            return;
+        }
         (this._media as Partial<IExternalMediaSynthOutput>).updatePosition?.(currentTime);
     }
 
@@ -6507,10 +6568,11 @@ export class MediaSynthHarness {
     }
 
     /**
-     * External media: the handler reports its position (alphaTab's YouTube sample does this every 50 ms).
+     * External media: the integration reports its position through the player's output, as apps do (alphaTab's
+     * YouTube sample does this every 50 ms).
      */
     public report(position: number): void {
-        (this.media.output as IExternalMediaSynthOutput).updatePosition(position);
+        (this.player.output as IExternalMediaSynthOutput).updatePosition(position);
     }
 }
 ```
@@ -7619,6 +7681,17 @@ describe('MediaSynthPlayerTransportTests', () => {
         expect(h.probe.requests).toEqual([1, 0.75]);
     });
 
+    it('the-same-speed-again-changes-nothing', async () => {
+        // apps feed the media's rate event back (YouTube's onPlaybackRateChange, the rhythm game's ratechange)
+        const h = await playing(5000);
+        h.player.playbackSpeed = 0.75;
+        const synthSeeks = h.synth.seeks.length;
+        const mediaSeeks = h.mediaOutput!.seekTimes.length;
+        h.player.playbackSpeed = 0.75; // the echo
+        expect(h.synth.seeks.length).toBe(synthSeeks); // no second re-sync: it cuts the synth's sounding notes
+        expect(h.mediaOutput!.seekTimes.length).toBe(mediaSeeks); // no second seek of the media
+    });
+
     it('a-probe-value-during-playback-settles', async () => {
         // Review Focus 3, F-9a (D-1)
         const h = await playing(5000);
@@ -7788,9 +7861,17 @@ Replace `_startPlayback`, `_seek`, `_interrupt`, `_onMediaPosition` and `_onMedi
     }
 ```
 
-The speed setter gets the handshake:
+The speed setter gets the handshake, and ignores a speed it already has: apps feed the media's rate event back
+(YouTube's `onPlaybackRateChange`, the rhythm game's `ratechange`):
 
 ```diff
+     public set playbackSpeed(value: number) {
++        if (value === this.playbackSpeed) {
++            // a second handshake would seek the media again and re-sync, cutting the synth's sounding notes
++            return;
++        }
+         this._media.playbackSpeed = value;
+@@
          this._clock.speed = speed;
          this._queueProbe(speed, true);
          this._probeNext();
@@ -8661,7 +8742,8 @@ git push
 
 **Interfaces:**
 - Consumes: `ExternalMediaClock` (`addSample`, `setPlaying`, `notePausedPosition`, `restartFit`, `expectJumpTo`,
-  `isStalled`, `movedSincePause`) (Task 11); the handshakes (Tasks 16–18).
+  `isFromBeforeJump`, `isStalled`, `movedSincePause`) (Task 11); `MediaSynthOutput.skipPosition` (Task 15); the
+  handshakes (Tasks 16–18).
 - Produces (used by Task 20): the external-media flows below. No new public members.
 
 External media is best-effort (S9). It can't be held, so a seek or a wrap happens while it plays, and its
@@ -8669,7 +8751,9 @@ position arrives through the app's `updatePosition()` calls. Our design's proble
 F-17's model:
 
 - **Seek while playing (§6.2):** the synth stays silent until the first update after the jump, then restarts at
-  the media's position. There's no count-in and no learning; the settling re-sync locks it.
+  the media's position. There's no count-in and no learning; the settling re-sync locks it. Updates that still show
+  the old position stop at the player's output: the media player's cursor and end check never see them. A seek the
+  media hasn't shown after a second is given up, and its updates count again.
 - **F-5** (library-only; Low): a wrap doesn't pause the media. It seeks to the range start, then does what a seek
   does. S10 is scoped to the backing track.
 - **F-6** (alphaTabWebsite; Low): when the position moved since the pause (an update at most 100 ms old), the start
@@ -8814,6 +8898,60 @@ describe('MediaSynthPlayerExternalTests', () => {
         expect(h.synth.count('play:')).toBe(plays + 1);
     });
 
+    it('a-stale-update-after-a-wrap-does-not-move-the-cursor-back', async () => {
+        // after a seek the video still reports its old position for a moment (spike 9)
+        const h = new MediaSynthHarness(true);
+        await h.loadSong();
+        const range = new PlaybackRange();
+        range.startTick = 7680;
+        range.endTick = 15360;
+        h.player.isLooping = true;
+        h.player.playbackRange = range;
+        const start = h.media.tickToMediaTime(range.startTick);
+        let passes = 0;
+        let lastTick = -1;
+        h.player.positionChanged.on(e => {
+            if (lastTick >= 0 && e.currentTick < lastTick - 960) {
+                passes++; // how the rhythm game counts loop passes
+            }
+            lastTick = e.currentTick;
+        });
+        h.report(start);
+        h.player.play();
+        let position = start;
+        for (let guard = 0; h.finished === 0 && guard < 10000; guard++) {
+            h.timer.advance(50);
+            position += 50;
+            h.report(position);
+        }
+        h.timer.advance(50);
+        h.report(position + 50); // still the position from before the jump
+        h.timer.advance(50);
+        h.report(start + 20);
+        expect(h.finished).toBe(1);
+        expect(passes).toBe(1);
+    });
+
+    it('a-stale-update-past-the-song-end-keeps-the-whole-song-loop', async () => {
+        const h = new MediaSynthHarness(true);
+        await h.loadSong();
+        h.player.isLooping = true;
+        const songEnd = h.media.tickToMediaTime(h.media.loadedMidiInfo!.endTick);
+        h.report(songEnd - 300);
+        h.player.play();
+        let position = songEnd - 300;
+        for (let guard = 0; h.finished === 0 && guard < 10000; guard++) {
+            h.timer.advance(50);
+            position += 50;
+            h.report(position);
+        }
+        h.timer.advance(50);
+        h.report(position + 50); // still the position from before the jump, now past the song's end
+        expect(h.finished).toBe(1);
+        expect(h.states).toEqual(['Playing']);
+        expect(h.handler!.pauses).toBe(0);
+    });
+
     it('a-start-inside-the-media-skips-the-count-in-and-learning', async () => {
         // F-6
         const h = new MediaSynthHarness(true);
@@ -8874,6 +9012,21 @@ describe('MediaSynthPlayerExternalTests', () => {
         expect(h.handler!.plays).toBe(0); // the media starts at the hand-off
     });
 
+    it('a-seek-while-paused-is-where-the-next-play-starts', async () => {
+        // the integration reports positions only while the media plays (alphaTab's youtube-sync demo)
+        const h = new MediaSynthHarness(true);
+        await h.loadSong();
+        h.player.playbackSpeed = 0.75;
+        h.report(5000); // the last update before the pause
+        h.timer.advance(1000);
+        h.player.timePosition = 20000; // the user seeks while paused; no update follows
+        const target = h.media.mediaTimeOfPosition;
+        h.player.play();
+        // the pre-roll seeks 60 ms before alphaTab's position, not before the last reported one
+        expect(h.handler!.seekTimes[h.handler!.seekTimes.length - 1]).toBeCloseTo(target - 60, 3);
+        expect(h.synth.lastSeek()).toBeCloseTo(target - 60, 3);
+    });
+
     it('a-media-that-has-not-started-restarts-the-synth-when-it-moves', async () => {
         const h = new MediaSynthHarness(true);
         await h.loadSong();
@@ -8908,10 +9061,17 @@ Fields:
     private _refitOnMove: boolean = false;
 ```
 
-Subscribe to the media's position updates (constructor):
+Subscribe to the media's position updates, and keep updates from before a seek out of the media player
+(constructor):
 
 ```ts
         subscribe((media.output as IBackingTrackSynthOutput).timeUpdate.on(t => this._onMediaTimeUpdate(t)));
+        const externalClock = this._externalClock;
+        if (externalClock) {
+            // after a seek the media reports its old position for a moment (spike 9): those updates stop here, before
+            // the media player's cursor and end check
+            this._output.skipPosition = position => externalClock.isFromBeforeJump(position);
+        }
 ```
 
 `_interrupt` resets the external state:
