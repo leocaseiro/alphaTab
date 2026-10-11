@@ -10645,14 +10645,19 @@ volume scale), `src/components/AlphaTabRhythmGame/playground-settings.tsx` (the 
 rhythm game creates its YouTube player with `controls: 0` and `disablekb: 1`, so starts go through the app's Play
 button and keep their count-in (§7).
 
-- [ ] **Step 1: A branch, and the alpha that is current today**
+- [ ] **Step 1: A branch in its own worktree, and the alpha that is current today**
 
 ```bash
-git switch -c feat/2397-synth-with-media
+git fetch origin
+git worktree add ../alphaTabWebsite-2397 -b feat/2397-synth-with-media origin/rhythm-game
+cd ../alphaTabWebsite-2397
+npm ci
 npm view @coderline/alphatab dist-tags
 ```
 
-Pick the current `1.9.0-alpha.N` and call it `<alpha>` below.
+Run these from the alphaTabWebsite checkout, and every later step in `../alphaTabWebsite-2397`. The branch gets its
+own worktree, so Step 6's `git add -A` commits only this task's changes, never uncommitted work in your checkout
+(Task 25's rule). Pick the current `1.9.0-alpha.N` and call it `<alpha>` below.
 
 - [ ] **Step 2: Upgrade, and drop the stale patch in the same commit**
 
@@ -10814,11 +10819,17 @@ milestone (its `docs/feature-freeze.md`, J-2). So this task turns mixing on for 
 notation-hero greys out for a recording. The rule for an external player (keep its controls; a start inside it plays
 without a count-in, F-6) goes into the notation-hero spec delta, for when J-2 is built.
 
-- [ ] **Step 1: A branch; let the alpha past the release-age rule**
+- [ ] **Step 1: A branch in its own worktree; let the alpha past the release-age rule**
 
 ```bash
-git switch -c feat/2397-synth-with-media
+git fetch origin
+git worktree add ../notation-hero-2397 -b feat/2397-synth-with-media origin/master
+cd ../notation-hero-2397
+pnpm install
 ```
+
+Run these from the notation-hero checkout, and every later step in `../notation-hero-2397`, for the same reason as
+Task 26 Step 1.
 
 In `pnpm-workspace.yaml`, add `'@coderline/alphatab@<alpha>'` to `minimumReleaseAgeExclude`. Use the exact
 `name@version`, like the list's other entries, and update it with every alpha upgrade. Then:
