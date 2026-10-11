@@ -10888,3 +10888,8 @@ git push
   - Add the `alphatab-ai-authored-v1` disclosure block to the PR body.
 - **Later work the spec lists (§12):** a re-sync that keeps the synth's notes sounding; a direct worker → worklet
   `MessagePort`; Firefox and Safari tuning beyond the probe.
+- **Pre-calculating the first start at a new speed:** tried in spike 13
+  (`docs/spikes/issue-2397/spike-13-pre-calculating-the-first-start.md`). A muted warm-up start or probing the
+  coming speed doesn't move the first click at slow speeds; the media's time-stretch sets it (about +10 ms whether
+  learned or not). Remembering learned values across page loads (alphaTab exposes them, the app stores them) would
+  remove only the page's first re-sync (untested).
