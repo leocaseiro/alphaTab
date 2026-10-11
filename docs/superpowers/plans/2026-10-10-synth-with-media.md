@@ -140,7 +140,7 @@ Each one is flagged where it is used. Keep or drop them during the plan review.
   media's, and a speed change doesn't move it. Task 3.
 - **G-2** (the spike's controller): stamps are ignored for 200 ms after a re-sync, so stale stamps from before the
   jump can't trigger another one. Task 9.
-- **G-3** (spike 4): the loop-wrap timer fires 15 ms of media time before the range end. Task 18.
+- **G-3** (spike 4): the loop-wrap timer fires 15 ms of media time before the range end; if the timer is late, the first media update past the end wraps at once. Task 18.
 - **G-4** (spikes 4 and 6): clamps on the learned values — start lead −50…150 ms, media-start latency −50…250 ms,
   re-sync lead 0…100 ms (the last is in the spec). Tasks 9 and 10.
 - **G-5** (spike 6): the count-in hand-off timer fires 12 ms early, then waits on the audio clock for at most 30 ms.
@@ -8351,7 +8351,7 @@ git push
 
 **Interfaces:**
 - Consumes: `BackingTrackPlayer.tickToMediaTime` (Task 15), the handshakes (Tasks 16, 17).
-- Produces (used by Task 19): `_scheduleWrap(extraDelayMs)`, `_wrapEnd()`, `_onWrapTimer()`, `_wrapTimer`.
+- Produces (used by Task 19): `_scheduleWrap(extraDelayMs)`, `_wrapEnd()`, `_onWrapTimer()`, `_wrap()`, `_wrapTimer`.
 
 §6.2 loop wrap: the combined player owns `playbackRange` and `isLooping`. When no range is set, the song's end
 counts as the range end, so `isLooping` alone loops the whole song, as today. Just before the range end it fires
@@ -8359,7 +8359,9 @@ counts as the range end, so `isLooping` alone loops the whole song, as today. Ju
 and restarts them through the start handshake, with no count-in and no `stateChanged`. Spike 4 measured this:
 0 missing clicks at 0.5×, 1× and 1.5×, under 15 ms per wrap at 1× and ~24 ms at 0.5× and 1.5×. With `isLooping`
 off, the range end fires `finished` and stops both at the range start, as today. **G-3** (spike 4): the timer
-fires 15 ms of media time before the end. If the media is behind (a late start), it waits for the media.
+fires 15 ms of media time before the end. If the media is behind (a late start), it waits for the media. If the
+timer is late (a busy main thread), the first media update at or past the end wraps at once: it comes before the
+media player's own end check, which would otherwise stop both at the song's end.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -8460,6 +8462,24 @@ describe('MediaSynthPlayerLoopTests', () => {
         expect(h.mediaOutput!.currentTime).toBeLessThan(200);
     });
 
+    it('a-late-wrap-timer-still-wraps-at-the-song-end', async () => {
+        // the media's own update passes the song's end before the timer fires (a busy main thread)
+        const h = new MediaSynthHarness();
+        await h.loadSong();
+        h.player.isLooping = true;
+        const songEnd = h.media.tickToMediaTime(h.media.loadedMidiInfo!.endTick);
+        h.mediaOutput!.currentTime = songEnd - 300;
+        h.player.play();
+        h.timer.advance(250); // the timer is due at the song's end - 15 ms (285 ms) and hasn't run yet
+        h.mediaOutput!.advance(350); // the next update is already past the song's end
+        expect(h.finished).toBe(1);
+        expect(h.states).toEqual(['Playing']);
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+        expect(h.mediaOutput!.currentTime).toBeLessThan(200);
+        h.timer.advance(100); // the old timer is gone: no second wrap
+        expect(h.finished).toBe(1);
+    });
+
     it('an-early-timer-waits-for-the-media', async () => {
         const { h, start, end } = await looping();
         h.player.play();
@@ -8524,6 +8544,25 @@ Schedule the wrap wherever playback (re)starts or its timing changes:
 +        this._scheduleWrap(0);
 ```
 
+`_onMediaPosition` — a backstop for a late timer (G-3). The media player raises `positionChanged` before its own end
+check in the same update, so a wrap here comes first:
+
+```diff
+         (this.positionChanged as EventEmitterOfT<PositionChangedEventArgs>).trigger(e);
++        if (this._wrapTimer !== 0 && !e.isSeek) {
++            const range = this._playbackRange;
++            const endTick = range ? range.endTick : this._media.loadedMidiInfo!.endTick;
++            if (e.currentTick >= endTick) {
++                // the media passed the wrap point before the timer fired (a busy main thread): wrap now, before the
++                // media player's own end check stops both at the song's end
++                this._timer.clearTimeout(this._wrapTimer);
++                this._wrapTimer = 0;
++                this._wrap();
++            }
++        }
+     }
+```
+
 New methods:
 
 ```ts
@@ -8569,6 +8608,13 @@ New methods:
             this._wrapTimer = this._timer.setTimeout(() => this._onWrapTimer(), remainingMs);
             return;
         }
+        this._wrap();
+    }
+
+    /**
+     * The range end (the song's end when looping without a range): finished, then the wrap or the stop (§6.2).
+     */
+    private _wrap(): void {
         (this.finished as EventEmitter).trigger();
         if (!this._isLooping) {
             // back to the range start, stateChanged(Paused, stopped), as today
@@ -8633,6 +8679,8 @@ F-17's model:
   synth. On the first update that moves, the fit restarts there and the synth restarts.
 - **A media that hasn't started 500 ms after its planned start** (buffering): the synth goes silent and restarts
   once the media moves.
+- **Media only** (no SoundFont, or the synth failed): there is no synth to restart after a jump (a seek or a wrap),
+  so the next wrap is planned once the media reports from its new position.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -8711,6 +8759,45 @@ describe('MediaSynthPlayerExternalTests', () => {
         expect(last(h)).toBe('play:countIn=0');
     });
 
+    it('a-speed-change-from-the-wrap-does-not-wrap-again', async () => {
+        // the rhythm game's auto-BPM sets a new speed from the positionChanged the wrap raises
+        const h = new MediaSynthHarness(true);
+        await h.loadSong();
+        const range = new PlaybackRange();
+        range.startTick = 7680;
+        range.endTick = 15360;
+        h.player.isLooping = true;
+        h.player.playbackRange = range;
+        const start = h.media.tickToMediaTime(range.startTick);
+        let lastTick = -1;
+        h.player.positionChanged.on(e => {
+            const jumpedBack = lastTick >= 0 && e.currentTick < lastTick - 960;
+            lastTick = e.currentTick;
+            if (jumpedBack) {
+                h.player.playbackSpeed = 1.05; // the loop was passed: a little faster
+            }
+        });
+        h.report(start);
+        h.player.play();
+        let position = start;
+        for (let guard = 0; h.finished === 0 && guard < 10000; guard++) {
+            h.timer.advance(50);
+            position += 50;
+            h.report(position);
+        }
+        expect(h.finished).toBe(1);
+        h.timer.advance(20); // the media hasn't reported the jump yet
+        h.report(position); // a stale update from before the seek
+        h.timer.advance(20);
+        expect(h.finished).toBe(1);
+        expect(h.player.diagnostics.wraps.length).toBe(1);
+        for (let i = 0; i < 3; i++) {
+            h.timer.advance(50);
+            h.report(start + i * 50 * 1.05);
+        }
+        expect(last(h)).toBe('play:countIn=0'); // the synth restarts at the range start
+    });
+
     it('a-stall-silences-the-synth-and-restarts-it-after', async () => {
         // F-17, spike 9 §4
         const h = await externalPlaying();
@@ -8744,6 +8831,37 @@ describe('MediaSynthPlayerExternalTests', () => {
         expect(h.synth.calls.filter(c => c.startsWith('play:'))).toEqual(['play:countIn=0']);
         expect(h.handler!.plays).toBe(1);
         expect(h.player.controller.startLeads.size).toBe(0);
+    });
+
+    it('media-only-keeps-looping-external-media', async () => {
+        // the synthesizer can't play (no SoundFont, or it failed): the loop still wraps on every pass, as today
+        const h = new MediaSynthHarness(true, false);
+        await h.loadSong(false);
+        h.synth.becomeReady();
+        const range = new PlaybackRange();
+        range.startTick = 7680;
+        range.endTick = 15360;
+        h.player.isLooping = true;
+        h.player.playbackRange = range;
+        const start = h.media.tickToMediaTime(range.startTick);
+        const end = h.media.tickToMediaTime(range.endTick);
+        h.report(start);
+        h.player.play();
+        let position = start;
+        let seeks = h.handler!.seekTimes.length;
+        for (let t = 0; t < 2.5 * (end - start); t += 50) {
+            h.timer.advance(50);
+            if (h.handler!.seekTimes.length !== seeks) {
+                seeks = h.handler!.seekTimes.length;
+                position = h.handler!.seekTimes[seeks - 1]; // the video jumped to the range start
+            } else {
+                position += 50;
+            }
+            h.report(position);
+        }
+        expect(h.finished).toBe(2);
+        expect(h.player.diagnostics.wraps.length).toBe(2);
+        expect(position).toBeLessThan(end);
     });
 
     it('a-start-through-alphatab-counts-in', async () => {
@@ -8866,7 +8984,7 @@ pausing (next).
     }
 ```
 
-`_onWrapTimer` — F-5, before the backing-track wrap:
+`_wrap` — F-5, before the backing-track wrap:
 
 ```diff
          this.diagnostics.wraps.push(this._timer.now());
@@ -8916,7 +9034,15 @@ New methods:
             this._timer.clearTimeout(this._mediaStartCheckTimer);
             this._mediaStartCheckTimer = 0;
         }
-        if (this._state !== PlayerState.Playing || !this._isMixing || this._countIn) {
+        if (this._state !== PlayerState.Playing || this._countIn) {
+            return;
+        }
+        if (!this._isMixing) {
+            if (this._awaitingSynthStart && !clock.isSeeking) {
+                // media only: no synthesizer to restart after a jump; plan the next wrap from the media's new position
+                this._awaitingSynthStart = false;
+                this._scheduleWrap(0);
+            }
             return;
         }
         if (!this._stalled && !this._awaitingSynthStart && clock.isStalled) {
@@ -8944,6 +9070,10 @@ New methods:
     }
 
     private _jumpExternal(target: number): void {
+        // an app's handler may have re-armed the wrap during the jump (its finished or positionChanged) from the
+        // position before it; the synth's restart arms it again from the media's new position
+        this._timer.clearTimeout(this._wrapTimer);
+        this._wrapTimer = 0;
         this.controller.stopped();
         this._synth.pause();
         this._externalClock!.expectJumpTo(target);
