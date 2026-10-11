@@ -11185,7 +11185,19 @@ in the results. Either way, remove "**untested**" from §6.4 and state what was 
   Do a Play, a seek, and a speed change. Expect no cut notes and no dropouts, except the one re-sync at each speed
   change (spike 11; a re-sync that keeps notes sounding is later work, §12).
 - **Manual (§9):** your real MP3 with drums and metronome, by ear. The `youtube-sync` playground demo with mixing
-  on and the metronome: tune `mediaSyncOffsetInMilliseconds` by ear and record the value (S9).
+  on and the metronome: tune `mediaSyncOffsetInMilliseconds` by ear and record the value (S9). The demo has no
+  mixing switch, so turn it on from the console once the video is ready, before Play. The demo attached its YouTube
+  handler to the first player only, so carry it over:
+
+  ```js
+  const handler = api.player.output.handler;
+  api.settings.player.enableSynthesizerWithMedia = true;
+  api.updateSettings(); // recreates the player (Task 20)
+  api.player.output.handler = handler;
+  ```
+
+  Then turn the metronome on and tune with `api.settings.player.mediaSyncOffsetInMilliseconds = <ms>` (read live: no
+  `updateSettings()` needed).
 
 - [ ] **Step 10: F-18 — the acceptance list**
 
@@ -11478,7 +11490,8 @@ skips every patch after it.
 
 After the upgrade a hi-hat on string 6 is drawn on the 6th tab line (as in Guitar Pro) instead of line 5. Drum notes
 also have `note.fret = NaN`. In `cross-markers.tsx`, build the marker id for drum notes from
-`note.percussionArticulation` instead of `note.fret`. Run the app's tests and look at a drum song.
+`note.percussionArticulation` instead of `note.fret`. Run `npm run typecheck` (the app has no test script) and look
+at a drum song.
 
 - [ ] **Step 4: The patch, from an alpha that is an ancestor of the feature branch**
 
@@ -11596,7 +11609,9 @@ not the click.
 
 - [ ] **Step 6: Check, commit, push**
 
-Run the app's tests. By ear: a backing-track song with the metronome, a loop, a speed change; the YouTube flow.
+Run the app's checks: `npm run typecheck`, then what its CI runs, `npm run generate-alphatabdoc && npm run build` (the
+app has no test or lint script). By ear: a backing-track song with the metronome, a loop, a speed change; the YouTube
+flow.
 
 ```bash
 git add -A
@@ -11604,7 +11619,9 @@ git commit -m "feat: metronome along backing tracks and YouTube (alphaTab #2397 
 git push -u origin feat/2397-synth-with-media
 ```
 
-Opening a PR in alphaTabWebsite is your call in that repo.
+Opening a PR in alphaTabWebsite is your call in that repo. Its PR workflow installs `@coderline/alphatab@alpha` over
+the pinned version (`.github/workflows/build-pr.yml`), so a PR built after a newer alpha ships would apply this patch
+to a different version than it was made for.
 
 ---
 
