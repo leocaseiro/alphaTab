@@ -1359,7 +1359,10 @@ git push
 
 §2 and §4: one bar in the time signature at the start position, at the tempo of the sync point active there (else
 the score's tempo), rendered on the synth's own clock and then the song in the same stream. In mixed mode this is
-what fixes today's count-in freeze and rewind (§8). Non-mixed modes stay as they are; their fix is separate work.
+what fixes today's count-in freeze and rewind (§8). Non-mixed modes stay as they are; their fix is separate work:
+CoderLine/alphaTab#2932 (open), which guards this same `if` with `supportsCountIn` and adds that getter after
+`countInVolume`. This edit merges with it cleanly; Task 13's members, also added after `countInVolume`, need a
+one-hunk resolution (keep both) if #2932 lands first (Task 26 Step 4).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3243,6 +3246,20 @@ describe('MediaSyncControllerTests', () => {
         expect(s.synth.seeks[s.synth.seeks.length - 1]).toBe(12345 + 6);
     });
 
+    it('learns-the-media-start-latency-after-a-hand-off', () => {
+        const s = setup();
+        s.controller.startedAfterHandOff(1, true);
+        s.stamp(7);
+        s.stamp(8); // the media started 7.5 ms late: issue play() earlier next time
+        expect(s.controller.mediaStartLatencies.get(1)).toBe(7.5);
+
+        const fast = setup();
+        fast.controller.startedAfterHandOff(1.5, true);
+        fast.stamp(3);
+        fast.stamp(3);
+        expect(fast.controller.mediaStartLatencies.get(1.5)).toBeCloseTo(2, 9);
+    });
+
     it('a-jumpy-clock-must-not-re-sync', () => {
         const s = settled();
         for (let i = 0; i < 6; i++) {
@@ -3571,6 +3588,18 @@ export class MediaSyncController {
         const hasAgreed = !Number.isNaN(agreed);
         let action = '';
 
+        if (this._learnMediaStartLatency && hasAgreed) {
+            // the media started agreed/speed ms late (synth ahead): issue its play() that much earlier next time
+            this._learnMediaStartLatency = false;
+            this.mediaStartLatencies.set(
+                speed,
+                MediaSyncController._clamp(
+                    this.mediaStartLatencies.get(speed) + agreed / speed,
+                    MediaSyncConstants.MediaStartLatencyMinMs,
+                    MediaSyncConstants.MediaStartLatencyMaxMs
+                )
+            );
+        }
         if (this._learnResyncLead && hasAgreed) {
             this._learnResyncLead = false;
             this._resyncLead = MediaSyncController._clamp(
@@ -3644,7 +3673,7 @@ export class MediaSyncController {
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `npx vitest run test/audio/MediaSyncController.test.ts`
-Expected: PASS (15 tests).
+Expected: PASS (16 tests).
 
 - [ ] **Step 5: Run the repo gates and commit**
 
@@ -3797,20 +3826,6 @@ describe('MediaSyncControllerStartTests', () => {
         s.stamp(500);
         s.stamp(500); // within the 100 ms media delay
         expect(s.synth.seeks).toEqual([]);
-    });
-
-    it('learns-the-media-start-latency-after-a-hand-off', () => {
-        const s = setup();
-        s.controller.startedAfterHandOff(1, true);
-        s.stamp(7);
-        s.stamp(8); // the media started 7.5 ms late: issue play() earlier next time
-        expect(s.controller.mediaStartLatencies.get(1)).toBe(7.5);
-
-        const fast = setup();
-        fast.controller.startedAfterHandOff(1.5, true);
-        fast.stamp(3);
-        fast.stamp(3);
-        expect(fast.controller.mediaStartLatencies.get(1.5)).toBeCloseTo(2, 9);
     });
 
     it('hand-off-play-time-subtracts-the-latency-and-the-pre-roll', () => {
@@ -3974,25 +3989,13 @@ New methods:
 
 ```diff
          let action = '';
- 
-+        if (this._learnMediaStartLatency && hasAgreed) {
-+            // the media started agreed/speed ms late (synth ahead): issue its play() that much earlier next time
-+            this._learnMediaStartLatency = false;
-+            this.mediaStartLatencies.set(
-+                speed,
-+                MediaSyncController._clamp(
-+                    this.mediaStartLatencies.get(speed) + agreed / speed,
-+                    MediaSyncConstants.MediaStartLatencyMinMs,
-+                    MediaSyncConstants.MediaStartLatencyMaxMs
-+                )
-+            );
-+        }
+
 +        if (this._learnStartLead && window.length >= 3) {
 +            // this speed's start lead: the median of the first three readings after Play
 +            this._learnStartLead = false;
 +            this._learnStart(speed, [...window].sort((a, b) => a - b)[1]);
 +        }
-         if (this._learnResyncLead && hasAgreed) {
+         if (this._learnMediaStartLatency && hasAgreed) {
 @@
 -        const threshold = settling ? this.settleThreshold(speed) : MediaSyncConstants.LockedResyncThresholdMs;
 +        const catchingUp = this._catchUpGap > 0 && now < this._catchUpUntil;
@@ -7082,13 +7085,6 @@ export class MediaSynthPlayer implements IAlphaSynth {
         return this._synthFailure !== '' || !this._hasSoundFont;
     }
 
-    /**
-     * Both play: the synthesizer is ready and nothing failed.
-     */
-    private get _isMixing(): boolean {
-        return !this._isMediaOnly && this._synthReadyForPlayback;
-    }
-
     private _checkReady(): void {
         if (!this._readyFired && this.isReady) {
             this._readyFired = true;
@@ -7764,8 +7760,9 @@ In `MediaSynthPlayer.ts` import `type MediaStartPlan` from `MediaSyncController`
     private _mediaDelayTimer: number = 0;
 ```
 
-Replace `_startPlayback`, `_seek`, `_interrupt`, `_onMediaPosition` and `_onMediaFinished`, and add `_runStart` and
-`_mediaLatency`:
+Replace `_startPlayback`, `_seek`, `_interrupt`, `_onMediaPosition` and `_onMediaFinished`, and add `_runStart`,
+`_mediaLatency` and the `_isMixing` getter (first used here, so it is declared here: an unread private member
+fails `noUnusedLocals`):
 
 ```ts
     /**
@@ -7833,6 +7830,13 @@ Replace `_startPlayback`, `_seek`, `_interrupt`, `_onMediaPosition` and `_onMedi
         this.controller.stopped();
         this._pauseMedia();
         this._synth.pause();
+    }
+
+    /**
+     * Both play: the synthesizer is ready and nothing failed.
+     */
+    private get _isMixing(): boolean {
+        return !this._isMediaOnly && this._synthReadyForPlayback;
     }
 
     private _mediaLatency(speed: number): number {
@@ -9640,6 +9644,8 @@ git push
 **Files:**
 - Create: `packages/playground/demos/sync-lab/index.html`
 - Create: `packages/playground/demos/sync-lab/index.ts`
+- Modify: `packages/playground/tsconfig.json` and `packages/playground/biome.jsonc` (the playground's typecheck and
+  lint cover the lab)
 
 **Interfaces:**
 - Consumes: `MediaSynthPlayer.diagnostics` and `controller` (Task 15), `MediaLatencyProbe` (Task 12),
@@ -10949,6 +10955,26 @@ Note on the beat times: the lab reads the metronome events' **ticks** and maps t
 
 - [ ] **Step 3: Typecheck, lint, and a smoke run**
 
+The playground's typecheck and lint skip `demos/` (its tsconfig inherits the base's include list: `*.ts`, `src`,
+`test`, `scripts`; its `biome.jsonc` lists `*.ts`, `src/**`, `test/**`), so add the lab to both. Replace
+`packages/playground/tsconfig.json` with:
+
+```jsonc
+{
+    "extends": "../../tsconfig.base.json",
+    // the base's list plus the sync lab; the other demos stay out (test-results uses Vite's import.meta.hot)
+    "include": [
+        "${configDir}/*.ts",
+        "${configDir}/src",
+        "${configDir}/test",
+        "${configDir}/scripts",
+        "${configDir}/demos/sync-lab"
+    ]
+}
+```
+
+and add `"demos/sync-lab/**"` to the three `includes` lists in `packages/playground/biome.jsonc`. Then:
+
 ```bash
 npm run typecheck --workspace=packages/playground
 npm run lint --workspace=packages/playground
@@ -10965,7 +10991,7 @@ Expected: three rows, `skipped: false`, first clicks within ±11 ms. Reload, tic
 - [ ] **Step 4: Commit**
 
 ```bash
-git add packages/playground/demos/sync-lab
+git add packages/playground/demos/sync-lab packages/playground/tsconfig.json packages/playground/biome.jsonc
 git commit -m "test(playground): sync lab for synth-with-media acceptance (#2397)"
 git push
 ```
@@ -10979,6 +11005,16 @@ git push
 - Modify: `docs/spikes/issue-2397/results-<date>.json` (raw numbers: `syncLab.results`)
 - Modify: `docs/superpowers/specs/2026-10-07-synth-with-media-design.md` (§1 S6 and S12, §6.4, §9 acceptance, the
   §14 lines this run settles)
+- Modify (only if D-3 Option 2 is picked, Step 4): `packages/alphatab/src/platform/javascript/MediaSyncController.ts`
+  (`CountInPreRollBelow1xMs`), `packages/alphatab/test/audio/MediaSyncController.test.ts` (`pre-roll-rules`),
+  `packages/alphatab/test/audio/MediaSynthPlayer.CountIn.test.ts` (`below-1x-the-media-pre-rolls-120-ms`,
+  `a-speed-change-during-the-count-in-hands-off-at-the-new-speed`)
+- Modify (only if D-1 Option 2 is picked, Step 7): `packages/alphatab/src/platform/javascript/MediaSyncController.ts`
+  (`latencyChanged`), `packages/alphatab/test/audio/MediaSyncController.test.ts`
+  (`latency-change-settles-without-resync`), `packages/alphatab/test/audio/MediaSynthPlayer.Transport.test.ts`
+  (`a-probe-value-during-playback-settles`)
+- Modify (only if Step 8's 1 s and 4 s probe values differ): `packages/alphatab/src/platform/javascript/MediaLatencyProbe.ts`
+  (`LengthS`, `SpacingS`)
 
 **Interfaces:** consumes the sync lab (Task 21) and the built feature (Tasks 2–20).
 
@@ -11066,6 +11102,11 @@ Put D-3 to the person as `[Q-D3]` with the two pre-roll results in hand:
 Then restate §1 S6's figures with the run's numbers. The 1.5× figure should read 0…+2.7 ms (F-14). Mark "the first
 count-in at an unlearned speed: (open)".
 
+If Option 2: set `MediaSyncConstants.CountInPreRollBelow1xMs` to 60, update the tests that pin 120 (Task 10
+`pre-roll-rules`; Task 17 `below-1x-the-media-pre-rolls-120-ms`, renamed `below-1x-the-media-pre-rolls-60-ms`, and
+`a-speed-change-during-the-count-in-hands-off-at-the-new-speed`: the media at 5000 − 60, `play()` 120 ms before the
+boundary), run the repo gates, and commit and push it separately from the docs.
+
 - [ ] **Step 5: STOP — decision gate D-5 (F-15), S10, the loop wrap**
 
 ```text
@@ -11117,11 +11158,15 @@ with the synth tracks unmuted and listening, then the same pair at 0.625×. Put 
 Edit §6.4's sentence "A value that arrives during playback is applied like a speed change (re-sync, settle)" to
 match the answer.
 
+If Option 2: make `MediaSyncController.latencyChanged()` re-sync, as `speedChanged()` does; update Task 10's
+`latency-change-settles-without-resync` and Task 16's `a-probe-value-during-playback-settles` to expect one
+re-sync; run the repo gates; and commit and push it separately from the docs.
+
 - [ ] **Step 8: §6.4 — the shorter probe**
 
 Run `await syncLab.probeComparison()`. If the 1 s and 4 s values differ by more than 3 ms at any speed, change
-`MediaLatencyProbe.LengthS` / `SpacingS` to 4 / 0.25 in a separate commit and say so in the results. Either way,
-remove "**untested**" from §6.4 and state what was measured.
+`MediaLatencyProbe.LengthS` / `SpacingS` to 4 / 0.25, run the repo gates, commit and push it separately, and say so
+in the results. Either way, remove "**untested**" from §6.4 and state what was measured.
 
 - [ ] **Step 9: S7, S8, S11, F-8, F-13 and by ear**
 
@@ -11161,6 +11206,12 @@ git push
 
 **Files:**
 - Create: `docs/spikes/issue-2397/baselatency-<date>.md`
+- Modify: `docs/superpowers/specs/2026-10-07-synth-with-media-design.md` (§14 F-3: the D-2 answer)
+- Modify: `packages/alphatab/src/platform/javascript/MediaSyncController.ts` (`settleThreshold`'s comment: the D-2
+  answer; with Option 2 also its rule)
+- Modify (only if D-2 Option 2 is picked): `packages/alphatab/test/audio/MediaSyncController.test.ts`
+  (`settle-threshold-at-1x-grows-with-the-base-latency`), `packages/playground/demos/sync-lab/index.ts`
+  (`firstClickToleranceMs`)
 
 **Interfaces:** consumes the sync lab.
 
@@ -11192,6 +11243,11 @@ Put to the person as `[Q-D2]`, with the numbers:
 
 Record the answer in §14 and in `MediaSyncController.settleThreshold`'s comment.
 
+If Option 2: `settleThreshold` returns `MediaSyncConstants.SettleResyncThresholdAt1xMs` at 1×, the lab's
+`firstClickToleranceMs` returns 11 at 1×, and Task 9's `settle-threshold-at-1x-grows-with-the-base-latency`
+expects 12 at any `baseLatency`. Either way, run the repo gates (and the playground typecheck), then commit and
+push the `MediaSyncController.ts` change (with Option 2's code and test) separately from the docs.
+
 - [ ] **Step 4: Commit**
 
 ```bash
@@ -11206,6 +11262,10 @@ git push
 
 **Files:**
 - Create: `docs/spikes/issue-2397/target-devices-<date>.md`
+- Modify (only if D-7 Option 1 or 2, or D-8 Option 1, is picked):
+  `packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts`,
+  `packages/alphatab/test/audio/MediaSynthPlayer.CountIn.test.ts` (D-7),
+  `packages/alphatab/test/audio/MediaSynthPlayer.Routing.test.ts` (D-8)
 
 **Interfaces:** consumes the sync lab, served over HTTPS.
 
@@ -11257,6 +11317,9 @@ mode; a plain `<audio>` is not.) If it isn't heard, reload the lab with `?audioS
 
 Confidence and spiked status come from this run.
 
+If Option 1: make the change in `MediaSynthPlayer`, add its test to `MediaSynthPlayer.Routing.test.ts`, run the
+repo gates, and commit and push it separately from the docs.
+
 - [ ] **Step 4: STOP — decision gate D-7 (R-2), a refused delayed `play()`**
 
 On the iPad, use Step 2's two tapped rows: they are the only starts on a fresh page, and a later `countInTest` or
@@ -11276,6 +11339,10 @@ Put to the person as `[Q-D7]`, with the result:
 - **Option 3:** keep the safety net only.
 
 If it is not refused, record that and keep the safety net.
+
+If Option 1 or 2: make the change in `MediaSynthPlayer` (Option 1: `play()`; Option 2: the count-in branch of
+`_startPlayback`), add its test to `MediaSynthPlayer.CountIn.test.ts`, run the repo gates, and commit and push
+it separately from the docs.
 
 - [ ] **Step 5: The platform rule (Tasks 26 and 27 copy it)**
 
@@ -11423,7 +11490,11 @@ git merge-base --is-ancestor <gitHead> HEAD && echo ancestor
 ```
 
 If it isn't an ancestor: rebase `feat/2397-synth-with-media` onto `develop` at or after `<gitHead>`, run the repo
-gates, rebuild (`npm run build`), push. Then copy the build into alphaTabWebsite and create the patch:
+gates, rebuild (`npm run build`), push. If the rebase brings in CoderLine/alphaTab#2932 (the count-in freeze fix for
+the media-only modes, spec §8), expect one conflict in `AlphaSynth.ts`: Task 13's `backingTrackVolume`/`synthVolume`
+members and #2932's `supportsCountIn` getter both sit right after `countInVolume`. Keep both. After the gates, run the
+sync lab's `await syncLab.countInTest(6, 1)` once on the rebuilt branch (S6, the count-in). Then copy the build into
+alphaTabWebsite and create the patch:
 
 ```bash
 rm -r node_modules/@coderline/alphatab/dist
