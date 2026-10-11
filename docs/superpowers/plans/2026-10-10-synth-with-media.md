@@ -94,8 +94,9 @@ that owns the code.
    no `stateChanged` from inside the handshake; after a speed change during the count-in, its last clicks and the
    media's start follow the new speed. Tests: Task 16 (`pause-during-the-media-delay-cancels-the-media-start`),
    Task 17 (`pause-during-the-count-in-cancels-the-hand-off`, `a-seek-during-the-count-in-restarts-without-count-in`,
-   `a-speed-change-during-the-count-in-hands-off-at-the-new-speed`, `a-slower-count-in-does-not-hit-the-time-limit`),
-   and on the real synth Task 4 (`a-seek-during-the-count-in-ends-it`).
+   `a-speed-change-during-the-count-in-hands-off-at-the-new-speed`, `a-slower-count-in-does-not-hit-the-time-limit`,
+   `a-speed-change-during-a-count-in-at-the-song-start-keeps-the-media-at-0`), and on the real synth Task 4
+   (`a-seek-during-the-count-in-ends-it`).
 3. **Play before the background probe is done, or while the `AudioContext` is still suspended** (autoplay policy).
    Expected: the start uses the straight-line guess, the probe waits for a running context, and a value that
    lands mid-playback settles without cutting notes (D-1). Tests: Task 10 (`latency-change-settles-without-resync`),
@@ -8017,6 +8018,15 @@ describe('MediaSynthPlayerCountInTests', () => {
         expect(h.player.controller.mediaStartLatencies.size).toBe(0); // a changed speed teaches nothing
     });
 
+    it('a-speed-change-during-a-count-in-at-the-song-start-keeps-the-media-at-0', async () => {
+        // the re-timed pre-roll stops at media time 0 too: not a seek to -120 ms
+        const h = await countingIn(1, 0);
+        h.synth.startCountIn(2000);
+        h.timer.advance(500);
+        h.player.playbackSpeed = 0.5;
+        expect(h.mediaOutput!.seekTimes[h.mediaOutput!.seekTimes.length - 1]).toBe(0);
+    });
+
     it('a-slower-count-in-does-not-hit-the-time-limit', async () => {
         const h = await countingIn();
         h.synth.startCountIn(2000); // the time limit would be at 2.25 s
@@ -8268,7 +8278,8 @@ New methods:
     private _retimeCountIn(countIn: CountInHandOff, speed: number): void {
         const slower = speed < countIn.speed;
         countIn.speed = speed;
-        countIn.preRoll = MediaSyncController.preRoll(speed, true);
+        // as at the start, the media can't wait below its time 0
+        countIn.preRoll = Math.min(MediaSyncController.preRoll(speed, true), Math.max(0, countIn.target));
         countIn.speedChanged = true;
         this._media.seekMediaTo(countIn.target - countIn.preRoll);
         if (slower && countIn.limitTimer !== 0) {
