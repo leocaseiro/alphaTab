@@ -5537,7 +5537,7 @@ Expected: FAIL — `backingTrackVolume` doesn't exist.
 - [ ] **Step 5: Run the tests to see them pass**
 
 Run: `npx vitest run test/audio/MediaVolumes.test.ts`
-Expected: PASS (5 tests).
+Expected: PASS (6 tests).
 
 - [ ] **Step 6: Run the repo gates and commit**
 
