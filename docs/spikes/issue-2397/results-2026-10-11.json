@@ -1,0 +1,1154 @@
+{
+ "spike13PreCalculatingTheFirstStart": {
+  "mediaLatencyProbe": {
+   "1": 0.2,
+   "0.5": 60,
+   "0.75": 26.6,
+   "1.25": -4.2,
+   "1.5": -4.7
+  },
+  "learnedStartValues": {
+   "1": 2.7,
+   "0.5": -39.1,
+   "0.75": -26.5
+  },
+  "learn": [
+   {
+    "s": 0.5,
+    "rows": [
+     {
+      "first": [
+       -24.7,
+       0.8,
+       -6.1,
+       -12.2,
+       -14.5
+      ],
+      "resyncs": 1,
+      "skipped": false,
+      "counts": "5/6",
+      "firstGap": -24.7,
+      "lockMs": null
+     },
+     {
+      "first": [
+       14,
+       -0.3,
+       -7.7,
+       14.9,
+       5.7
+      ],
+      "resyncs": 0,
+      "skipped": false,
+      "counts": "5/5",
+      "firstGap": 14,
+      "lockMs": null
+     }
+    ]
+   },
+   {
+    "s": 0.75,
+    "rows": [
+     {
+      "first": [
+       27.3,
+       20,
+       17.6,
+       15.1,
+       12.9
+      ],
+      "resyncs": 0,
+      "skipped": false,
+      "counts": "8/8",
+      "firstGap": 27.3,
+      "lockMs": 4200
+     },
+     {
+      "first": [
+       15.3,
+       6.4,
+       5.3,
+       4.3,
+       3.2
+      ],
+      "resyncs": 0,
+      "skipped": false,
+      "counts": "8/8",
+      "firstGap": 15.3,
+      "lockMs": null
+     }
+    ]
+   },
+   {
+    "s": 1,
+    "rows": [
+     {
+      "first": [
+       31.3,
+       4.3,
+       1.2,
+       -0.5,
+       1.8
+      ],
+      "resyncs": 1,
+      "skipped": false,
+      "counts": "6/6",
+      "firstGap": 31.3,
+      "lockMs": 925
+     },
+     {
+      "first": [
+       -0.7,
+       0,
+       1,
+       1.9,
+       0.2
+      ],
+      "resyncs": 0,
+      "skipped": false,
+      "counts": "6/6",
+      "firstGap": -0.7,
+      "lockMs": 35
+     }
+    ]
+   }
+  ],
+  "a_oneFullStartFirst": [
+   {
+    "s": 0.5833,
+    "r": 0,
+    "guessedStartValue": -34.9,
+    "learnedAfter": -32.3,
+    "guessedStart": {
+     "first": [
+      12.6,
+      -1.1,
+      -16.1,
+      3.4,
+      -10.2
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "6/6",
+     "firstGap": 12.6,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      12.6,
+      -5.3,
+      -19.1,
+      -0.8,
+      -14.6
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "6/6",
+     "firstGap": 12.6,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.5833,
+    "r": 1,
+    "guessedStartValue": -34.9,
+    "learnedAfter": -34.9,
+    "guessedStart": {
+     "first": [
+      12.6,
+      -1.1,
+      -16.1,
+      3.4,
+      -10.2
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "6/6",
+     "firstGap": 12.6,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      15.3,
+      -4,
+      -17.7,
+      0.5,
+      -13.2
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "6/6",
+     "firstGap": 15.3,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.5833,
+    "r": 2,
+    "guessedStartValue": -34.9,
+    "learnedAfter": -25.5,
+    "guessedStart": {
+     "first": [
+      12.6,
+      -1.1,
+      -16.1,
+      3.4,
+      -10.2
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "6/6",
+     "firstGap": 12.6,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      20.6,
+      1.4,
+      -13.7,
+      4.5,
+      -10.6
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "6/6",
+     "firstGap": 20.6,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.625,
+    "r": 0,
+    "guessedStartValue": -25.8,
+    "learnedAfter": -28.4,
+    "guessedStart": {
+     "first": [
+      4.6,
+      -2.6,
+      -7.4,
+      -8.5,
+      -9.5
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 4.6,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      10,
+      -1.5,
+      -2.6,
+      -5,
+      -6.1
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 10,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.625,
+    "r": 1,
+    "guessedStartValue": -25.8,
+    "learnedAfter": -33.8,
+    "guessedStart": {
+     "first": [
+      4.6,
+      -2.6,
+      -7.4,
+      -8.5,
+      -9.5
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 4.6,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      8.6,
+      -2.9,
+      -3.9,
+      -5,
+      -7.4
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 8.6,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.625,
+    "r": 2,
+    "guessedStartValue": -25.8,
+    "learnedAfter": -29.3,
+    "guessedStart": {
+     "first": [
+      10,
+      2.7,
+      -3.4,
+      -4.5,
+      -6.8
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 10,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      10,
+      -1.5,
+      -3.9,
+      -5,
+      -6.1
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 10,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.6667,
+    "r": 0,
+    "guessedStartValue": -28.4,
+    "learnedAfter": -32.9,
+    "guessedStart": {
+     "first": [
+      15.3,
+      -9.4,
+      -0.4,
+      9.9,
+      15.5
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 15.3,
+     "lockMs": 4051
+    },
+    "nextStart": {
+     "first": [
+      7.3,
+      9.2,
+      -13.3,
+      -1.7,
+      8.1
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 7.3,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.6667,
+    "r": 1,
+    "guessedStartValue": -28.4,
+    "learnedAfter": -31.4,
+    "guessedStart": {
+     "first": [
+      10,
+      -14.7,
+      -4.4,
+      5.9,
+      12.9
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 10,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      8.6,
+      10.5,
+      -12,
+      -1.7,
+      8.1
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 8.6,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.6667,
+    "r": 2,
+    "guessedStartValue": -28.4,
+    "learnedAfter": -28,
+    "guessedStart": {
+     "first": [
+      10,
+      -14.7,
+      -4.4,
+      5.9,
+      12.9
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 10,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      11.3,
+      13.2,
+      -9.3,
+      1,
+      10.8
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 11.3,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.7083,
+    "r": 0,
+    "guessedStartValue": -27.3,
+    "learnedAfter": -25.3,
+    "guessedStart": {
+     "first": [
+      12.6,
+      2.1,
+      -6.8,
+      -14.4,
+      8.9
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "9/9",
+     "firstGap": 12.6,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      7.3,
+      -4.8,
+      -12.4,
+      9.6,
+      -2.6
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "8/8",
+     "firstGap": 7.3,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.7083,
+    "r": 1,
+    "guessedStartValue": -27.3,
+    "learnedAfter": -22,
+    "guessedStart": {
+     "first": [
+      12.6,
+      2.1,
+      -6.8,
+      -14.4,
+      8.9
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "8/8",
+     "firstGap": 12.6,
+     "lockMs": 4437
+    },
+    "nextStart": {
+     "first": [
+      8.6,
+      -3.5,
+      -12.4,
+      9.6,
+      -1.3
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "8/8",
+     "firstGap": 8.6,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.7083,
+    "r": 2,
+    "guessedStartValue": -27.3,
+    "learnedAfter": -28,
+    "guessedStart": {
+     "first": [
+      12.6,
+      2.1,
+      -5.5,
+      -14.4,
+      8.9
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "8/8",
+     "firstGap": 12.6,
+     "lockMs": 4437
+    },
+    "nextStart": {
+     "first": [
+      10,
+      -2.1,
+      -11.1,
+      10.9,
+      -1.3
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "8/8",
+     "firstGap": 10,
+     "lockMs": null
+    }
+   }
+  ],
+  "b_oneSecondWarmUp": [
+   {
+    "s": 0.5833,
+    "r": 0,
+    "learnedAfterWarmUp": -37.4,
+    "start": {
+     "first": [
+      14,
+      0.3,
+      -13.5,
+      6.1,
+      -8.9
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 14,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.5833,
+    "r": 1,
+    "learnedAfterWarmUp": -32.2,
+    "start": {
+     "first": [
+      10,
+      -3.7,
+      -17.5,
+      2.1,
+      -11.6
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "6/6",
+     "firstGap": 10,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.5833,
+    "r": 2,
+    "learnedAfterWarmUp": -31.3,
+    "start": {
+     "first": [
+      8.6,
+      -5.1,
+      -18.8,
+      0.7,
+      -12.9
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "6/6",
+     "firstGap": 8.6,
+     "lockMs": 3863
+    }
+   },
+   {
+    "s": 0.625,
+    "r": 0,
+    "learnedAfterWarmUp": -26.5,
+    "start": {
+     "first": [
+      6,
+      -1.3,
+      -6.1,
+      -7.2,
+      -9.5
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 6,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.625,
+    "r": 1,
+    "learnedAfterWarmUp": -34.6,
+    "start": {
+     "first": [
+      14,
+      6.7,
+      0.6,
+      -1.9,
+      -4.1
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 14,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.625,
+    "r": 2,
+    "learnedAfterWarmUp": -33.5,
+    "start": {
+     "first": [
+      12.6,
+      5.4,
+      -0.8,
+      -3.2,
+      -5.5
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 12.6,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.6667,
+    "r": 0,
+    "learnedAfterWarmUp": -28.8,
+    "start": {
+     "first": [
+      11.3,
+      -13.4,
+      -3.1,
+      7.2,
+      14.2
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 11.3,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.6667,
+    "r": 1,
+    "learnedAfterWarmUp": -30.8,
+    "start": {
+     "first": [
+      18,
+      -6.7,
+      2.3,
+      11.2,
+      18.2
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 18,
+     "lockMs": 4052
+    }
+   },
+   {
+    "s": 0.6667,
+    "r": 2,
+    "learnedAfterWarmUp": -23.6,
+    "start": {
+     "first": [
+      6,
+      -18.7,
+      -8.4,
+      3.2,
+      10.2
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 6,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.7083,
+    "r": 0,
+    "learnedAfterWarmUp": -25.7,
+    "start": {
+     "first": [
+      15.3,
+      6.1,
+      -4.1,
+      -13.1,
+      10.2
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "8/8",
+     "firstGap": 15.3,
+     "lockMs": 4439
+    }
+   },
+   {
+    "s": 0.7083,
+    "r": 1,
+    "learnedAfterWarmUp": -24,
+    "start": {
+     "first": [
+      8.6,
+      -0.6,
+      -9.5,
+      -17.1,
+      7.5
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "8/8",
+     "firstGap": 8.6,
+     "lockMs": 4436
+    }
+   },
+   {
+    "s": 0.7083,
+    "r": 2,
+    "learnedAfterWarmUp": -26.4,
+    "start": {
+     "first": [
+      11.3,
+      0.8,
+      -8.1,
+      -15.7,
+      7.5
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "8/8",
+     "firstGap": 11.3,
+     "lockMs": 4437
+    }
+   }
+  ],
+  "c_probeTheSpeedFirst": [
+   {
+    "s": 0.5833,
+    "r": 0,
+    "probeMs": 17062,
+    "probedLatency": 48.5,
+    "lineGuessLatency": 48.9,
+    "guessedStartValue": -34.9,
+    "learnedAfter": -30.7,
+    "guessedStart": {
+     "first": [
+      12.6,
+      -1.1,
+      -16.1,
+      3.4,
+      -10.2
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "6/6",
+     "firstGap": 12.6,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      10,
+      -8,
+      -21.7,
+      -2.2,
+      -15.9
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "6/6",
+     "firstGap": 10,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.5833,
+    "r": 1,
+    "probeMs": 17062,
+    "probedLatency": 47,
+    "lineGuessLatency": 48.9,
+    "guessedStartValue": -34.9,
+    "learnedAfter": -29.7,
+    "guessedStart": {
+     "first": [
+      14,
+      0.3,
+      -13.5,
+      4.7,
+      -8.9
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "6/6",
+     "firstGap": 14,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      16.6,
+      -2.6,
+      -16.4,
+      1.8,
+      -11.9
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "6/6",
+     "firstGap": 16.6,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.625,
+    "r": 0,
+    "probeMs": 16617,
+    "probedLatency": 35.2,
+    "lineGuessLatency": 41.9,
+    "guessedStartValue": -32.8,
+    "learnedAfter": -29.9,
+    "guessedStart": {
+     "first": [
+      20.6,
+      12,
+      5.9,
+      4.8,
+      2.5
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 20.6,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      16.6,
+      3.8,
+      2.7,
+      1.7,
+      0.6
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 16.6,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.625,
+    "r": 1,
+    "probeMs": 16612,
+    "probedLatency": 35.2,
+    "lineGuessLatency": 41.9,
+    "guessedStartValue": -32.8,
+    "learnedAfter": -32.1,
+    "guessedStart": {
+     "first": [
+      20.6,
+      12,
+      7.2,
+      4.8,
+      2.5
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 20.6,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      22,
+      9.1,
+      6.7,
+      5.7,
+      3.3
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 22,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.6667,
+    "r": 0,
+    "probeMs": 16224,
+    "probedLatency": 43.1,
+    "lineGuessLatency": 32.4,
+    "guessedStartValue": -30.7,
+    "learnedAfter": -26.3,
+    "guessedStart": {
+     "first": [
+      7.3,
+      -17.4,
+      -7.1,
+      1.9,
+      8.9
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 7.3,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      4.6,
+      6.5,
+      -16,
+      -5.7,
+      4.1
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 4.6,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.6667,
+    "r": 1,
+    "probeMs": 16227,
+    "probedLatency": 43.1,
+    "lineGuessLatency": 32.4,
+    "guessedStartValue": -30.7,
+    "learnedAfter": -24.3,
+    "guessedStart": {
+     "first": [
+      7.3,
+      -17.4,
+      -7.1,
+      1.9,
+      8.9
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 7.3,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      7.3,
+      7.9,
+      -14.6,
+      -4.4,
+      5.4
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "7/7",
+     "firstGap": 7.3,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.7083,
+    "r": 0,
+    "probeMs": 15887,
+    "probedLatency": 44.4,
+    "lineGuessLatency": 34.9,
+    "guessedStartValue": -28.6,
+    "learnedAfter": -30,
+    "guessedStart": {
+     "first": [
+      0.6,
+      -8.6,
+      -17.5,
+      -26.4,
+      -3.1
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "8/8",
+     "firstGap": 0.6,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      0.6,
+      -11.5,
+      -20.4,
+      0.3,
+      -10.6
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "8/8",
+     "firstGap": 0.6,
+     "lockMs": null
+    }
+   },
+   {
+    "s": 0.7083,
+    "r": 1,
+    "probeMs": 15890,
+    "probedLatency": 44.1,
+    "lineGuessLatency": 34.9,
+    "guessedStartValue": -28.6,
+    "learnedAfter": -26,
+    "guessedStart": {
+     "first": [
+      2,
+      -8.6,
+      -17.5,
+      -26.4,
+      -3.1
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "8/8",
+     "firstGap": 2,
+     "lockMs": null
+    },
+    "nextStart": {
+     "first": [
+      0.6,
+      -12.8,
+      -20.4,
+      0.3,
+      -12
+     ],
+     "resyncs": 0,
+     "skipped": false,
+     "counts": "8/8",
+     "firstGap": 0.6,
+     "lockMs": null
+    }
+   }
+  ],
+  "d_fullyLearnedAndProbed": [
+   {
+    "s": 0.5,
+    "rows": [
+     {
+      "first": [
+       19.3,
+       10.1,
+       1.9,
+       -5.5,
+       -9.1
+      ],
+      "resyncs": 0,
+      "skipped": false,
+      "counts": "5/6",
+      "firstGap": 19.3,
+      "lockMs": null
+     },
+     {
+      "first": [
+       10,
+       -4.3,
+       -10.4,
+       12.2,
+       4.4
+      ],
+      "resyncs": 0,
+      "skipped": false,
+      "counts": "5/5",
+      "firstGap": 10,
+      "lockMs": null
+     },
+     {
+      "first": [
+       23.3,
+       7.9,
+       -7.5,
+       10.7,
+       -6.1
+      ],
+      "resyncs": 0,
+      "skipped": false,
+      "counts": "6/6",
+      "firstGap": 23.3,
+      "lockMs": null
+     }
+    ]
+   },
+   {
+    "s": 0.75,
+    "rows": [
+     {
+      "first": [
+       19.3,
+       13.3,
+       10.9,
+       9.8,
+       7.5
+      ],
+      "resyncs": 0,
+      "skipped": false,
+      "counts": "8/8",
+      "firstGap": 19.3,
+      "lockMs": 3608
+     },
+     {
+      "first": [
+       14,
+       5,
+       4,
+       2.9,
+       1.9
+      ],
+      "resyncs": 0,
+      "skipped": false,
+      "counts": "8/8",
+      "firstGap": 14,
+      "lockMs": null
+     },
+     {
+      "first": [
+       14,
+       5.2,
+       1.5,
+       -2.3,
+       -4.7
+      ],
+      "resyncs": 0,
+      "skipped": false,
+      "counts": "8/8",
+      "firstGap": 14,
+      "lockMs": null
+     }
+    ]
+   }
+  ],
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/2.19675.0 Chrome/152.0.7977.130 Safari/537.36",
+  "sampleRate": 48000,
+  "baseLatency": 0.005333333333333333
+ }
+}
