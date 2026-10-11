@@ -1,5 +1,6 @@
 ---
-lap: 1
+lap: 2
+last_applied: P1
 ---
 
 # Synthesizer + backing track / external media mixing — Implementation Plan
