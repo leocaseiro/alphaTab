@@ -27,7 +27,7 @@ milliseconds from 1× to 1.5×, and within the media's own time-stretch wobble (
 | S1 | Metronome click vs backing-track beat at 1.0× | p95 ≤ 3 ms (spike: 1.3 ms) |
 | S2 | Same at 1.25× / 1.5× | p95 ≤ 5 ms (spike: 3.0 ms) |
 | S3 | Same at 0.5× / 0.75× | within the media's own time-stretch wobble, p95 ≤ 20 ms (spike: 15.9 ms) |
-| S4 | First click after Play | within ±11 ms at 1× (two of Chrome's 5.3 ms `<audio>` start steps), ±20 ms at other speeds, never skipped (spike 4, start at target: 1× −5.3…+6.7 ms, 0.5× +2…+20 ms, 1.5× −12…+2.7 ms; 0 skips in 35 starts). The first Play at a speed with no learned start lead yet is still off (spike 4: 0.5× −29.6 ms) **(open)** |
+| S4 | First click after Play | within ±11 ms at 1× (two of Chrome's 5.3 ms `<audio>` start steps), ±20 ms at other speeds, never skipped (spike 4, start at target: 1× −5.3…+6.7 ms, 0.5× +2…+20 ms, 1.5× −12…+2.7 ms; 0 skips in 35 starts). The first Play at a speed with no learned start lead yet is reported, not gated (Q-1): between learned speeds the straight-line guess lands +6…+22 ms with no re-sync (spike 12: 19 of 21 within ±20 ms); with nothing learned (every page load: the learned values live in memory only) or beyond the learned speeds it lands 25–37 ms off and re-syncs once (spike 4: 0.5× −29.6 ms; spike 12). The same holds for a loop's first repetition after a speed change (S12) |
 | S4b | First click after a seek or speed change during playback | within ±11 ms at 1×, ±20 ms at other speeds (as S4), never skipped |
 | S5 | One click per beat, no extra or missing clicks | 15/15 start cycles, plus a full song |
 | S6 | Count-in with media | plays one bar of clicks at the media's tempo at the start position, then the media starts on the downbeat, no freeze, no rewind; the song's first beat within the first-click tolerance (S4) (spike 6, emulated count-in: 1× ±1.3 ms, 1.5× ≤ +2.7 ms, 0.5× ≤ +13.9 ms; the count-in MIDI itself **(untested)**). External media: for starts through alphaTab; a start inside the media player skips the count-in |
@@ -371,8 +371,10 @@ or do, the recommended answer and its evidence (spikes in `docs/spikes/issue-239
 - **F-14** (both): count-in media pre-roll below 1×. Recommended 120 ms (spike 6: 0.5× downbeat
   +4.5…+13.9 ms), or keep 60 ms (+7.2…+20.5 ms). Either way restate the 1.5× figure as 0…+2.7 ms and mark
   the first count-in at an unlearned speed (open).
-- **Q-1** (both): whether the S4 gate counts the first Play at a speed with no learned start lead.
-  Recommended: report it against S4's (open) item, don't gate it.
+- **Q-1** (both): **decided in the plan review: reported, not gated.** S4 reports the first Play at a speed
+  with no learned start lead and doesn't gate on it; S12 does the same for a loop's first repetition after a
+  speed change. Spike 12: between learned speeds the straight-line guess lands +6…+22 ms with no re-sync; with
+  nothing learned (every page load) it lands 25–37 ms off and re-syncs once.
 
 **Loops and external media**
 

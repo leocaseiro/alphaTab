@@ -115,7 +115,7 @@ recommendation as it stands. "Spiked" says whether a run backs it.
 | F-9d | both | S12 (new success criterion) plus lab tests for an auto-BPM loop (+5 BPM per wrap), a held sweep in 1-BPM steps, and the first Play at an unprobed speed | Task 21 (lab) · Task 22 (S12 into the spec, run) | lab | sweep: yes (spike 11 §1) | High (the sweep re-syncs at each step) · Medium (rest) |
 | F-3 | both | Settle re-sync threshold at 1× = max(12 ms, 2 × `baseLatency` + 1 ms). The lab's first-click tolerance = max(±11 ms, ±2 × `baseLatency`). A run on a machine with `baseLatency` > 5.3 ms. | Task 9 (code) · Task 21 (lab) · Task 23 (run, D-2) | unit + lab | no | Low |
 | F-14 | both | Count-in media pre-roll below 1× = 120 ms (the recommendation). D-3 compares 60 ms and 120 ms with the real count-in. The 1.5× figure is restated as 0…+2.7 ms. The first count-in at an unlearned speed is marked (open). | Task 10 (constant) · Task 22 (D-3, spec edits) | lab count-in test at 0.5× | yes (spike 6, emulated count-in) | Medium |
-| Q-1 | both | S4 reports the first Play at a speed with no learned start lead separately and doesn't gate on it (the recommendation) | Task 22 (D-4; can be settled during the plan review) | lab start test's first-Play cell | n/a (a reporting rule) | High |
+| Q-1 | both | S4 reports the first Play at a speed with no learned start lead separately and doesn't gate on it; S12 does the same for each auto-BPM repetition (D-4, settled in the plan review) | Task 22 (D-4, settled) | lab start test's first-Play cell | yes (spikes 11 §2, 12) | High |
 | F-15 | both | Re-run spike 4's loop test at 1× and 1.5×, listen at each wrap the lab flags, then pick the S10 gate (provisional: a median gate plus an ear check) | Task 22 (D-5) | lab loop test | partly (spike 4) | Medium |
 | F-5 | library-only | External media wraps without pausing: the media seeks to the range start, the synth stays silent until the first position update after the jump, then restarts. S10 is scoped to the backing track. | Task 19 (code, spec edit) | unit (fakes) | no | Low |
 | F-6 | alphaTabWebsite | A start pressed inside YouTube (the position moved at `play()` or within 100 ms) gets no count-in and no learning. Integrations call `updatePosition()` right before `api.play()`. | Task 19 (code, spec §7 edit) · Task 20 (setting docs) | unit | no | Low |
@@ -154,7 +154,7 @@ Each one is flagged where it is used. Keep or drop them during the plan review.
 | D-1 | F-9a probe part: a probe value that lands mid-playback settles (no forced re-sync) **or** re-syncs as §6.4 says today | Task 22 | settle only |
 | D-2 | F-3: keep the `baseLatency`-derived thresholds **or** go back to the fixed 12 ms / ±11 ms | Task 23 | derived |
 | D-3 | F-14: count-in pre-roll below 1× = 120 ms **or** 60 ms | Task 22 | 120 ms |
-| D-4 | Q-1: S4 gates the first Play at an unlearned speed **or** only reports it | Task 22 (or the plan review) | report only |
+| D-4 | Q-1: S4 gates the first Play at an unlearned speed **or** only reports it | settled in the plan review | report only |
 | D-5 | F-15: S10 gate = every wrap ≤ 30 ms **or** median ≤ 30 ms plus an ear check | Task 22 | median + ear |
 | D-6 | FYI-3: `synthVolume` stays public **or** is dropped (apps use `backingTrackVolume` + `masterVolume`) | settled in the plan review | public (as §7 says) |
 | D-7 | R-2: the fallback when WebKit refuses the delayed `play()` | Task 24 | safety net only |
@@ -10261,7 +10261,7 @@ git push
 
 ---
 
-### Task 22: Acceptance run on this machine — and decision gates D-1, D-3, D-4, D-5
+### Task 22: Acceptance run on this machine — and decision gates D-1, D-3, D-5
 
 **Files:**
 - Create: `docs/spikes/issue-2397/acceptance-<date>.md` (the results, beside the §1 targets)
@@ -10301,18 +10301,24 @@ await syncLab.lab().measureLatency(0.25); await syncLab.lab().measureLatency(2)
 Record the click offsets and the measured latencies next to spike 5's (0.25×: 80 ms, 2×: −6 ms). These speeds are
 reported, not gated.
 
-- [ ] **Step 3: STOP — decision gate D-4 (Q-1): does S4 gate the first Play at an unlearned speed?**
+- [ ] **Step 3: S4 — the first Play at a speed with no learned start lead (Q-1, D-4: reported, not gated)**
 
-Run `await syncLab.firstPlayAtUnprobedSpeedTest([0.625, 0.875])` on a fresh page load. Put to the person as
-`[Q-D4]`:
+D-4 was settled in the plan review: these starts are reported against S4, not gated. On a fresh page load, click
+the page once and wait until `syncLab.lab().probeLatencies` lists 1, 0.5, 0.75, 1.25 and 1.5. Then:
 
-- **Scenario:** you open a song and press Play at 0.875× before the lab, or the app, has played at that speed.
-- **Option 1 (recommended; implemented reporting; High; rule only):** report that first Play against S4's (open)
-  item, don't gate on it. Spike 11: 0.875× lands within 5 ms, 0.625× +18…+23 ms.
-- **Option 2:** gate on it at ±20 ms. That fails whenever the straight-line guess is more than ~20 ms off (spike 11:
-  once just over).
+```text
+await syncLab.startTest(1, 30, 0.5)
+await syncLab.startTest(2, 30, 0.5)
+await syncLab.startTest(2, 30, 0.75)
+await syncLab.startTest(2, 30, 1)
+await syncLab.firstPlayAtUnprobedSpeedTest([0.625, 0.875])
+```
 
-Apply the answer to §1 S4's "(open)" sentence.
+The first line is the page's first Play, with nothing learned (learned values live in memory only): report it on
+its own (spike 4: 0.5× −29.6 ms; spike 12: −24.7 ms and one re-sync). The next three lines learn the start leads
+at 0.5×, 0.75× and 1×, so the last line measures the straight-line guess between learned speeds (spike 11 §2:
+0.875× within 5 ms, 0.625× +18…+23 ms; spike 12: 19 of 21 within ±20 ms). Record both next to S4; neither gates
+it.
 
 - [ ] **Step 4: STOP — decision gates D-3 (F-14) and S6, the count-in**
 
@@ -10361,9 +10367,9 @@ Add S12 to §1, with the numbers this run measured:
 **After** (a new row under S11):
 > S12 | Speed changes during playback (the apps' patterns) | a held sweep in 1-BPM steps every 250 ms: one
 > re-sync per step (Chrome's media lands 15–43 ms behind at each change, spike 11), clicks back within S4b's
-> tolerance 1.5 s after the last step; an auto-BPM loop (+5 BPM per wrap, 10 wraps): each repetition's first beat
-> within S4b's tolerance, no missing clicks; the first Play at an unprobed speed: as S4 (Q-1 decides whether it
-> gates)
+> tolerance 1.5 s after the last step; an auto-BPM loop (+5 BPM per wrap, 10 wraps): no missing clicks (so no
+> skipped first beat); each repetition's first beat is reported, not gated, because every wrap restarts at a speed
+> with no learned start lead (as S4, Q-1); the first Play at an unprobed speed: as S4 (reported, not gated)
 
 - [ ] **Step 7: STOP — decision gate D-1 (F-9a), a probe value mid-playback**
 
