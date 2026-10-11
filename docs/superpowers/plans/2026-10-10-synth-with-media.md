@@ -10623,7 +10623,8 @@ If either try fails, stop here, fix it on `feat/2397-synth-with-media` (with a t
 
 **Files (alphaTabWebsite):** `package.json`, its lockfile, `patches/@coderline+alphatab+<alpha>.patch` (new),
 `patches/@coderline+alphatab+1.8.1.patch` (delete), the rhythm game's API settings and YouTube player options,
-`cross-markers.tsx`, `src/utils.ts` (`supportsMixing()`).
+`cross-markers.tsx`, `src/utils.ts` (`supportsMixing()`), `src/components/AlphaTabRhythmGame/youtube-player.tsx` (the
+volume scale).
 
 **F-10** (both apps; our design's problem; not spiked; Medium): §11 step 4 turns the feature on in each app. The
 rhythm game creates its YouTube player with `controls: 0` and `disablekb: 1`, so starts go through the app's Play
@@ -10712,6 +10713,25 @@ Where it creates the YouTube player, add `controls: 0` and `disablekb: 1` to `pl
 player: YouTube's terms forbid it (§7). If the game starts alphaTab from YouTube's `PLAYING` event, call
 `output.updatePosition(player.getCurrentTime() * 1000)` right before `api.play()` (F-6). Set
 `mediaSyncOffsetInMilliseconds` to the value found by ear in Task 22 Step 9, if one was needed.
+
+**The YouTube wrapper's volume** (a bug in the app today; with mixing on it hits on every switch to YouTube). The
+IFrame API's `setVolume`/`getVolume` speak 0–100; alphaTab's `masterVolume` and the wrapper's `HTMLMediaElement`-like
+`volume` speak 0–1. In `src/components/AlphaTabRhythmGame/youtube-player.tsx`, scale both ways:
+
+```ts
+get volume(): number {
+    // the IFrame API speaks 0-100; HTMLMediaElement and alphaTab's masterVolume speak 0-1
+    return (iframeApiPlayer.current?.getVolume() ?? 100) / 100;
+},
+set volume(value: number) {
+    if (iframeApiPlayer.current) {
+        iframeApiPlayer.current.setVolume(Math.round(Math.min(Math.max(value, 0), 1) * 100));
+    }
+},
+```
+
+Check: in YouTube mode, set the Volume slider to 0.5: the video plays at half volume, not near silence; and with
+mixing on, the video keeps its volume once the synthesizer is ready.
 
 - [ ] **Step 6: Check, commit, push**
 
