@@ -123,7 +123,7 @@ recommendation as it stands. "Spiked" says whether a run backs it.
 | F-11 | alphaTabWebsite | Both clocks subtract `mediaSyncOffsetInMilliseconds × speed`. The spec states the sign (+ = synth later) and the unit (ms of real time). | Task 11 (code, spec edit) | unit | no (arithmetic) | High |
 | F-13 | both | Limiter: −1 dBFS, ratio 20, knee 0, attack 1 ms, release 100 ms, then a fixed −0.57 dB trim | Task 14 · lab check in Task 22 | unit (node params) + lab (spike 8 script) | yes (spike 8) | High |
 | FYI-3 | both | Keeps `synthVolume` public (D-6, settled in the plan review) | Task 13 (D-6, settled) | none needed | n/a | High |
-| F-10 | both | Turn the flag on in both apps. Rhythm game: YouTube player with `controls: 0`, `disablekb: 1`. notation-hero keeps its controls (a notation-hero spec delta). | Tasks 26, 27 | manual, in each app | no | Medium |
+| F-10 | both | Turn the flag on in both apps where Task 24's platform rule allows (`supportsMixing()`). Rhythm game: YouTube player with `controls: 0`, `disablekb: 1`. notation-hero keeps its controls (a notation-hero spec delta). | Tasks 24, 26, 27 | manual, in each app | no | Medium |
 | F-18 | both | Acceptance list becomes "S1–S6 (S6: backing track), S4b, S10, S12" after D-3 and D-4 | Task 22 | lab | n/a | High |
 | R-1 | both | iPad with the Ring/Silent switch on: is the backing track still heard? Remedy to try: `navigator.audioSession.type = 'playback'`. | Task 24 (D-8) | iPad, manual | no | Low |
 | R-2 | both | WebKit may refuse a `play()` that comes a bar after the gesture. Safety net: a media start that never happens pauses both and warns (Task 17). The real fallback is decided at D-7. | Task 17 (safety net) · Task 24 (D-7) | unit + iPad | no | Low |
@@ -10499,7 +10499,8 @@ git push
 §9's target-device row: before delivery, run the sync lab's start, loop and count-in tests and the listening check
 on two devices. One is an iPad (WebKit, inside the Web MIDI Browser shim app both apps use there); the other is an
 Android tablet (Chrome). Load the lab over HTTPS: AudioWorklets need a secure context. A device that misses the
-targets stays media-only in both apps until it passes (each app leaves the flag off there).
+targets stays media-only in both apps until it passes (each app leaves the flag off there): Step 5 writes that down
+as a platform rule, and Tasks 26 and 27 apply it.
 
 - [ ] **Step 1: Serve the lab over HTTPS on the local network**
 
@@ -10545,7 +10546,19 @@ the person as `[Q-D7]`, with the result:
 
 If it is not refused, record that and keep the safety net.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: The platform rule (Tasks 26 and 27 copy it)**
+
+End the dated `.md` with a **Platform rule** table: one row per platform class, how the apps detect it, the runs
+that cover it, and the flag. A class that missed a §1 target, or that D-8 left media-only, gets "off".
+
+| Class | Detected by | Runs | Flag |
+|---|---|---|---|
+| Chromium on a desktop | `Chrome/` in the user agent, no `Android` | Tasks 22 and 23 | on, unless a run missed a §1 target |
+| Android Chrome | `Chrome/` and `Android` in the user agent | this task | on, unless it missed a target |
+| iOS and iPadOS (WebKit: every browser there) | the rhythm game's `isIOS()` | this task, D-7, D-8 | on, unless it missed a target or D-8 left mixing off on iOS |
+| Every other browser (desktop Safari, desktop Firefox) | none of the above | none | on (chosen in the plan review: reach over a run; spec §13's manual checks are still owed) |
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add docs/spikes/issue-2397/target-devices-*.md
@@ -10610,7 +10623,7 @@ If either try fails, stop here, fix it on `feat/2397-synth-with-media` (with a t
 
 **Files (alphaTabWebsite):** `package.json`, its lockfile, `patches/@coderline+alphatab+<alpha>.patch` (new),
 `patches/@coderline+alphatab+1.8.1.patch` (delete), the rhythm game's API settings and YouTube player options,
-`cross-markers.tsx`.
+`cross-markers.tsx`, `src/utils.ts` (`supportsMixing()`).
 
 **F-10** (both apps; our design's problem; not spiked; Medium): §11 step 4 turns the feature on in each app. The
 rhythm game creates its YouTube player with `controls: 0` and `disablekb: 1`, so starts go through the app's Play
@@ -10667,15 +10680,32 @@ npx patch-package @coderline/alphatab
 `patches/@coderline+alphatab+<alpha>.patch`. It only adds this feature, plus any `develop` commits newer than the
 alpha.
 
-- [ ] **Step 5: Turn it on (F-10)**
+- [ ] **Step 5: Turn it on (F-10) where Task 24's platform rule allows**
 
-Where the rhythm game builds its alphaTab settings:
+Copy the **Platform rule** table from `docs/spikes/issue-2397/target-devices-<date>.md` (alphaTab, Task 24 Step 5)
+into `MIXING_ON` below, and add the helper to `src/utils.ts`, next to `isIOS()`:
 
 ```ts
-player: {
-    // ...the existing player settings...
-    enableSynthesizerWithMedia: true
+// alphaTab #2397: where the synthesizer plays along backing tracks and YouTube (Task 24's platform rule)
+const MIXING_ON = { chromiumDesktop: true, androidChrome: true, iosWebKit: true, other: true };
+
+export function supportsMixing(): boolean {
+  // what alphaTab itself needs; without it alphaTab plays the media alone and logs a warning
+  if (!window.isSecureContext || !("AudioWorkletNode" in window)) return false;
+  if (isIOS()) return MIXING_ON.iosWebKit;
+  const ua = navigator.userAgent;
+  if (/\bChrome\//.test(ua)) {
+    return /\bAndroid\b/.test(ua) ? MIXING_ON.androidChrome : MIXING_ON.chromiumDesktop;
+  }
+  return MIXING_ON.other; // desktop Safari, desktop Firefox
 }
+```
+
+Then, where the rhythm game builds its alphaTab settings (the `useAlphaTab` callback in
+`src/components/AlphaTabRhythmGame/index.tsx`), next to `s.player.playerMode`:
+
+```ts
+s.player.enableSynthesizerWithMedia = supportsMixing();
 ```
 
 Where it creates the YouTube player, add `controls: 0` and `disablekb: 1` to `playerVars`. Don't overlay the
