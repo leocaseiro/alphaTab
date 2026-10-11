@@ -91,8 +91,11 @@ that owns the code.
    (`keeps-following-after-the-song-ends`) and Task 16 (`the-media-end-stops-both-once`).
 2. **Actions in the middle of a handshake**: Pause while the media start is still delayed, Pause or a seek during
    the count-in, a speed change during the count-in. Expected: no media `play()` after a Pause, no second worklet,
-   no `stateChanged` from inside the handshake. Tests: Task 16 (`pause-during-the-media-delay-cancels-the-media-start`),
-   Task 17 (`pause-during-the-count-in-cancels-the-hand-off`, `a-seek-during-the-count-in-restarts-without-count-in`).
+   no `stateChanged` from inside the handshake; after a speed change during the count-in, its last clicks and the
+   media's start follow the new speed. Tests: Task 16 (`pause-during-the-media-delay-cancels-the-media-start`),
+   Task 17 (`pause-during-the-count-in-cancels-the-hand-off`, `a-seek-during-the-count-in-restarts-without-count-in`,
+   `a-speed-change-during-the-count-in-hands-off-at-the-new-speed`, `a-slower-count-in-does-not-hit-the-time-limit`),
+   and on the real synth Task 4 (`a-seek-during-the-count-in-ends-it`).
 3. **Play before the background probe is done, or while the `AudioContext` is still suspended** (autoplay policy).
    Expected: the start uses the straight-line guess, the probe waits for a running context, and a value that
    lands mid-playback settles without cutting notes (D-1). Tests: Task 10 (`latency-change-settles-without-resync`),
@@ -584,6 +587,18 @@ describe('FollowMediaTests', () => {
         }
     });
 
+    it('tick-to-media-time-at-the-song-end-is-the-last-sync-point', async () => {
+        // the generator ends the sync points with one at the song's end; today's mapping gives 0 / 0 there
+        const { midi, syncPoints } = await loadSyncPointSong();
+        const last = syncPoints[syncPoints.length - 1];
+        for (const speed of [0.5, 1, 1.5]) {
+            const { sequencer } = createSequencer(midi, syncPoints, speed);
+            const songEnd = sequencer.mainTickToMediaTime(sequencer.currentEndTick, MediaDuration);
+            expect(Number.isFinite(songEnd)).toBe(true);
+            expect(songEnd).toBe(last.syncTime);
+        }
+    });
+
     it('sync-bpm-at-follows-the-active-sync-point', async () => {
         const { midi, syncPoints } = await loadSyncPointSong();
         const { sequencer } = createSequencer(midi, syncPoints, 1);
@@ -664,12 +679,19 @@ In `packages/alphatab/src/synth/MidiFileSequencer.ts`, add after `fillMidiEventQ
 
     /**
      * The media time at which the main song reaches the given tick (the inverse of
-     * {@link mainMidiTimeFromMediaTime}).
+     * {@link mainMidiTimeFromMediaTime}). At or past the last sync point it is that point's media time.
      */
     public mainTickToMediaTime(tick: number, mediaDuration: number): number {
         const timePosition = this.mainTickPositionToTimePosition(tick);
-        if (this._mainState.syncPoints.length === 0) {
+        const syncPoints = this._mainState.syncPoints;
+        if (syncPoints.length === 0) {
             return timePosition * this.playbackSpeed;
+        }
+        // the generator's last sync point marks the song's end, where today's mapping divides 0 by 0 (NaN; a
+        // latent bug in today's code, left as it is): a tick at or past that point maps to its media time
+        const last = syncPoints[syncPoints.length - 1];
+        if (timePosition * this.playbackSpeed >= last.synthTime) {
+            return last.syncTime;
         }
         return this.mainTimePositionToBackingTrack(timePosition, mediaDuration);
     }
@@ -719,7 +741,7 @@ Then give the count-in an optional tempo:
 - [ ] **Step 5: Run the tests to see them pass**
 
 Run: `npx vitest run test/audio/FollowMedia.test.ts`
-Expected: PASS (6 tests).
+Expected: PASS (7 tests).
 
 - [ ] **Step 6: Run the repo gates and commit**
 
@@ -1325,7 +1347,7 @@ git push
 ### Task 4: Count-in while following
 
 **Files:**
-- Modify: `packages/alphatab/src/synth/AlphaSynth.ts` (`play()`, new `countInStarted` event)
+- Modify: `packages/alphatab/src/synth/AlphaSynth.ts` (`play()`, `seekToMediaTime`, new `countInStarted` event)
 - Modify: `packages/alphatab/test/audio/FollowMedia.test.ts`
 
 **Interfaces:**
@@ -1395,6 +1417,30 @@ Add to the `FollowMediaSynthTests` describe in `FollowMedia.test.ts`:
         expect(lengths[0]).toBeCloseTo(3 * 600, 6); // the score's tempo without sync points
     });
 
+    it('a-seek-during-the-count-in-ends-it', async () => {
+        // Review Focus 2: the combined player pauses mid count-in, seeks, and plays again without a count-in
+        const { midi, syncPoints } = await loadSyncPointSong();
+        const { output, synthesizer, synth } = createFollowingSynth(midi, syncPoints, 1, syncPoints[2].syncTime);
+        synth.countInVolume = 1;
+        synth.play();
+        output.request(); // the first part of the count-in
+        synth.pause();
+        synth.seekToMediaTime(20000);
+        synth.countInVolume = 0;
+        const first = output.chunks.length;
+        synthesizer.events.length = 0;
+        synth.play();
+        output.request();
+
+        const chunk = output.chunks[first];
+        expect(chunk.mediaStart).toBe(20000); // nothing left of the old count-in
+        expect(chunk.countInEnd).toBe(false);
+        // the song state was processed up to the target: no burst of the notes before it
+        const oracle = createSequencer(midi, (await loadSyncPointSong()).syncPoints, 1).sequencer;
+        const songTime = oracle.mainMidiTimeFromMediaTime(20000, MediaDuration);
+        expect(noteOnTimes(synthesizer).filter(t => t < songTime - 1)).toEqual([]);
+    });
+
     it('count-in-started-fires-only-while-following', () => {
         const midi = loadTexSong(`
             \\tempo 120
@@ -1443,6 +1489,24 @@ and change the count-in start in `play()`:
 +                (this.countInStarted as EventEmitterOfT<number>).trigger(this.sequencer.currentEndTime);
 +            }
          }
+```
+
+and end a running count-in in `seekToMediaTime`, next to the one-time MIDI. The combined player pauses mid
+count-in (a seek, Pause or Stop during it) and seeks before it plays again. The end must come before the seek:
+while a count-in plays, the `timePosition` setter only moves the song's time without processing its events, and
+the skipped notes would then all fire at once.
+
+```diff
+         if (this.sequencer.isPlayingOneTimeMidi) {
+             this._stopOneTimeMidi();
+         }
++        if (this.sequencer.isPlayingCountIn) {
++            // the combined player paused mid count-in (a seek, Pause or Stop): end the count-in before the seek,
++            // as the in-stream end does, so the seek processes the song's events and plays no stale count-in
++            this.sequencer.resetCountIn();
++            this.synthesizer.setupMetronomeChannel(this.sequencer.metronomeChannel, this.metronomeVolume);
++        }
+         this._followMediaTime = mediaTime;
 ```
 
 - [ ] **Step 4: Run the tests to see them pass**
@@ -3611,7 +3675,7 @@ earlier in the song.
 - At 1×, the synth starts **at** the target and never past it. A positive media latency is caught up by the settle
   nudge, so the threshold allows that gap until the drift is within 2 ms.
 - At other speeds both start 60 ms of media time early, and the synth starts where the media will be heard
-  (latency applied).
+  (latency applied). Near media time 0 the pre-roll stops at 0: the media can't seek below it.
 - L is learned from the median of the first three readings after Play. If a re-sync comes first, it is learned from
   that reading instead.
 - Count-in hand-off: `play()` at `countInEndFrame / sampleRate − (mediaStartLatency(speed) + preRoll / speed)`. The
@@ -3653,6 +3717,16 @@ describe('MediaSyncControllerStartTests', () => {
         plan = controller.planStart(5000, 1.5, -4);
         expect(plan.mediaSeekTo).toBe(4940);
         expect(plan.synthSeekTo).toBeCloseTo(4940 - 6, 9);
+    });
+
+    it('the-pre-roll-stops-at-the-media-start', () => {
+        // a start near media time 0 (Play from the start, a loop from bar 1): the media can't seek below 0
+        const { controller } = setup();
+        let plan = controller.planStart(0, 0.5, 60);
+        expect(plan.mediaSeekTo).toBe(0);
+        expect(plan.synthSeekTo).toBe(60 * 0.5); // where the media is first heard
+        plan = controller.planStart(30, 1.5, 0);
+        expect([plan.mediaSeekTo, plan.synthSeekTo]).toEqual([0, 0]);
     });
 
     it('an-unlearned-speed-uses-the-straight-line-guess', () => {
@@ -3790,7 +3864,7 @@ export class MediaStartPlan {
     public speed: number = 1;
     /** Where playback is meant to be heard from (media ms). */
     public target: number = 0;
-    /** Where the media starts: the target, or PreRollMs earlier at speeds other than 1×. */
+    /** Where the media starts: the target, or PreRollMs earlier (never below 0) at speeds other than 1×. */
     public mediaSeekTo: number = 0;
     /** Where the synthesizer starts (media ms). */
     public synthSeekTo: number = 0;
@@ -3829,8 +3903,8 @@ New methods:
             plan.catchUpGapMs = Math.max(0, latency);
         } else {
             // Chrome's time-stretch distorts the first tens of ms above and below 1×: both start early, and the
-            // synth where the media will be heard (spikes 4 and 6)
-            plan.mediaSeekTo = target - MediaSyncConstants.PreRollMs;
+            // synth where the media will be heard (spikes 4 and 6). The media can't seek below its time 0.
+            plan.mediaSeekTo = Math.max(0, target - MediaSyncConstants.PreRollMs);
             synthBase = plan.mediaSeekTo + latency;
         }
         // learned per speed; the straight-line guess before that (F-9a)
@@ -7856,6 +7930,20 @@ describe('MediaSynthPlayerCountInTests', () => {
         expect(h.graph.currentTime).toBeCloseTo(2.76, 3);
     });
 
+    it('below-1x-the-pre-roll-stops-at-the-media-start', async () => {
+        // a count-in 50 ms into the media: it waits at 0, so the pre-roll is 50 ms, not 120
+        const h = await countingIn(0.5, 50);
+        expect(Math.min(...h.mediaOutput!.seekTimes)).toBeGreaterThanOrEqual(0);
+        h.synth.startCountIn(4000);
+        h.synthOutput.endCountIn(3 * 48000);
+        // play() at the boundary minus the pre-roll in real time: 50 / 0.5 = 100 ms
+        h.timer.advance(3000 - 100 - 12 - 1);
+        expect(h.mediaOutput!.isPlaying).toBe(false);
+        h.timer.advance(2);
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+        expect(h.graph.currentTime).toBeCloseTo(2.9, 3);
+    });
+
     it('a-refined-count-in-end-moves-the-media-start', async () => {
         const h = await countingIn();
         h.synth.startCountIn(2000);
@@ -7904,6 +7992,45 @@ describe('MediaSynthPlayerCountInTests', () => {
         expect(h.timer.pending).toBe(0);
     });
 
+    it('a-speed-change-during-the-count-in-hands-off-at-the-new-speed', async () => {
+        // Review Focus 2: the worker plays the clicks still to come at the new speed
+        const h = await countingIn();
+        h.synth.startCountIn(2000);
+        h.synthOutput.endCountIn(1.5 * 48000); // the count-in ends at 1.5 s
+        h.timer.advance(500);
+        h.player.playbackSpeed = 0.5;
+        // the media waits at the new pre-roll start (120 ms below 1x, F-14)
+        expect(h.mediaOutput!.seekTimes[h.mediaOutput!.seekTimes.length - 1]).toBeCloseTo(5000 - 120, 3);
+        // play() at the count-in end minus the pre-roll in real time: 120 / 0.5 = 240 ms
+        h.timer.advance(1500 - 240 - 12 - 1 - 500);
+        expect(h.mediaOutput!.isPlaying).toBe(false);
+        h.timer.advance(2);
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+        expect(h.graph.currentTime).toBeCloseTo(1.26, 3);
+        expect(h.player.controller.speed).toBe(0.5);
+        expect(h.player.diagnostics.countIns[0].speed).toBe(0.5);
+        h.timer.advance(300);
+        h.synthOutput.stamp(0, h.mediaOutput!.currentTime + 40);
+        h.synthOutput.stamp(0, h.mediaOutput!.currentTime + 40);
+        expect(h.player.controller.mediaStartLatencies.size).toBe(0); // a changed speed teaches nothing
+    });
+
+    it('a-slower-count-in-does-not-hit-the-time-limit', async () => {
+        const h = await countingIn();
+        h.synth.startCountIn(2000); // the time limit would be at 2.25 s
+        h.timer.advance(500);
+        h.player.playbackSpeed = 0.5; // the clicks still to come take twice as long: the end is at 3.5 s
+        h.timer.advance(2000);
+        expect(h.mediaOutput!.isPlaying).toBe(false);
+        h.synthOutput.endCountIn(3.5 * 48000);
+        h.timer.advance(1000);
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+        h.player.pause();
+        const plays = h.synth.count('play:');
+        h.player.play();
+        expect(h.synth.count('play:')).toBe(plays + 1); // still mixing
+    });
+
     it('a-media-start-that-never-happens-pauses-both', async () => {
         // R-2 safety net
         const h = await countingIn();
@@ -7935,15 +8062,24 @@ Import `MediaSyncConstants` (value) from `MediaSyncController`. Add above `Media
  */
 class CountInHandOff {
     public readonly target: number;
-    public readonly speed: number;
-    public readonly preRoll: number;
+    /** The speed of the Play: the synthesizer measures the count-in's length at it. */
+    public readonly startSpeed: number;
+    public speed: number;
+    public preRoll: number;
+    /** The count-in's length at speed 1 (ms); 0 until the synthesizer reports it. */
+    public lengthAt1x: number = 0;
+    /** The context frame of the count-in's end; -1 until the worklet reports it. */
+    public endFrame: number = -1;
     /** The context time (s) for the media's play(); -1 until the count-in end is known. */
     public playAt: number = -1;
     public handOffTimer: number = 0;
     public limitTimer: number = 0;
+    /** The speed changed during the count-in: the hand-off doesn't learn the media-start latency. */
+    public speedChanged: boolean = false;
 
     public constructor(target: number, speed: number, preRoll: number) {
         this.target = target;
+        this.startSpeed = speed;
         this.speed = speed;
         this.preRoll = preRoll;
     }
@@ -8000,18 +8136,26 @@ Only an app Play counts in:
          this._holdBefore = -1;
 ```
 
-A speed change during the count-in waits for the hand-off:
+A speed change during the count-in doesn't re-sync. The worker plays the clicks still to come at the new speed (its
+sequencer advances the count-in at the current speed), so the hand-off follows it (Review Focus 2):
 
 ```diff
 -        if (this._state === PlayerState.Playing && this._isMixing) {
 +        if (this._state === PlayerState.Playing && this._isMixing && !this._countIn) {
+             // both at the new speed with its latency: re-sync and settle (§6.2; spike 11)
+             this.controller.speedChanged(speed);
+         }
++        if (this._countIn) {
++            this._retimeCountIn(this._countIn, speed);
++        }
 ```
 
 New methods:
 
 ```ts
     private _startCountIn(target: number, speed: number): void {
-        const preRoll = MediaSyncController.preRoll(speed, true);
+        // the media can't wait below its time 0: near it the pre-roll shrinks (the hand-off time uses this value)
+        const preRoll = Math.min(MediaSyncController.preRoll(speed, true), Math.max(0, target));
         // the cursor stays at the start position meanwhile
         this._holdBefore = this._media.timePosition;
         this._synth.pause();
@@ -8032,9 +8176,11 @@ New methods:
         if (!countIn || countIn.limitTimer !== 0) {
             return;
         }
+        countIn.lengthAt1x = lengthMs * countIn.startSpeed;
         countIn.limitTimer = this._timer.setTimeout(
             () => this._onCountInTimeLimit(countIn),
-            lengthMs + MediaSyncConstants.CountInTimeLimitExtraMs
+            // (a speed change can come before this message)
+            Math.max(lengthMs, countIn.lengthAt1x / countIn.speed) + MediaSyncConstants.CountInTimeLimitExtraMs
         );
     }
 
@@ -8043,6 +8189,7 @@ New methods:
         if (!countIn) {
             return;
         }
+        countIn.endFrame = frame;
         countIn.playAt = this.controller.handOffPlayTime(frame, this._graph.sampleRate, countIn.speed, countIn.preRoll);
         if (countIn.handOffTimer !== 0) {
             // a refined estimate only moves playAt
@@ -8064,7 +8211,8 @@ New methods:
             new MediaSynthCountInRecord(countIn.speed, (this._graph.currentTime - countIn.playAt) * 1000)
         );
         this._playMedia();
-        this.controller.startedAfterHandOff(countIn.speed, true);
+        // a speed change during the count-in: nothing to learn from this start
+        this.controller.startedAfterHandOff(countIn.speed, !countIn.speedChanged);
         this._watchMediaStart(this.controller.mediaStartLatencies.get(countIn.speed) + MediaSyncConstants.MediaStartCheckMs);
     }
 
@@ -8077,6 +8225,31 @@ New methods:
         this._timer.clearTimeout(countIn.handOffTimer);
         this._fallBackToMediaOnly('the count-in hand-off never came');
         this._playMedia();
+    }
+
+    /**
+     * A speed change during the count-in (Review Focus 2): the media waits at the new speed's pre-roll start, the
+     * time limit allows for slower clicks, and a known count-in end gets the media's play() planned again.
+     */
+    private _retimeCountIn(countIn: CountInHandOff, speed: number): void {
+        const slower = speed < countIn.speed;
+        countIn.speed = speed;
+        countIn.preRoll = MediaSyncController.preRoll(speed, true);
+        countIn.speedChanged = true;
+        this._media.seekMediaTo(countIn.target - countIn.preRoll);
+        if (slower && countIn.limitTimer !== 0) {
+            // at most the whole bar at the new speed is still to come
+            this._timer.clearTimeout(countIn.limitTimer);
+            countIn.limitTimer = this._timer.setTimeout(
+                () => this._onCountInTimeLimit(countIn),
+                countIn.lengthAt1x / speed + MediaSyncConstants.CountInTimeLimitExtraMs
+            );
+        }
+        if (countIn.endFrame >= 0) {
+            this._timer.clearTimeout(countIn.handOffTimer);
+            countIn.handOffTimer = 0;
+            this._onCountInEnd(countIn.endFrame);
+        }
     }
 
     private _cancelCountIn(): void {
