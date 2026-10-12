@@ -87,9 +87,11 @@ Copied from the spec; every task's requirements include these.
 The five inputs the spec implies but no other test pins, most likely to bite first. Each has a test in the task
 that owns the code.
 
-1. **A backing track that runs past the score** (an outro after the last bar). The synth keeps following and stays
-   silent, the media plays to its end, and `finished` fires once. Tests: Task 3
-   (`keeps-following-after-the-song-ends`) and Task 16 (`the-media-end-stops-both-once`).
+1. **A backing track that runs past the score** (an outro after the last bar). The media plays to the song's end (its
+   last sync point), not to its own end: there the media player's own end check fires `finished` once and both stop,
+   as today, so the outro is not played. The synth doesn't stop by itself at the song's end: what it rendered past it
+   stays stamped and silent until that stop. Tests: Task 3 (`keeps-following-after-the-song-ends`) and Task 16
+   (`the-song-end-stops-both-once`, with an 18 s outro).
 2. **Actions in the middle of a handshake**: Pause while the media start is still delayed, Pause or a seek during
    the count-in, a speed change during the count-in. Expected: no media `play()` after a Pause, no second worklet,
    no `stateChanged` from inside the handshake; after a speed change during the count-in, its last clicks and the
@@ -7593,8 +7595,9 @@ no `stateChanged`. **Speed change while playing:** both get the new speed and th
 and settle (spike 11: Chrome's media lands 15–43 ms behind on every change). **Cursor:** positions from before the
 start are held back during the media's pre-roll, so the cursor doesn't jump back. **`playBeat` / `playNote` while
 playing (§6.1, spike 7):** pause both (the app sees Paused); the synth leaves follow mode and plays the beat on its
-own clock; the next Play follows the media again. **Song end:** when the media reaches its own end, `finished`
-fires once and both stop, as today. **Today's behavior kept:** `BackingTrackPlayer.updatePlaybackSpeed` also seeks
+own clock; the next Play follows the media again. **Song end:** when the media reaches the song's end (its last sync
+point), the media player's own end check fires `finished` once and both stop, as today: an outro after the last bar
+is not played. **Today's behavior kept:** `BackingTrackPlayer.updatePlaybackSpeed` also seeks
 the `<audio>` to the same place. That is the media player's own logic (§4, "not changed"); the clock reads no time
 while that seek runs, so the re-sync waits for it.
 
@@ -7763,13 +7766,15 @@ describe('MediaSynthPlayerTransportTests', () => {
         expect(h.synth.calls.slice(-4)).toEqual(['followMedia:true', 'pause', `seek:${h.synth.lastSeek()}`, 'play:countIn=0']);
     });
 
-    it('the-media-end-stops-both-once', async () => {
-        // Review Focus 1
+    it('the-song-end-stops-both-once', async () => {
+        // Review Focus 1: the song ends at its last sync point (42004.7 ms); an 18 s outro after it is not played
         const h = await playing(41950);
+        h.mediaOutput!.backingTrackDuration = 60000;
         h.mediaOutput!.advance(100);
         expect(h.finished).toBe(1);
         expect(h.states).toEqual(['Playing', 'Stopped']);
         expect(h.synth.count('stop')).toBeGreaterThan(0);
+        expect(h.mediaOutput!.isPlaying).toBe(false);
     });
 
     it('destroy-clears-pending-timers', async () => {
@@ -7949,8 +7954,9 @@ and the one-time MIDI:
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `npx vitest run test/audio/MediaSynthPlayer.Transport.test.ts test/audio/MediaSynthPlayer.Routing.test.ts`
-Expected: PASS. If `the-media-end-stops-both-once` sees no `finished`, check that `TestMediaOutput.advance` crosses the
-media's end (42000 ms): `BackingTrackPlayer.checkForFinish` fires `finished` once the tick passes the song's end.
+Expected: PASS. If `the-song-end-stops-both-once` sees no `finished`, check that `TestMediaOutput.advance` crosses the
+song's end on the media (its last sync point, 42004.7 ms): `BackingTrackPlayer.checkForFinish` fires `finished` once
+the tick passes the song's end.
 
 - [ ] **Step 5: Run the repo gates and commit**
 
