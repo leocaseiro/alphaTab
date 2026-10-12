@@ -12063,7 +12063,9 @@ to a different version than it was made for.
 `web/app/play/TransportRow.tsx` and `web/app/play/TracksPopover.tsx` (one prop comment each),
 `web/app/play/SettingsPopover.tsx` (the level rows' reasons), `web/lib/alphatab/settings-schema.ts` (two ranges, two
 rows), `web/lib/alphatab/transport-storage.ts` (two bounds), `docs/specs/2026-09-10-v0-local-file-player-design.md`
-(the spec delta).
+(the spec delta); for the drum tablature 1.9 draws (Step 2): `web/lib/alphatab/mixer-tracks.ts` and its test,
+`client/src/components/ui/TrackRow/TrackRow.tsx` (one doc comment), `web/e2e/player.e2e.ts` (two tests) and the
+changed screenshots in `web/e2e/pages.vr.ts-snapshots/`.
 
 notation-hero is a pnpm workspace, so it uses `pnpm patch`. patch-package only writes patches next to an npm or yarn
 lockfile. **F-10:** notation-hero has no external player yet: it plays a file's own recording or the synthesizer
@@ -12110,6 +12112,21 @@ pnpm patch-commit "<printed folder>"
 ```
 
 Expected: a patch file under `patches/` and a `patchedDependencies` entry.
+
+**The drum tablature 1.9 draws** (Task 26 Step 3 is the rhythm game's side of this upgrade). 1.8.4 never drew
+tablature on a drum staff; 1.9 draws it when the file asks, and the beat `/play` opens with
+(`web/public/notation/1-beat.gp`) asks. The Tracks popover still marks it "Tablature: unavailable", so it can't be
+hidden. Follow the rhythm game, which turned its notation toggles on for drum staves with the same alphaTab change:
+
+- `web/lib/alphatab/mixer-tracks.ts`: `tablatureAvailable` becomes `staff.tuning.length > 0` (1.9 gives every drum
+  staff a six-line tuning; piano and vocal staves still have none). Its two comments, and the `tablatureAvailable`
+  doc comment in `client/src/components/ui/TrackRow/TrackRow.tsx`, stop saying it is false for percussion. In
+  `mixer-tracks.test.ts`, a percussion staff with a tuning is available.
+- `web/e2e/player.e2e.ts`: "tablature is enabled only on a stringed staff with a tuning" expects Punk.gp's drum rows
+  to have a live Tablature toggle (off: that file doesn't ask for it). "turning off the only enabled notation type
+  does not crash the player" first turns the beat's tablature off, then checks that Standard notation locks.
+- Screenshots: six of the web lane's shots open that beat. Run `pnpm test:web:docker`, look at every changed shot,
+  and only then run `pnpm test:web:docker:update`.
 
 - [ ] **Step 3: Turn it on where Task 24's platform rule allows, open the controls over a recording, write the spec delta**
 
@@ -12197,7 +12214,9 @@ this case, in that file's existing style. The delta says:
 > Settings rows and the Tracks mixer then work over the recording; §4's and §7's "render disabled" rule applies only
 > while the recording plays alone. The score's tracks play over the recording by default; mute them in Tracks. Audio
 > transposition moves the synthesizer's tracks only; the recording keeps its key. The metronome and count-in volumes
-> go to 3, and Settings ▸ Player gains Synth volume (0–3) and Recording volume (0–1) for a recording. notation-hero
+> go to 3, and Settings ▸ Player gains Synth volume (0–3) and Recording volume (0–1) for a recording. With alphaTab
+> 1.9 a drum staff shows tablature when the file asks for it, and the Tracks popover's Tablature toggle hides it
+> (1.8.4 couldn't draw drum tablature, so §7 kept that toggle to stringed staves). notation-hero
 > has no external player yet (YouTube sync, J-2). When J-2 adds one: keep that player's own
 > controls enabled; a start pressed inside it plays the synthesizer from the player's position without a count-in,
 > and the count-in plays only for starts through the app's Play button; the integration calls `updatePosition()`
@@ -12205,7 +12224,9 @@ this case, in that file's existing style. The delta says:
 
 - [ ] **Step 4: Check, commit, push**
 
-Run the app's tests, then Task 26 Step 6's by-ear checks on a file with its own recording: the metronome, a loop, a
+Run the app's tests (`pnpm test`), its browser tests (`pnpm --filter web test:e2e`) and its screenshots
+(`pnpm test:web:docker`), as its CI runs them. Then Task 26 Step 6's by-ear checks on a file with its own recording:
+the metronome, a loop, a
 speed change (notation-hero has no YouTube flow). Also check that over that recording, Metronome, Count-In and the
 Tracks mixer are live (mute a track), that the Metronome volume row goes to 3 and keeps 2.5 after a reload, that
 Synth volume lifts the score's tracks over the recording, and that a file without a recording plays as before (Synth
