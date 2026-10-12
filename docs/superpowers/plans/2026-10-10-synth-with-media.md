@@ -6609,8 +6609,9 @@ Create `packages/alphatab/test/audio/MediaSynthPlayer.Routing.test.ts`:
  * The combined player: routing, readiness, the media-only fallback, volumes, output, probe schedule (spec §6.1).
  * @target web
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { EventEmitterOfT } from '@coderline/alphatab/EventEmitter';
+import { Logger } from '@coderline/alphatab/Logger';
 import type { IExternalMediaSynthOutput } from '@coderline/alphatab/synth/ExternalMediaPlayer';
 import { MidiEventsPlayedEventArgs } from '@coderline/alphatab/synth/MidiEventsPlayedEventArgs';
 import { PlayerState } from '@coderline/alphatab/synth/PlayerState';
@@ -6720,8 +6721,11 @@ describe('MediaSynthPlayerRoutingTests', () => {
     });
 
     it('no-soundfont-plays-the-media-alone-until-one-is-loaded', async () => {
-        // FYI-4, spike 10 §6
+        // FYI-4, spike 10 §6; the warning says why the metronome is silent (§6.1)
+        const warning = vi.spyOn(Logger, 'warning');
         const h = new MediaSynthHarness(false, false);
+        expect(warning.mock.calls.some(c => String(c[1]).startsWith('No player.soundFont is set'))).toBe(true);
+        warning.mockRestore();
         await h.loadSong(false);
         h.synth.becomeReady();
         expect(h.player.isReadyForPlayback).toBe(true);
@@ -7035,6 +7039,10 @@ export class MediaSynthPlayer implements IAlphaSynth {
         this._probe = parts.probe;
         this._probeLatencies = parts.probeLatencies;
         this._hasSoundFont = parts.hasSoundFont;
+        if (!this._hasSoundFont) {
+            // §6.1: the media plays alone, with a warning, until api.loadSoundFont() brings one
+            Logger.warning('Player', 'No player.soundFont is set; playing the media only until a SoundFont is loaded');
+        }
         this.controller = new MediaSyncController(this._synth, this._clock, this._timer);
         this.controller.baseLatencyMs = this._graph.baseLatencyMs;
         this.diagnostics = new MediaSynthDiagnostics(parts, this.controller);
