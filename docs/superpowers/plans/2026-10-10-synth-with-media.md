@@ -133,7 +133,7 @@ recommendation as it stands. "Spiked" says whether a run backs it.
 | F-10 | both | Turn the flag on in both apps where Task 24's platform rule allows (`supportsMixing()`). Rhythm game: YouTube player with `controls: 0`, `disablekb: 1` where mixing is on (on iOS only if Task 25's YouTube start check passed); elsewhere YouTube keeps its controls. notation-hero: Metronome, Count-In and the Tracks mixer open over a recording (the score's tracks play; mute them there); it has no external player yet (J-2), so its spec delta keeps that player's controls and F-6 for later. | Tasks 24, 26, 27 | manual, in each app | no | Medium |
 | F-18 | both | Acceptance list becomes "S1–S6 (S6: backing track), S4b, S10, S12" after D-3 and D-4 | Task 22 | lab | n/a | High |
 | R-1 | both | iPad with the Ring/Silent switch on: is the backing track still heard? Remedy to try: `navigator.audioSession.type = 'playback'`. | Task 24 (D-8) | iPad, manual | no | Low |
-| R-2 | both | WebKit may refuse a `play()` that comes a bar after the gesture (the count-in) or after the pre-roll seek (speeds other than 1×). Safety net: a media start that never happens pauses both and warns (Task 17). The real fallback is decided at D-7. | Task 17 (safety net) · Task 24 (D-7) | unit + iPad | no | Low |
+| R-2 | both | WebKit may refuse a `play()` that comes a bar after the gesture (the count-in) or after the pre-roll seek (speeds other than 1×). Safety net: a backing-track start that never happens pauses both and warns (Task 17); for external media the synth goes silent until the media moves, with no pause and no warning (Task 19). The real fallback is decided at D-7. | Task 17 (safety net) · Task 24 (D-7) | unit + iPad | no | Low |
 
 ### Gaps the plan fills (not in the spec, carried from the spikes)
 
@@ -8136,7 +8136,9 @@ that was reported but lands later (a late audio start) still hands off. The curs
 at the start position. **R-2 safety net** (not spiked; Low): WebKit may refuse a `play()` a bar after the gesture,
 and any other `play()` that runs after the Play call returned: away from 1× the start handshake plays the media from
 the pre-roll seek's `'seeked'` event, and a learned media delay plays it from a timer. If the media isn't running
-500 ms after any planned start, both pause and a warning is logged. Decision D-7 (Task 24) picks the real fallback.
+500 ms after any planned start, both pause and a warning is logged. External media is the exception (Task 19): the
+synth goes silent and restarts once the media moves, with no pause and no warning. Decision D-7 (Task 24) picks the
+real fallback.
 
 - [ ] **Step 1: Write the failing tests**
 
