@@ -130,7 +130,7 @@ recommendation as it stands. "Spiked" says whether a run backs it.
 | F-11 | alphaTabWebsite | Both clocks subtract `mediaSyncOffsetInMilliseconds × speed`. The spec states the sign (+ = synth later) and the unit (ms of real time). | Task 11 (code, spec edit) | unit | no (arithmetic) | High |
 | F-13 | both | Limiter: −1 dBFS, ratio 20, knee 0, attack 1 ms, release 100 ms, then a fixed −0.57 dB trim | Task 14 · lab check in Task 22 | unit (node params) + lab (spike 8 script) | yes (spike 8) | High |
 | FYI-3 | both | Keeps `synthVolume` public (D-6, settled in the plan review) | Task 13 (D-6, settled) | none needed | n/a | High |
-| F-10 | both | Turn the flag on in both apps where Task 24's platform rule allows (`supportsMixing()`). Rhythm game: YouTube player with `controls: 0`, `disablekb: 1`. notation-hero: Metronome, Count-In and the Tracks mixer open over a recording (the score's tracks play; mute them there); it has no external player yet (J-2), so its spec delta keeps that player's controls and F-6 for later. | Tasks 24, 26, 27 | manual, in each app | no | Medium |
+| F-10 | both | Turn the flag on in both apps where Task 24's platform rule allows (`supportsMixing()`). Rhythm game: YouTube player with `controls: 0`, `disablekb: 1` where mixing is on (on iOS only if Task 25's YouTube start check passed); elsewhere YouTube keeps its controls. notation-hero: Metronome, Count-In and the Tracks mixer open over a recording (the score's tracks play; mute them there); it has no external player yet (J-2), so its spec delta keeps that player's controls and F-6 for later. | Tasks 24, 26, 27 | manual, in each app | no | Medium |
 | F-18 | both | Acceptance list becomes "S1–S6 (S6: backing track), S4b, S10, S12" after D-3 and D-4 | Task 22 | lab | n/a | High |
 | R-1 | both | iPad with the Ring/Silent switch on: is the backing track still heard? Remedy to try: `navigator.audioSession.type = 'playback'`. | Task 24 (D-8) | iPad, manual | no | Low |
 | R-2 | both | WebKit may refuse a `play()` that comes a bar after the gesture (the count-in) or after the pre-roll seek (speeds other than 1×). Safety net: a media start that never happens pauses both and warns (Task 17). The real fallback is decided at D-7. | Task 17 (safety net) · Task 24 (D-7) | unit + iPad | no | Low |
@@ -11839,10 +11839,13 @@ any uncommitted work in it are never touched. Never run `git restore`, `git chec
 `git reset --hard` or `git clean` in an app checkout.
 
 Turn `player.enableSynthesizerWithMedia` on where the rhythm game creates the API (Task 26 Step 5 shows the change).
-Play a backing-track song with the metronome on, by ear, and then the YouTube flow. If you can serve this try over
-HTTPS to the iPad (as in Task 24 Step 1), on a fresh load turn the count-in on and tap Play on a YouTube song: does
-the video start after the count-in bar? A refused start is D-7's case for external media; note it in Task 24's
-dated `.md`. Then throw the branch away:
+Play a backing-track song with the metronome on, by ear, and then the YouTube flow. Then serve this try over
+HTTPS to the iPad (as in Task 24 Step 1), in the Web MIDI Browser app. On a fresh load turn the count-in on and tap
+Play on a YouTube song: does the video start after the count-in bar? Reload, turn the count-in off, set the speed to
+0.75 and tap Play once more: does it start? (Both starts reach YouTube after the tap, as in Task 24 Step 2.) Note
+both answers in Task 24's dated `.md`: Task 26 Step 5 hides YouTube's own controls on iOS only if both started
+(`YOUTUBE_LATE_START_WORKS_ON_IOS`). If the try can't reach the iPad, count it as not started. Then throw the branch
+away:
 
 ```bash
 cd -
@@ -11875,12 +11878,13 @@ If either try fails, stop here, fix it on `feat/2397-synth-with-media` (with a t
 
 **Files (alphaTabWebsite):** `package.json`, its lockfile, `patches/@coderline+alphatab+<alpha>.patch` (new),
 `patches/@coderline+alphatab+1.8.1.patch` (delete), the rhythm game's API settings and YouTube player options,
-`cross-markers.tsx`, `src/utils.ts` (`supportsMixing()`), `src/components/AlphaTabRhythmGame/youtube-player.tsx` (the
+`cross-markers.tsx`, `src/utils.ts` (`supportsMixing()`, `hideYouTubeControls()`), `src/components/AlphaTabRhythmGame/youtube-player.tsx` (the
 volume scale), `src/components/AlphaTabRhythmGame/playground-settings.tsx` (the level sliders).
 
-**F-10** (both apps; our design's problem; not spiked; Medium): §11 step 4 turns the feature on in each app. The
-rhythm game creates its YouTube player with `controls: 0` and `disablekb: 1`, so starts go through the app's Play
-button and keep their count-in (§7).
+**F-10** (both apps; our design's problem; not spiked; Medium): §11 step 4 turns the feature on in each app. Where mixing
+is on, the rhythm game creates its YouTube player with `controls: 0` and `disablekb: 1`, so starts go through the
+app's Play button and keep their count-in (§7); elsewhere, and on iOS unless Task 25 showed that a late start plays
+the video there, YouTube keeps its controls.
 
 - [ ] **Step 1: A branch in its own worktree, and the alpha that is current today**
 
@@ -11971,8 +11975,29 @@ Then, where the rhythm game builds its alphaTab settings (the `useAlphaTab` call
 s.player.enableSynthesizerWithMedia = supportsMixing();
 ```
 
-Where it creates the YouTube player, add `controls: 0` and `disablekb: 1` to `playerVars`. Don't overlay the
-player: YouTube's terms forbid it (§7). If the game starts alphaTab from YouTube's `PLAYING` event, call
+Where it creates the YouTube player (`src/components/AlphaTabRhythmGame/youtube-player.tsx`), hide YouTube's own
+controls only where mixing is on, and on iOS only if Task 25 Step 2's late starts played the video there. Add
+`controls?: 0 | 1; disablekb?: 0 | 1;` to the `playerVars` type there (today it lists only `autoplay`), and this
+helper to `src/utils.ts`, next to `supportsMixing()`:
+
+```ts
+// alphaTab #2397: YouTube's own controls are hidden only where mixing is on (starts then keep their count-in),
+// and on iOS only if a start issued after the tap played the video there (Task 25 Step 2)
+const YOUTUBE_LATE_START_WORKS_ON_IOS = false;
+
+export function hideYouTubeControls(): boolean {
+  return supportsMixing() && (!isIOS() || YOUTUBE_LATE_START_WORKS_ON_IOS);
+}
+```
+
+```ts
+playerVars: { autoplay: 0, ...(hideYouTubeControls() ? { controls: 0, disablekb: 1 } : {}) },
+```
+
+Where they stay, a start from YouTube's own play button plays without a count-in (F-6), and after a refused start
+the video can still be started. Don't overlay the player: YouTube's terms forbid it (§7).
+
+If the game starts alphaTab from YouTube's `PLAYING` event, call
 `output.updatePosition(player.getCurrentTime() * 1000)` right before `api.play()` (F-6).
 
 The sync offset is for YouTube only. Both media clocks subtract `mediaSyncOffsetInMilliseconds` (Task 11), and the
