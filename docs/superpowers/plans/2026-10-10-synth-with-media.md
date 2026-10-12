@@ -41,7 +41,7 @@ wrap.
 - **Each task ends green and pushed.** Run the gates named in the task, commit, `git push`. Never
   `git commit --no-verify` / `git push --no-verify`. Never a bare `git stash` (the stash is shared across
   worktrees). Tracked files never contain absolute home-directory paths: use repo-relative paths.
-- **Decision gates (D-1 … D-8)** are marked **STOP — decision gate**. The main session runs them, never a task
+- **Decision gates (D-1 … D-9)** are marked **STOP — decision gate**. The main session runs them, never a task
   subagent: run the measurement named in the gate first, then put the choice to the person as an
   `AskUserQuestion` picker tagged `[Q-D<n>]`, following `spec-triage-loop:triage` (load it before the first picker):
   scenario first, the app it affects, High / Medium / Low confidence per option, whether each option was spiked.
@@ -166,6 +166,7 @@ Each one is flagged where it is used. Keep or drop them during the plan review.
 | D-6 | FYI-3: `synthVolume` stays public **or** is dropped (apps use `backingTrackVolume` + `masterVolume`) | settled in the plan review | public (as §7 says) |
 | D-7 | R-2: the fallback when WebKit refuses the delayed `play()` | Task 24 | safety net only |
 | D-8 | R-1: whether to set `navigator.audioSession.type = 'playback'` while mixing on iOS | Task 24 | not set |
+| D-9 | Speed changes while mixing: keep the media player's seek and one re-sync per step **or** change the media's speed without that seek and let a step settle | Task 22 | keep |
 
 ## File structure
 
@@ -7719,8 +7720,10 @@ playing (§6.1, spike 7):** pause both (the app sees Paused); the synth leaves f
 own clock; the next Play follows the media again. **Song end:** when the media reaches the song's end (its last sync
 point), the media player's own end check fires `finished` once and both stop, as today: an outro after the last bar
 is not played. **Today's behavior kept:** `BackingTrackPlayer.updatePlaybackSpeed` also seeks
-the `<audio>` to the same place. That is the media player's own logic (§4, "not changed"); the clock reads no time
-while that seek runs, so the re-sync waits for it.
+the `<audio>` to its last reported position, which the `<audio>` output refreshes every 50 ms, so the recording
+jumps back up to 50 ms × speed at each change. That is the media player's own logic (§4, "not changed"); the clock
+reads no time while that seek runs, so the re-sync waits for it. Task 22 Step 6 measures whether this seek, rather
+than Chrome, puts the media behind at each change (decision gate D-9).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -10909,9 +10912,11 @@ async function loopTest(speed: number, bars = 2, wraps = 10, beatsPerBar = 4) {
 }
 
 /**
- * F-9d: a held tempo sweep (notation-hero's tempo button, one step per `stepMs`).
+ * F-9d: a held tempo sweep (notation-hero's tempo button, one step per `stepMs`). With `settleOnly` a speed change
+ * settles instead of re-syncing, and each step's row says how far the media player's own seek moved the recording
+ * back (`seekBackMs`) and how far behind the synth the media then was (`firstDriftMs`) (decision gate D-9).
  */
-async function sweepTest(fromSpeed: number, steps: number, stepSpeed: number, stepMs = 250) {
+async function sweepTest(fromSpeed: number, steps: number, stepSpeed: number, stepMs = 250, settleOnly = false) {
     const sr = ctx().sampleRate;
     measuringSetup(fromSpeed);
     api.pause();
@@ -10920,6 +10925,20 @@ async function sweepTest(fromSpeed: number, steps: number, stepSpeed: number, st
     await sleep(300);
     api.play();
     await sleep(3000);
+    const element = (api.player!.output as unknown as { audioElement: HTMLAudioElement }).audioElement;
+    const controller = mediaSynth().controller;
+    const speedChanged = controller.speedChanged.bind(controller);
+    if (settleOnly) {
+        // spike 11's settle rule: no forced re-sync; the drift rules still re-sync above the threshold
+        controller.speedChanged = (s: number) => {
+            const resync = controller.resync;
+            controller.resync = () => {};
+            speedChanged(s);
+            controller.resync = resync;
+        };
+    }
+    lab().enableDriftLog(true);
+    const stepRows: { seekBackMs: number; firstDriftMs: number | null }[] = [];
     tapOnsets.media.length = 0;
     tapOnsets.synth.length = 0;
     const f0 = ctx().currentTime * sr;
@@ -10927,9 +10946,17 @@ async function sweepTest(fromSpeed: number, steps: number, stepSpeed: number, st
     let speed = fromSpeed;
     for (let i = 0; i < steps; i++) {
         speed = Math.round((speed + stepSpeed) * 10000) / 10000;
+        const before = element.currentTime * 1000;
+        const stepT = performance.now();
         api.playbackSpeed = speed;
+        // the media player's own seek is synchronous: currentTime already reads its target
+        const seekBackMs = r1(before - element.currentTime * 1000)!;
         await sleep(stepMs);
+        const first = lab().stats.driftLog!.find(e => e.time >= stepT);
+        stepRows.push({ seekBackMs, firstDriftMs: first ? r1(first.drift) : null });
     }
+    controller.speedChanged = speedChanged;
+    lab().enableDriftLog(false);
     const lastStepT = performance.now();
     await sleep(2000);
     const f1 = ctx().currentTime * sr;
@@ -10951,7 +10978,9 @@ async function sweepTest(fromSpeed: number, steps: number, stepSpeed: number, st
         maxMs: r1(abs[abs.length - 1]),
         over20: abs.filter(x => x > 20).length,
         settledMaxMs: r1(settled.length ? Math.max(...settled) : Number.NaN),
-        settledWithinTolerance: settled.every(x => x <= firstClickToleranceMs(speed))
+        settledWithinTolerance: settled.every(x => x <= firstClickToleranceMs(speed)),
+        settleOnly,
+        stepRows
     };
     record('sweepTest', row);
     return row;
@@ -11343,7 +11372,7 @@ git push
 
 ---
 
-### Task 22: Acceptance run on this machine — and decision gates D-1, D-3, D-5
+### Task 22: Acceptance run on this machine — and decision gates D-1, D-3, D-5, D-9
 
 **Files:**
 - Create: `docs/spikes/issue-2397/acceptance-<date>.md` (the results, beside the §1 targets)
@@ -11360,6 +11389,12 @@ git push
   (`a-probe-value-during-playback-settles`)
 - Modify (only if Step 8's 1 s and 4 s probe values differ): `packages/alphatab/src/platform/javascript/MediaLatencyProbe.ts`
   (`LengthS`, `SpacingS`)
+- Modify (only if D-9 Option 2 is picked, Step 6): `packages/alphatab/src/synth/BackingTrackPlayer.ts`,
+  `packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts` (the speed setter),
+  `packages/alphatab/src/platform/javascript/MediaSyncController.ts` (`speedChanged`),
+  `packages/alphatab/test/audio/MediaSynthPlayer.Transport.test.ts`,
+  `packages/alphatab/test/audio/MediaSyncController.test.ts`,
+  `docs/superpowers/specs/2026-10-07-synth-with-media-design.md` (§4, §6.2)
 
 **Interfaces:** consumes the sync lab (Task 21) and the built feature (Tasks 2–20).
 
@@ -11478,6 +11513,28 @@ await syncLab.sweepTest(1, 12, -0.0072, 250)       (a held tempo button: 12 step
 await syncLab.sweepTest(0.75, 12, 0.0072, 250)
 await syncLab.autoBpmLoopTest(0.8, 5, 10)          (the rhythm game: +5 BPM per passed loop)
 ```
+
+Then the cause of each step's re-sync, as a decision gate (STOP — decision gate D-9):
+
+```text
+await syncLab.sweepTest(1, 12, -0.0072, 250, true)     (settle only: no forced re-sync)
+```
+
+Each step row has `seekBackMs` (how far the media player's own seek moved the recording back) and `firstDriftMs` (how
+far behind the synth the media then was). Put to the person as `[Q-D9]`:
+
+- **Scenario:** in notation-hero you hold the tempo button; at every 1-BPM step the recording jumps back a sliver and
+  the synth's notes are cut by a re-sync.
+- **Option 1 (implemented; spike 11; High):** keep the media player's seek and one re-sync per step (S12 below).
+- **Option 2 (Node-spiked only; Medium):** while mixing, change the media's speed without that seek (as G-1 does
+  for the synth) and let a step settle instead of re-syncing. Recommended only if `firstDriftMs − seekBackMs` stays
+  within the 15 ms settle threshold at every step (the seek is the cause).
+
+If Option 2: `BackingTrackPlayer` gets an internal `keepsPositionOnSpeedChange` that the combined player sets while
+mixing, `MediaSyncController.speedChanged()` settles without its forced re-sync (the drift rules still re-sync above
+the threshold), Task 9's `speed-change-re-syncs-and-settles` and Task 16's `a-speed-change-while-playing-re-syncs`
+follow, spec §4 and §6.2 get the carve-out, and S12 below says "settles" instead of "one re-sync per step". Run
+the repo gates, and commit and push it separately from the docs.
 
 Add S12 to §1, with the numbers this run measured:
 
