@@ -11648,6 +11648,14 @@ Every run so far was on Chrome/macOS (`baseLatency` ≤ 5.3 ms), where both equa
 Windows Chrome typically reports 10 ms. In the lab's console, `syncLab.lab().audioContext.baseLatency * 1000`
 must be above 5.3. Note the browser, OS and value.
 
+No such machine at hand: run Task 24 and let its devices stand in. Each device's 1× **Start test** row prints
+`toleranceMs`; above 11 means a `baseLatency` above 5.5 ms (the value is `toleranceMs` / 2), where the derived values
+first differ from today's. If a device reads above 11, its 1× Start test and Loop test rows are Step 2's run: put
+D-2 to the person (Step 3, naming that device in the scenario) before Task 24 Step 5. If D-2 then switches to
+Option 2, rebuild and re-run that device's 1× Start test and Loop test before Step 5. If no device reads above 11,
+D-2 keeps the derived default (it equals today's values there), the dated `.md` and spec §14 say F-3 is untested
+above 5.5 ms, and delivery (Tasks 25–27) doesn't wait for it.
+
 - [ ] **Step 2: Run the start and loop tests**
 
 ```text
@@ -11780,7 +11788,7 @@ that cover it, and the flag. A class that missed a §1 target, or that D-8 left 
 
 | Class | Detected by | Runs | Flag |
 |---|---|---|---|
-| Chromium on a desktop | `Chrome/` in the user agent, no `Android` | Tasks 22 and 23 | on, unless a run missed a §1 target |
+| Chromium on a desktop | `Chrome/` in the user agent, no `Android` | Task 22, and Task 23 if a machine was found | on, unless a run missed a §1 target |
 | Android Chrome | `Chrome/` and `Android` in the user agent | this task | on, unless it missed a target |
 | iOS and iPadOS (WebKit: every browser there) | the rhythm game's `isIOS()` | this task, D-7, D-8 | on, unless it missed a target or D-8 left mixing off on iOS |
 | Every other browser (desktop Safari, desktop Firefox) | none of the above | none | on (chosen in the plan review: reach over a run; spec §13's manual checks are still owed) |
