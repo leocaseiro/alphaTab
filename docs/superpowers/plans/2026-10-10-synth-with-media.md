@@ -11632,8 +11632,14 @@ s.player.enableSynthesizerWithMedia = supportsMixing();
 
 Where it creates the YouTube player, add `controls: 0` and `disablekb: 1` to `playerVars`. Don't overlay the
 player: YouTube's terms forbid it (§7). If the game starts alphaTab from YouTube's `PLAYING` event, call
-`output.updatePosition(player.getCurrentTime() * 1000)` right before `api.play()` (F-6). Set
-`mediaSyncOffsetInMilliseconds` to the value found by ear in Task 22 Step 9, if one was needed.
+`output.updatePosition(player.getCurrentTime() * 1000)` right before `api.play()` (F-6).
+
+The sync offset is for YouTube only. Both media clocks subtract `mediaSyncOffsetInMilliseconds` (Task 11), and the
+backing track was measured in sync without one (Task 22), so set it per media type. In the effect in
+`src/components/AlphaTabRhythmGame/index.tsx` that sets `playerMode`, next to that line in each branch, set
+`api.settings.player.mediaSyncOffsetInMilliseconds` to the value found by ear in Task 22 Step 9 in the
+`MediaType.YouTube` branch (0 if none was needed), and to 0 in the `MediaType.Synth` and `MediaType.Audio` branches.
+The clocks read it live, so a song with its own recording never plays with the YouTube value.
 
 **The YouTube wrapper's volume** (a bug in the app today; with mixing on it hits on every switch to YouTube). The
 IFrame API's `setVolume`/`getVolume` speak 0–100; alphaTab's `masterVolume` and the wrapper's `HTMLMediaElement`-like
