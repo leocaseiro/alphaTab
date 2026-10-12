@@ -8945,6 +8945,29 @@ describe('MediaSynthPlayerExternalTests', () => {
         expect(last(h)).toBe('play:countIn=0'); // the synth restarts at the range start
     });
 
+    it('a-whole-song-loop-wraps-to-bar-1-after-a-lead-in', async () => {
+        // the video's bar 1 comes 2 s in (an intro): every pass goes back to bar 1, not to the intro
+        const h = new MediaSynthHarness(true);
+        await h.loadSong(true, 2000);
+        h.player.isLooping = true;
+        const songEnd = h.media.tickToMediaTime(h.media.loadedMidiInfo!.endTick);
+        h.report(songEnd - 300);
+        h.player.play();
+        let position = songEnd - 300;
+        for (let guard = 0; h.finished === 0 && guard < 10000; guard++) {
+            h.timer.advance(50);
+            position += 50;
+            h.report(position);
+        }
+        expect(h.finished).toBe(1);
+        expect(h.handler!.seekTimes[h.handler!.seekTimes.length - 1]).toBeCloseTo(2000, 3);
+        for (let i = 0; i < 3; i++) {
+            h.timer.advance(50);
+            h.report(2000 + i * 50);
+        }
+        expect(last(h)).toBe('play:countIn=0');
+    });
+
     it('a-stall-silences-the-synth-and-restarts-it-after', async () => {
         // F-17, spike 9 §4
         const h = await externalPlaying();
@@ -9214,7 +9237,8 @@ pausing (next).
 +        const range = this._playbackRange;
 +        if (this._externalClock) {
 +            // F-5: external media wraps without pausing: seek it, the synth waits for the first update after
-+            const start = range ? this._media.tickToMediaTime(range.startTick) : 0;
++            // without a range the song's start: bar 1's media time, as the backing-track wrap and today's player go
++            const start = this._media.tickToMediaTime(range ? range.startTick : 0);
 +            this._media.seekMediaTo(start);
 +            this._jumpExternal(start);
 +            return;
