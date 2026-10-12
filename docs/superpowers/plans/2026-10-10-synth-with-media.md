@@ -8891,6 +8891,9 @@ F-17's model:
   once the media moves.
 - **Media only** (no SoundFont, or the synth failed): there is no synth to restart after a jump (a seek or a wrap),
   so the next wrap is planned once the media reports from its new position.
+- **A start through alphaTab** begins where alphaTab put the paused media: Stop, a range end and the song's end move
+  it with no update from the media, and an integration may report positions only while the media plays (the
+  youtube-sync demo). Inside a lead-in (before bar 1) only the media's own update knows its position.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -9176,6 +9179,49 @@ describe('MediaSynthPlayerExternalTests', () => {
         expect(h.synth.lastSeek()).toBeCloseTo(target - 60, 3);
     });
 
+    it('a-stop-is-where-the-next-play-starts', async () => {
+        // the integration reports positions only while the media plays (alphaTab's youtube-sync demo)
+        const h = await externalPlaying();
+        h.player.stop(); // alphaTab sends the media back to the song's start; no update follows
+        h.timer.advance(1000);
+        h.player.playbackSpeed = 0.75;
+        h.player.play();
+        // the song's start is media time 0 in this file, so the pre-roll stops there
+        expect(h.handler!.seekTimes[h.handler!.seekTimes.length - 1]).toBeCloseTo(0, 3);
+        expect(h.synth.lastSeek()).toBeCloseTo(0, 3);
+    });
+
+    it('after-the-song-end-the-next-play-starts-at-the-song-start', async () => {
+        const h = new MediaSynthHarness(true);
+        await h.loadSong();
+        const songEnd = h.media.tickToMediaTime(h.media.loadedMidiInfo!.endTick);
+        h.report(songEnd - 300);
+        h.player.play();
+        let position = songEnd - 300;
+        for (let guard = 0; h.finished === 0 && guard < 100; guard++) {
+            h.timer.advance(50);
+            position += 50;
+            h.report(position);
+        }
+        expect(h.states).toEqual(['Playing', 'Stopped']);
+        h.timer.advance(1000);
+        h.player.playbackSpeed = 0.75;
+        h.player.play();
+        expect(h.handler!.seekTimes[h.handler!.seekTimes.length - 1]).toBeCloseTo(0, 3);
+        expect(h.synth.lastSeek()).toBeCloseTo(0, 3);
+    });
+
+    it('a-play-inside-a-lead-in-starts-where-the-media-reported', async () => {
+        // the video's bar 1 comes 2 s in: a pause inside the intro is known only from the media's own update
+        const h = new MediaSynthHarness(true);
+        await h.loadSong(true, 2000);
+        h.report(1000);
+        const seeks = h.handler!.seekTimes.length;
+        h.player.play();
+        expect(h.handler!.seekTimes.length).toBe(seeks); // at 1x the media starts where it is
+        expect(h.synth.lastSeek()).toBeCloseTo(1000, 3);
+    });
+
     it('a-media-that-has-not-started-restarts-the-synth-when-it-moves', async () => {
         const h = new MediaSynthHarness(true);
         await h.loadSong();
@@ -9233,7 +9279,8 @@ Subscribe to the media's position updates, and keep updates from before a seek o
          this.controller.stopped();
 ```
 
-`_startPlayback` — a start inside the media (F-6), after the media-only branch:
+`_startPlayback` — a start inside the media (F-6), after the media-only branch; a start through alphaTab begins at
+alphaTab's own position:
 
 ```diff
          if (!this._isMixing) {
@@ -9251,6 +9298,11 @@ Subscribe to the media's position updates, and keep updates from before a seek o
 +            return;
 +        }
          this._sendFollowConfig();
+-        const target = this._clock.position;
++        // external media: alphaTab may have moved the paused media since its last update (a Stop, the song's end), so
++        // start from alphaTab's own position; inside a lead-in (before bar 1) only the media's updates know where it is
++        const target =
++            external && this._media.timePosition >= 0 ? this._media.mediaTimeOfPosition : this._clock.position;
 ```
 
 `_runStart` already checks every media start (Task 17); for external media the check silences the synth instead of
