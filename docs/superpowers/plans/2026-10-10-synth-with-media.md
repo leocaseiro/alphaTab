@@ -12338,6 +12338,10 @@ git push
   - Add the `alphatab-ai-authored-v1` disclosure block to the PR body.
 - **Later work the spec lists (§12):** a re-sync that keeps the synth's notes sounding; a direct worker → worklet
   `MessagePort`; Firefox and Safari tuning beyond the probe.
+- **Spec §13's manual checks on desktop Safari and desktop Firefox:** both get mixing without a run (Task 24's
+  platform rule, chosen in the plan review). Run the sync lab's Start, Loop and Count-in tests and the listening
+  check in each, as in Task 24 Step 2. If one misses a §1 target, turn `MIXING_ON.other` off in both apps (the two
+  browsers share that row) until it passes.
 - **Pre-calculating the first start at a new speed:** tried in spike 13
   (`docs/spikes/issue-2397/spike-13-pre-calculating-the-first-start.md`). A muted warm-up start or probing the
   coming speed doesn't move the first click at slow speeds; the media's time-stretch sets it (about +10 ms whether
