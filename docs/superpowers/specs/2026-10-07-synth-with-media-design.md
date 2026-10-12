@@ -198,8 +198,10 @@ shorter probe is **untested**), played in a hidden `<audio>` at the target speed
 routed into the same `AudioContext` into a tap that is never audible. The probe records the onset
 frames, and the median of (`currentTime` reaching a beep − beep onset) is the latency for that speed.
 Runs in the background after load for 1, 0.5, 0.75, 1.25, 1.5×, other speeds on first use. Cached per
-session. If it fails, the latency is 0. While the active speed has no measured value yet (not probed
-yet, or the `AudioContext` not running yet), use a straight-line guess between the nearest measured
+session. If it fails, or gives no result within the probe's length plus 2 s, that speed stays
+unmeasured (the guess below applies) and is measured again on its next use: a Play or a speed
+change. While the active speed has no measured value yet (not probed yet, or the `AudioContext` not
+running yet), use a straight-line guess between the nearest measured
 speeds (outside them, the nearest value; none measured: 0), and probe that speed next, ahead of the
 background list. A value that arrives during playback is applied like a speed change (re-sync,
 settle). Spike values (Chrome): 1×: 0, 0.5×: 60, 0.75×: 27, 1.25×: −4, 1.5×: −4 ms. Spike 5 at

@@ -4746,7 +4746,9 @@ git push
 synth's AudioContext, into a tap that is never heard. The latency is the median of (currentTime reaching a beep −
 the beep being heard). The probe's tap is registered in alphaTab's own worklet module, so it needs no Blob URL
 (CSP- and bundler-safe). The spec's ~1 s probe with 125 ms spacing is **untested**: the spike used 4 s with 250 ms
-spacing, and Task 22 compares the two.
+spacing, and Task 22 compares the two. A measurement gives up after the probe's length at that speed plus 2 s: WebKit
+may never load or start a hidden `<audio>` outside a gesture, and a measurement that never ends would block every
+later one. The schedule (Task 15) then leaves that speed unmeasured.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4757,7 +4759,7 @@ Create `packages/alphatab/test/audio/MediaLatencyProbe.test.ts`:
  * The latency probe's pure parts (spec §6.4); the measurement itself runs in the sync lab.
  * @target web
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MediaLatencyProbe, ProbePoll } from '@coderline/alphatab/platform/javascript/MediaLatencyProbe';
 
 describe('MediaLatencyProbeTests', () => {
@@ -4800,6 +4802,35 @@ describe('MediaLatencyProbeTests', () => {
     it('background-speeds-and-a-session-cache', () => {
         expect(MediaLatencyProbe.backgroundSpeeds).toEqual([1, 0.5, 0.75, 1.25, 1.5]);
         expect(MediaLatencyProbe.cache).toBe(MediaLatencyProbe.cache);
+    });
+
+    it('a-measurement-that-never-loads-gives-up-after-its-time-limit', async () => {
+        // iOS may never load a hidden <audio> outside a gesture: the probe gives up after its length plus 2 s
+        vi.useFakeTimers();
+        let paused = 0;
+        vi.stubGlobal(
+            'Audio',
+            class {
+                public preload: string = '';
+                public playbackRate: number = 1;
+                public addEventListener(): void {} // canplaythrough never comes
+                public pause(): void {
+                    paused++;
+                }
+            }
+        );
+        let outcome = '';
+        new MediaLatencyProbe({} as AudioContext, () => Promise.resolve()).measure(0.5).then(
+            () => (outcome = 'measured'),
+            (e: Error) => (outcome = e.message)
+        );
+        await vi.advanceTimersByTimeAsync(1000 / 0.5 + 2000 - 1);
+        expect(outcome).toBe('');
+        await vi.advanceTimersByTimeAsync(1);
+        expect(outcome).toBe('no result within 4000 ms');
+        expect(paused).toBe(1);
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
     });
 });
 ```
@@ -4921,6 +4952,11 @@ export class MediaLatencyProbe implements IMediaLatencyProbe {
     private static readonly _beepFrequency: number = 2000;
     private static readonly _beepS: number = 0.003;
     private static readonly _pollMs: number = 4;
+    /**
+     * A measurement that takes longer than the probe at that speed plus this is given up: WebKit may never load or
+     * start a hidden <audio> outside a gesture.
+     */
+    public static readonly TimeLimitExtraMs: number = 2000;
 
     private readonly _context: AudioContext;
     private readonly _loadWorkletModule: () => Promise<void>;
@@ -5025,35 +5061,57 @@ export class MediaLatencyProbe implements IMediaLatencyProbe {
             this._url = URL.createObjectURL(new Blob([this._wav.bytes as Uint8Array<ArrayBuffer>], { type: 'audio/wav' }));
         }
         const wav = this._wav;
+        const limitMs = (this._lengthS / speed) * 1000 + MediaLatencyProbe.TimeLimitExtraMs;
+        let expired = false;
+        let expire: () => void = () => {};
+        const limit = new Promise<void>(resolve => {
+            expire = resolve;
+        });
+        const limitTimer = setTimeout(() => {
+            expired = true;
+            expire();
+        }, limitMs);
         const element = new Audio(this._url);
         element.preload = 'auto';
         element.playbackRate = speed;
-        await new Promise<void>(resolve => element.addEventListener('canplaythrough', () => resolve(), { once: true }));
-
-        const source = context.createMediaElementSource(element);
-        const tap = new AudioWorkletNode(context, 'alphatab-probe-tap');
+        let source: MediaElementAudioSourceNode | null = null;
+        let tap: AudioWorkletNode | null = null;
         const onsets: number[] = [];
-        tap.port.onmessage = (e: MessageEvent<IAlphaSynthWorkerMessage>) => {
-            if (e.data.cmd === 'alphaSynth.probe.onset') {
-                onsets.push(e.data.frame / context.sampleRate);
-            }
-        };
-        source.connect(tap);
-        // connected so it is processed; it outputs silence (G-7)
-        tap.connect(context.destination);
-
         const polls: ProbePoll[] = [];
         const lastBeep = wav.beepTimes[wav.beepTimes.length - 1];
         try {
-            await element.play();
-            while (element.currentTime < lastBeep + 0.1 && !element.ended) {
+            // iOS may never load a hidden <audio> outside a gesture: the time limit ends the wait
+            await Promise.race([
+                new Promise<void>(resolve => element.addEventListener('canplaythrough', () => resolve(), { once: true })),
+                limit
+            ]);
+            if (expired) {
+                throw new Error(`no result within ${Math.round(limitMs)} ms`);
+            }
+            source = context.createMediaElementSource(element);
+            tap = new AudioWorkletNode(context, 'alphatab-probe-tap');
+            tap.port.onmessage = (e: MessageEvent<IAlphaSynthWorkerMessage>) => {
+                if (e.data.cmd === 'alphaSynth.probe.onset') {
+                    onsets.push(e.data.frame / context.sampleRate);
+                }
+            };
+            source.connect(tap);
+            // connected so it is processed; it outputs silence (G-7)
+            tap.connect(context.destination);
+            // a refused play() rejects here (WebKit, outside a gesture)
+            await Promise.race([element.play(), limit]);
+            while (!expired && element.currentTime < lastBeep + 0.1 && !element.ended) {
                 polls.push(new ProbePoll(element.currentTime, context.currentTime));
                 await new Promise(resolve => setTimeout(resolve, MediaLatencyProbe._pollMs));
             }
+            if (expired) {
+                throw new Error(`no result within ${Math.round(limitMs)} ms`);
+            }
         } finally {
+            clearTimeout(limitTimer);
             element.pause();
-            source.disconnect();
-            tap.disconnect();
+            source?.disconnect();
+            tap?.disconnect();
         }
         return MediaLatencyProbe.latencyFromOnsets(onsets, polls, wav.beepTimes, speed);
     }
@@ -5063,7 +5121,7 @@ export class MediaLatencyProbe implements IMediaLatencyProbe {
 - [ ] **Step 5: Run the tests to see them pass**
 
 Run: `npx vitest run test/audio/MediaLatencyProbe.test.ts`
-Expected: PASS (6 tests).
+Expected: PASS (7 tests).
 
 - [ ] **Step 6: Fix the §13 wording (G-7)**
 
@@ -5935,7 +5993,9 @@ Task 19 external media. What this task settles:
   `timeUpdate`); the device methods come from the synth output, because the media now plays through its
   AudioContext.
 - **Probe schedule (§6.4):** 1, 0.5, 0.75, 1.25, 1.5× in the background after ready, one at a time, waiting for a
-  running AudioContext. A speed without a value goes to the front. A failure gives 0, cached per session.
+  running AudioContext. A speed without a value goes to the front. A failure (refused, or no result within the
+  probe's time limit, Task 12) is not a measured 0: that speed stays unmeasured, so the guess applies, and it is
+  measured again on its next use (a Play or a speed change).
 
 - [ ] **Step 1: BackingTrackPlayer helpers**
 
@@ -6703,14 +6763,19 @@ describe('MediaSynthPlayerRoutingTests', () => {
         expect(h.player.diagnostics.probes.map(p => p.speed)).toEqual([1, 0.5, 0.75, 1.25, 1.5]);
     });
 
-    it('a-failed-probe-uses-0', async () => {
+    it('a-failed-probe-stays-unmeasured-and-is-measured-again', async () => {
+        // WebKit may refuse or never load the hidden <audio>: that is not a measured 0 (§6.4)
         const h = new MediaSynthHarness();
         await h.loadSong();
-        h.probe.rejectNext(new Error('no media'));
+        h.probe.rejectNext(new Error('NotAllowedError'));
         await flush();
-        expect(h.probeLatencies.has(1)).toBe(true);
-        expect(h.probeLatencies.get(1)).toBe(0);
-        expect(h.probe.requests).toEqual([1, 0.5]);
+        expect(h.probeLatencies.has(1)).toBe(false);
+        expect(h.probe.requests).toEqual([1, 0.5]); // the next speed is measured
+        h.player.play(); // the next use of 1x measures it again
+        expect(h.probe.requests).toEqual([1, 0.5]); // after the measurement already running
+        h.probe.resolveNext(60);
+        await flush();
+        expect(h.probe.requests).toEqual([1, 0.5, 1]);
     });
 
     it('a-speed-without-a-value-is-probed-next', async () => {
@@ -7253,11 +7318,24 @@ export class MediaSynthPlayer implements IAlphaSynth {
         this._probing = true;
         probe.measure(speed).then(
             latency => this._onProbed(speed, latency),
-            e => {
-                Logger.warning('Player', `Measuring the media latency at ${speed}x failed, using 0: ${e}`);
-                this._onProbed(speed, 0);
-            }
+            e => this._onProbeFailed(speed, e)
         );
+    }
+
+    /**
+     * A refused or timed-out measurement is not a measured 0: the speed stays unmeasured (the guess applies) and is
+     * measured again on its next use, a Play or a speed change (§6.4).
+     */
+    private _onProbeFailed(speed: number, e: unknown): void {
+        this._probing = false;
+        if (this._destroyed) {
+            return;
+        }
+        Logger.warning(
+            'Player',
+            `Measuring the media latency at ${speed}x failed; measuring it again on its next use: ${e}`
+        );
+        this._probeNext();
     }
 
     private _onProbed(speed: number, latency: number): void {
@@ -11476,6 +11554,7 @@ git push
 - Create: `docs/spikes/issue-2397/target-devices-<date>.md`
 - Modify (only if D-7 Option 1 or 2, or D-8 Option 1, is picked):
   `packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts`,
+  `packages/alphatab/src/platform/javascript/MediaLatencyProbe.ts` (D-7 Option 1, when Step 2 found no probe values),
   `packages/alphatab/test/audio/MediaSynthPlayer.CountIn.test.ts` (D-7),
   `packages/alphatab/test/audio/MediaSynthPlayer.Routing.test.ts` (D-8)
 
@@ -11498,7 +11577,10 @@ First, before anything plays on that page, a tapped start (D-7's case). WebKit l
 once it has played from one, so a refused delayed `play()` only shows on a fresh page. Load the lab, wait for "player
 ready", tick **count-in**, keep **Speed** at 1 and tap **Play / Pause** once. The log prints a `tappedStart` row (did
 the media start, and how long after the tap) and any player warning, such as "The media did not start". Reload, untick **count-in**, set **Speed** to 0.75 and tap **Play / Pause** once (a start below 1× seeks the
-media and plays it after the seek, also outside the tap). Record both rows.
+media and plays it after the seek, also outside the tap). Record both rows. Then copy
+`syncLab.lab().probeLatencies` and any "Measuring the media latency" warning from the log: a speed missing from
+the list is one the probe could not measure on this device (its hidden `<audio>` was refused or never loaded), not a
+sync miss.
 
 Then the measured runs, with the page's **Start test**, **Loop test**, **Count-in test**, **Seek test** and
 **Speed-change test** buttons (**Speed** sets the speed; the rows print in the log), or from the console where there is
@@ -11545,7 +11627,8 @@ Put to the person as `[Q-D7]`, with the result:
 - **Option 1:** unlock the media in the gesture: call the `<audio>`'s `play()` and `pause()` synchronously inside
   the Play handler, so a later `play()` is allowed (a change in `MediaSynthPlayer.play()`, for every app Play: the
   count-in hand-off, the pre-roll seek away from 1× and a learned media delay all call `play()` after the gesture;
-  with a test).
+  with a test). If Step 2 found no probe values, Option 1 also unlocks the probe: one probe `<audio>` per player,
+  unlocked the same way in the first Play and reused for every measurement (untested).
 - **Option 2:** no count-in on WebKit: start the media at once and skip the count-in there (starts away from 1×
   still call `play()` after the pre-roll seek).
 - **Option 3:** keep the safety net only.
