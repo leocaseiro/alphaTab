@@ -143,7 +143,7 @@ Each one is flagged where it is used. Keep or drop them during the plan review.
   media's, and a speed change doesn't move it. Task 3.
 - **G-2** (the spike's controller): stamps are ignored for 200 ms after a re-sync, so stale stamps from before the
   jump can't trigger another one. Task 9.
-- **G-3** (spike 4): the loop-wrap timer fires 15 ms of media time before the range end; if the timer is late, the first media update past the end wraps at once. Task 18.
+- **G-3** (spike 4): the loop-wrap timer fires 15 ms of media time before the range end as heard (below 1× the media is heard ahead of the position it reports); if the timer is late, the first media update past the end wraps at once. Task 18.
 - **G-4** (spikes 4 and 6): clamps on the learned values — start lead −50…150 ms, media-start latency −50…250 ms,
   re-sync lead 0…100 ms (the last is in the spec). Tasks 9 and 10.
 - **G-5** (spike 6): the count-in hand-off timer fires 12 ms early, then waits on the audio clock for at most 30 ms.
@@ -8525,7 +8525,9 @@ counts as the range end, so `isLooping` alone loops the whole song, as today. Ju
 and restarts them through the start handshake, with no count-in and no `stateChanged`. Spike 4 measured this:
 0 missing clicks at 0.5×, 1× and 1.5×, under 15 ms per wrap at 1× and ~24 ms at 0.5× and 1.5×. With `isLooping`
 off, the range end fires `finished` and stops both at the range start, as today. **G-3** (spike 4): the timer
-fires 15 ms of media time before the end. If the media is behind (a late start), it waits for the media. If the
+fires 15 ms of media time before the end as heard: below 1× the media is heard its latency × speed ahead of the
+position it reports (§6.3, as in the start plan), and timed from that position the bar after the range would start
+to sound. If the media is behind (a late start), it waits for the media. If the
 timer is late (a busy main thread), the first media update at or past the end wraps at once: it comes before the
 media player's own end check, which would otherwise stop both at the song's end.
 
@@ -8604,6 +8606,21 @@ describe('MediaSynthPlayerLoopTests', () => {
         run(h, (end - start) / 1.5 + 100);
         expect(h.finished).toBe(1);
         expect(h.mediaOutput!.seekTimes.some(t => Math.abs(t - (start - 60)) < 0.01)).toBe(true);
+    });
+
+    it('a-wrap-below-1x-comes-before-the-heard-range-end', async () => {
+        // at 0.5x the media is heard 60 ms x 0.5 = 30 ms ahead of the position it reports (the clock's model, as in
+        // planStart): timed from the reported position, the wrap lets the next bar's downbeat sound first
+        const { h, start, end } = await looping(0.5);
+        h.probeLatencies.set(0.5, 60);
+        h.backingClock!.latencyMs = 60;
+        const heard: number[] = [];
+        h.player.finished.on(() => heard.push(h.mediaOutput!.currentTime + 60 * 0.5));
+        h.player.play();
+        run(h, (end - start + 60) / 0.5 + 100);
+        expect(heard.length).toBe(1);
+        expect(heard[0]).toBeLessThanOrEqual(end - 15);
+        expect(heard[0]).toBeGreaterThan(end - 25);
     });
 
     it('the-range-end-without-looping-stops-at-the-range-start', async () => {
@@ -8772,7 +8789,7 @@ New methods:
             return;
         }
         // G-3 (spike 4): a little before the end
-        const untilEndMs = (end - MediaSyncConstants.LoopWrapLeadMs - this._clock.position) / this.playbackSpeed;
+        const untilEndMs = (end - MediaSyncConstants.LoopWrapLeadMs - this._heardMediaPosition()) / this.playbackSpeed;
         this._wrapTimer = this._timer.setTimeout(() => this._onWrapTimer(), Math.max(0, untilEndMs) + extraDelayMs);
     }
 
@@ -8782,13 +8799,23 @@ New methods:
         if (this._state !== PlayerState.Playing || end < 0) {
             return;
         }
-        const remainingMs = (end - MediaSyncConstants.LoopWrapLeadMs - this._clock.position) / this.playbackSpeed;
+        const remainingMs = (end - MediaSyncConstants.LoopWrapLeadMs - this._heardMediaPosition()) / this.playbackSpeed;
         if (remainingMs > 5) {
             // the timer fired early or the media started late: wait for the media
             this._wrapTimer = this._timer.setTimeout(() => this._onWrapTimer(), remainingMs);
             return;
         }
         this._wrap();
+    }
+
+    /**
+     * Where the wrap timer measures from (media ms): the media's reported position, plus its latency at this speed
+     * when the media is heard ahead of that position (below 1×, spec §6.3; as the start plan applies it), so the
+     * wrap comes before the heard range end. Above 1× (a negative latency) it stays where spike 4 measured it.
+     */
+    private _heardMediaPosition(): number {
+        const speed = this.playbackSpeed;
+        return this._clock.position + Math.max(0, this._mediaLatency(speed)) * speed;
     }
 
     /**
@@ -11233,7 +11260,9 @@ await syncLab.loopTest(0.5); await syncLab.loopTest(1); await syncLab.loopTest(1
 ```
 
 Then switch **Audio** to the file's audio, turn the synth tracks on, loop at 1× and 1.5×, and listen at each wrap
-the run's `gaps` flags. Put to the person as `[Q-D5]`:
+the run's `gaps` flags. Loop at 0.5× too and listen at every wrap: nothing of the bar after the range (its downbeat,
+its click) may sound before the jump back. The lab's checks can't hear that: the stray beep and its click pair up.
+Put to the person as `[Q-D5]`:
 
 - **Scenario:** in notation-hero you loop two bars to practice; at every wrap the recording jumps back to the
   first beat.
