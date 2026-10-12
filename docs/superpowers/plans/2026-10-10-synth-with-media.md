@@ -11384,13 +11384,14 @@ git push
 - Modify (only if D-3 Option 2 is picked, Step 4): `packages/alphatab/src/platform/javascript/MediaSyncController.ts`
   (`CountInPreRollBelow1xMs`), `packages/alphatab/test/audio/MediaSyncController.test.ts` (`pre-roll-rules`),
   `packages/alphatab/test/audio/MediaSynthPlayer.CountIn.test.ts` (`below-1x-the-media-pre-rolls-120-ms`,
-  `a-speed-change-during-the-count-in-hands-off-at-the-new-speed`)
+  `a-speed-change-during-the-count-in-hands-off-at-the-new-speed`, `a-count-in-below-1x-pre-rolls-into-a-lead-in`)
 - Modify (only if D-1 Option 2 is picked, Step 7): `packages/alphatab/src/platform/javascript/MediaSyncController.ts`
   (`latencyChanged`), `packages/alphatab/test/audio/MediaSyncController.test.ts`
   (`latency-change-settles-without-resync`), `packages/alphatab/test/audio/MediaSynthPlayer.Transport.test.ts`
   (`a-probe-value-during-playback-settles`)
 - Modify (only if Step 8's 1 s and 4 s probe values differ): `packages/alphatab/src/platform/javascript/MediaLatencyProbe.ts`
-  (`LengthS`, `SpacingS`)
+  (`LengthS`, `SpacingS`), `packages/alphatab/test/audio/MediaLatencyProbe.test.ts`
+  (`a-measurement-that-never-loads-gives-up-after-its-time-limit`)
 - Modify (only if D-9 Option 2 is picked, Step 6): `packages/alphatab/src/synth/BackingTrackPlayer.ts`,
   `packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts` (the speed setter),
   `packages/alphatab/src/platform/javascript/MediaSyncController.ts` (`speedChanged`),
@@ -11487,7 +11488,9 @@ count-in at an unlearned speed: (open)".
 If Option 2: set `MediaSyncConstants.CountInPreRollBelow1xMs` to 60, update the tests that pin 120 (Task 10
 `pre-roll-rules`; Task 17 `below-1x-the-media-pre-rolls-120-ms`, renamed `below-1x-the-media-pre-rolls-60-ms`, and
 `a-speed-change-during-the-count-in-hands-off-at-the-new-speed`: the media at 5000 − 60, `play()` 120 ms before the
-boundary), run the repo gates, and commit and push it separately from the docs.
+boundary; Task 17 `a-count-in-below-1x-pre-rolls-into-a-lead-in`: the media's last seek at 2000 − 60 = 1940, the
+synth's seek still at 2000, and its comment says 60 ms), run the repo gates, and commit and push it separately
+from the docs.
 
 - [ ] **Step 5: STOP — decision gate D-5 (F-15), S10, the loop wrap**
 
@@ -11571,8 +11574,11 @@ re-sync; run the repo gates; and commit and push it separately from the docs.
 - [ ] **Step 8: §6.4 — the shorter probe**
 
 Run `await syncLab.probeComparison()`. If the 1 s and 4 s values differ by more than 3 ms at any speed, change
-`MediaLatencyProbe.LengthS` / `SpacingS` to 4 / 0.25, run the repo gates, commit and push it separately, and say so
-in the results. Either way, remove "**untested**" from §6.4 and state what was measured.
+`MediaLatencyProbe.LengthS` / `SpacingS` to 4 / 0.25. Task 12's time-limit test
+(`a-measurement-that-never-loads-gives-up-after-its-time-limit`) assumes the 1 s probe: a 4 s probe at 0.5× gives up
+after 4000 / 0.5 + 2000 = 10000 ms, so that test then advances `4000 / 0.5 + 2000 - 1` ms and expects
+`'no result within 10000 ms'`. Run the repo gates, commit and push it separately, and say so in the results. Either
+way, remove "**untested**" from §6.4 and state what was measured.
 
 - [ ] **Step 9: S7, S8, S11, F-8, F-13 and by ear**
 
