@@ -3064,7 +3064,8 @@ git push
   `MediaSyncStats` (`resyncTimes`, `driftLog`, `resyncLeadMs`), `MediaSyncDriftEntry`, `MediaSyncController` with
   `startedAfterHandOff(speed, learnMediaStartLatency)`, `stopped()`, `resync()`, `speedChanged(speed)`,
   `latencyChanged()`, `onStamp(frame, synthMediaTime)`, `settleThreshold(speed)`, `baseLatencyMs`, `speed`,
-  `correction`, `isActive`, `isSettling`, `startLeads`, `mediaStartLatencies`.
+  `correction`, `isActive`, `isSettling`, `startLeads`, `mediaStartLatencies`; `MediaSyncLearnedValues` (where the
+  learned start values live: one set per media kind for the page session).
 
 The rules (§6.2): act only on two consecutive readings that agree within 3 ms (their mean). Settle for 1.5 s after
 a play, seek or speed change. Re-sync while settling above 12 ms at 1× and 15 ms elsewhere, and above 120 ms once
@@ -3437,6 +3438,20 @@ export class MediaSyncStats {
 }
 
 /**
+ * The start values the controller learns, per speed (spec §6.2). The browser keeps one set per media kind for the
+ * page session (in memory only, like MediaLatencyProbe.cache), so a player that alphaTab recreates (a playerMode
+ * change, or EnabledAutomatic between a file with a recording and one without) starts with what the page learned.
+ * @target web
+ * @internal
+ */
+export class MediaSyncLearnedValues {
+    public static readonly backingTrack: MediaSyncLearnedValues = new MediaSyncLearnedValues();
+    public static readonly externalMedia: MediaSyncLearnedValues = new MediaSyncLearnedValues();
+    public readonly startLeads: PerSpeedValues = new PerSpeedValues();
+    public readonly mediaStartLatencies: PerSpeedValues = new PerSpeedValues();
+}
+
+/**
  * Keeps the synthesizer on the media's clock (spec §6.2): compares the worklet's stamps with the media clock,
  * nudges the synthesizer's rate, re-syncs above a threshold, learns the start values, and plans the handshakes.
  * Pure logic.
@@ -3444,8 +3459,8 @@ export class MediaSyncStats {
  * @internal
  */
 export class MediaSyncController {
-    public readonly startLeads: PerSpeedValues = new PerSpeedValues();
-    public readonly mediaStartLatencies: PerSpeedValues = new PerSpeedValues();
+    public readonly startLeads: PerSpeedValues;
+    public readonly mediaStartLatencies: PerSpeedValues;
     public readonly stats: MediaSyncStats = new MediaSyncStats();
 
     /**
@@ -3468,10 +3483,21 @@ export class MediaSyncController {
     private _learnResyncLead: boolean = false;
     private _learnMediaStartLatency: boolean = false;
 
-    public constructor(synth: IMediaSyncSynth, clock: IMediaSyncClock, time: IMediaSyncTime) {
+    /**
+     * @param learned Where the learned start values live: the browser passes the page session's set for the media
+     * kind, so a recreated player starts with them.
+     */
+    public constructor(
+        synth: IMediaSyncSynth,
+        clock: IMediaSyncClock,
+        time: IMediaSyncTime,
+        learned: MediaSyncLearnedValues = new MediaSyncLearnedValues()
+    ) {
         this._synth = synth;
         this._clock = clock;
         this._time = time;
+        this.startLeads = learned.startLeads;
+        this.mediaStartLatencies = learned.mediaStartLatencies;
     }
 
     public get speed(): number {
@@ -6223,6 +6249,7 @@ import {
     type IMediaSynth,
     type IMediaTimer
 } from '@coderline/alphatab/platform/javascript/MediaSynthTypes';
+import { MediaSyncLearnedValues } from '@coderline/alphatab/platform/javascript/MediaSyncController';
 import { MediaSynthPlayer, MediaSynthPlayerParts } from '@coderline/alphatab/platform/javascript/MediaSynthPlayer';
 import { PerSpeedValues } from '@coderline/alphatab/platform/javascript/PerSpeedValues';
 import { Settings } from '@coderline/alphatab/Settings';
@@ -6584,7 +6611,14 @@ export class MediaSynthHarness {
     public readonly positions: number[] = [];
     public finished: number = 0;
 
-    public constructor(external: boolean = false, hasSoundFont: boolean = true) {
+    /**
+     * @param learned The learned start values; share one between two harnesses to stand for a recreated player.
+     */
+    public constructor(
+        external: boolean = false,
+        hasSoundFont: boolean = true,
+        learned: MediaSyncLearnedValues = new MediaSyncLearnedValues()
+    ) {
         this.graph = new FakeMixGraph(this.timer);
         const parts = new MediaSynthPlayerParts();
         if (external) {
@@ -6613,6 +6647,7 @@ export class MediaSynthHarness {
         parts.timer = this.timer;
         parts.probeLatencies = this.probeLatencies;
         parts.hasSoundFont = hasSoundFont;
+        parts.learned = learned;
         this.player = new MediaSynthPlayer(parts);
         this.player.stateChanged.on(e =>
             this.states.push(e.state === PlayerState.Playing ? 'Playing' : e.stopped ? 'Stopped' : 'Paused')
@@ -6893,7 +6928,11 @@ import type { MidiFile } from '@coderline/alphatab/midi/MidiFile';
 import type { Score } from '@coderline/alphatab/model/Score';
 import type { ExternalMediaClock, IMediaClock } from '@coderline/alphatab/platform/javascript/MediaClock';
 import { MediaLatencyProbe } from '@coderline/alphatab/platform/javascript/MediaLatencyProbe';
-import { MediaSyncController, type MediaSyncStats } from '@coderline/alphatab/platform/javascript/MediaSyncController';
+import {
+    MediaSyncController,
+    MediaSyncLearnedValues,
+    type MediaSyncStats
+} from '@coderline/alphatab/platform/javascript/MediaSyncController';
 import { MediaSynthOutput } from '@coderline/alphatab/platform/javascript/MediaSynthOutput';
 import type {
     IMediaFollowingOutput,
@@ -6945,6 +6984,10 @@ export class MediaSynthPlayerParts {
      * Whether settings.player.soundFont is set.
      */
     public hasSoundFont: boolean = true;
+    /**
+     * The learned start values (MediaSyncLearnedValues.backingTrack or .externalMedia in the browser).
+     */
+    public learned: MediaSyncLearnedValues = new MediaSyncLearnedValues();
 }
 
 /**
@@ -7110,7 +7153,7 @@ export class MediaSynthPlayer implements IAlphaSynth {
             // §6.1: the media plays alone, with a warning, until api.loadSoundFont() brings one
             Logger.warning('Player', 'No player.soundFont is set; playing the media only until a SoundFont is loaded');
         }
-        this.controller = new MediaSyncController(this._synth, this._clock, this._timer);
+        this.controller = new MediaSyncController(this._synth, this._clock, this._timer, parts.learned);
         this.controller.baseLatencyMs = this._graph.baseLatencyMs;
         this.diagnostics = new MediaSynthDiagnostics(parts, this.controller);
         this._output = new MediaSynthOutput(this._media.output as IBackingTrackSynthOutput, this._synth.output);
@@ -7689,6 +7732,7 @@ Create `packages/alphatab/test/audio/MediaSynthPlayer.Transport.test.ts`:
  * @target web
  */
 import { describe, expect, it } from 'vitest';
+import { MediaSyncLearnedValues } from '@coderline/alphatab/platform/javascript/MediaSyncController';
 import { flush, MediaSynthHarness } from 'test/audio/MediaSyncFakes';
 
 async function playing(at: number = 5000, speed: number = 1): Promise<MediaSynthHarness> {
@@ -7853,6 +7897,25 @@ describe('MediaSynthPlayerTransportTests', () => {
         expect(h.states).toEqual(['Playing', 'Stopped']);
         expect(h.synth.count('stop')).toBeGreaterThan(0);
         expect(h.mediaOutput!.isPlaying).toBe(false);
+    });
+
+    it('a-recreated-player-keeps-the-learned-start-values', async () => {
+        // alphaTab recreates the player on a playerMode change, or with EnabledAutomatic between a file with a
+        // recording and one without; the browser hands each new player the page's learned values (Task 20)
+        const learned = new MediaSyncLearnedValues();
+        const first = new MediaSynthHarness(false, true, learned);
+        await first.loadSong();
+        first.mediaOutput!.currentTime = 5000;
+        first.player.play();
+        for (let i = 0; i < 3; i++) {
+            first.timer.advance(50);
+            first.mediaOutput!.advance(50);
+            first.synthOutput.stamp(0, first.mediaOutput!.currentTime + 6); // the synth came out 6 ms ahead
+        }
+        expect(first.player.controller.startLeads.get(1)).toBe(-6);
+        first.player.destroy();
+        const second = new MediaSynthHarness(false, true, learned);
+        expect(second.player.controller.startLeads.get(1)).toBe(-6);
     });
 
     it('destroy-clears-pending-timers', async () => {
@@ -9866,6 +9929,11 @@ Expected: `packages/alphatab/src/generated/PlayerSettingsJson.ts` and the serial
         parts.timer = new BrowserMediaTimer();
         parts.hasSoundFont = !!settings.player.soundFont;
         parts.probeLatencies = MediaLatencyProbe.cache;
+        // learned for the page session per media kind, like the probe's values: a recreated player keeps them
+        parts.learned =
+            mode === PlayerMode.EnabledExternalMedia
+                ? MediaSyncLearnedValues.externalMedia
+                : MediaSyncLearnedValues.backingTrack;
         if (mode === PlayerMode.EnabledExternalMedia) {
             const clock = new ExternalMediaClock(graph, offset);
             parts.media = new ExternalMediaPlayer(settings.player.bufferTimeInMilliseconds);
@@ -9891,8 +9959,9 @@ Expected: `packages/alphatab/src/generated/PlayerSettingsJson.ts` and the serial
 
 Imports: `PlayerMode` (next to `PlayerOutputMode`), `ExternalMediaPlayer`, `WebAudioMixGraph`,
 `MediaSynthPlayer, MediaSynthPlayerParts`, `BackingTrackMediaClock, AudioElementClockSource, ExternalMediaClock`,
-`MediaLatencyProbe`, `BrowserMediaTimer`; `AlphaSynthAudioWorkletOutput`, `AlphaSynthWebWorkerApi`,
-`AudioElementBackingTrackSynthOutput` and `BackingTrackPlayer` are imported already. Remove nothing else.
+`MediaLatencyProbe`, `MediaSyncLearnedValues`, `BrowserMediaTimer`; `AlphaSynthAudioWorkletOutput`,
+`AlphaSynthWebWorkerApi`, `AudioElementBackingTrackSynthOutput` and `BackingTrackPlayer` are imported already. Remove
+nothing else.
 
 - [ ] **Step 7: Run the tests to see them pass**
 
@@ -11459,6 +11528,12 @@ in the results. Either way, remove "**untested**" from §6.4 and state what was 
 - **F-8 signals:** re-run `docs/spikes/issue-2397/spike-10-batch-1-console.js` in the control demo: a SoundFont
   download failure now fires `soundFontLoadFailed` on the player instance. Mixing on with a missing worker or
   worklet plays the media alone, with the warning.
+- **Learned values across a player recreation:** in the lab, switch the player away and back from the console, as
+  the rhythm game's Synth and Audio buttons do: `api.settings.player.playerMode = 2; api.updateSettings();` then
+  `api.settings.player.playerMode = 3; api.updateSettings();` (2 = `EnabledSynthesizer`, 3 = `EnabledBackingTrack`).
+  Once the log shows "player ready" again, `syncLab.lab().startLeads` still lists the speeds learned in Step 3: a
+  recreated player keeps what the page learned (in memory only). The lab's taps stay on the first player: reload the
+  page before measuring again.
 - **Listening check (§9):** the file's audio with the synth tracks unmuted, using a song with sustained notes.
   Do a Play, a seek, and a speed change. Expect no cut notes and no dropouts, except the one re-sync at each speed
   change (spike 11; a re-sync that keeps notes sounding is later work, §12).
