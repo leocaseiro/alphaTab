@@ -11509,12 +11509,21 @@ set yourself (never write absolute paths into tracked files).
 
 - [ ] **Step 1: Build and pack**
 
-From the alphaTab feature worktree:
+From the alphaTab feature worktree, with everything committed (`git status --short` prints nothing):
 
 ```bash
-npm run build
+npm run build-web
 npm pack --workspace=packages/alphatab
+git checkout -- packages/alphatab/package.json
+git status --short
 ```
+
+`npm run build-web` builds alphaTab and its webpack and Vite plugins, as the publish workflow does
+(`.github/workflows/~publish_web.yml`). The pack step's `prepack` script copies both plugin builds into the package
+and fails without them. It also rewrites the tracked `packages/alphatab/package.json` from `"type": "module"` to
+`"commonjs"`, and nothing puts it back, so the `git checkout` restores that one file (here in the alphaTab worktree;
+Step 2's rule is for the app checkouts). The last `git status --short` must print nothing (the tarball is
+git-ignored): with that file rewritten, the repo's tests don't load and Task 26 Step 4's rebase refuses to start.
 
 Expected: a `coderline-alphatab-<version>.tgz` in the worktree root. Set `ALPHATAB_PACK` in your shell to its
 absolute path.
