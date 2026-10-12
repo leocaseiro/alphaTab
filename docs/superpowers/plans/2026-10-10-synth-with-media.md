@@ -7986,8 +7986,9 @@ git push
 stream (Task 4), while the media waits, paused, at its pre-roll start (60 ms above 1×, 120 ms below, F-14). Once
 the boundary chunk is buffered the worklet reports its context frame (Task 7). The media's `play()` is issued at
 `frame / sampleRate − (mediaStartLatency(speed) + preRoll / speed)`. **G-5:** the timer fires 12 ms early, then
-waits on the audio clock for at most 30 ms (spike 6: `play()` 0.2–4.8 ms after its time). If the hand-off doesn't
-come by the count-in's length + 250 ms, the media starts anyway and this player turns media-only. The cursor stays
+waits on the audio clock for at most 30 ms (spike 6: `play()` 0.2–4.8 ms after its time). If the count-in's end
+isn't reported by the count-in's length + 250 ms, the media starts anyway and this player turns media-only; an end
+that was reported but lands later (a late audio start) still hands off. The cursor stays
 at the start position. **R-2 safety net** (not spiked; Low): WebKit may refuse a `play()` a bar after the gesture,
 and any other `play()` that runs after the Play call returned: away from 1× the start handshake plays the media from
 the pre-roll seek's `'seeked'` event, and a learned media delay plays it from a timer. If the media isn't running
@@ -8187,6 +8188,23 @@ describe('MediaSynthPlayerCountInTests', () => {
         expect(h.synth.count('play:')).toBe(plays + 1); // still mixing
     });
 
+    it('a-late-count-in-end-still-hands-off', async () => {
+        // the end was reported, but the output started 400 ms late: the time limit is for an end that never comes
+        const h = await countingIn();
+        h.synth.startCountIn(2000); // the time limit would be at 2.25 s
+        h.timer.advance(1900);
+        h.synthOutput.endCountIn(2.4 * 48000);
+        h.timer.advance(350);
+        expect(h.mediaOutput!.isPlaying).toBe(false);
+        h.timer.advance(200);
+        expect(h.mediaOutput!.isPlaying).toBe(true);
+        expect(h.player.diagnostics.countIns.length).toBe(1);
+        h.player.pause();
+        const plays = h.synth.count('play:');
+        h.player.play();
+        expect(h.synth.count('play:')).toBe(plays + 1); // still mixing
+    });
+
     it('a-media-start-that-never-happens-pauses-both', async () => {
         // R-2 safety net
         const h = await countingIn();
@@ -8378,6 +8396,10 @@ New methods:
             return;
         }
         countIn.endFrame = frame;
+        // the end came: the time limit is only for an end that never comes (§6.2); the hand-off timer below runs
+        // even when the audio started late
+        this._timer.clearTimeout(countIn.limitTimer);
+        countIn.limitTimer = 0;
         countIn.playAt = this.controller.handOffPlayTime(frame, this._graph.sampleRate, countIn.speed, countIn.preRoll);
         if (countIn.handOffTimer !== 0) {
             // a refined estimate only moves playAt
