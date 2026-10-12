@@ -3751,7 +3751,8 @@ describe('MediaSyncControllerStartTests', () => {
     });
 
     it('the-pre-roll-stops-at-the-media-start', () => {
-        // a start near media time 0 (Play from the start, a loop from bar 1): the media can't seek below 0
+        // a start near media time 0 (a recording whose bar 1 is at its very start: Play from the start, a loop from
+        // bar 1): the media can't seek below 0
         const { controller } = setup();
         let plan = controller.planStart(0, 0.5, 60);
         expect(plan.mediaSeekTo).toBe(0);
@@ -5944,10 +5945,17 @@ Add to `BackingTrackPlayer` (all `@internal`):
      * @internal
      */
     public seekMediaTo(mediaTime: number): void {
-        this.timePosition = this.sequencer.mainTimePositionFromBackingTrack(
+        const timePosition = this.sequencer.mainTimePositionFromBackingTrack(
             mediaTime,
             this._backingTrackOutput.backingTrackDuration
         );
+        this.timePosition = Math.max(0, timePosition);
+        if (timePosition < 0) {
+            // before bar 1 (a recording with a lead-in) the song position is negative, and the seek back from it
+            // would land at media time 0: the cursor waits at the song's start, the media goes to the time itself
+            // (the later seek wins)
+            this._backingTrackOutput.seekTo(mediaTime);
+        }
     }
 
     /**
@@ -6553,14 +6561,25 @@ export class MediaSynthHarness {
     }
 
     /**
-     * Loads syncpoints-testfile.gp; with `synthReady` the synthesizer is then ready (the usual start).
+     * Loads syncpoints-testfile.gp; with `synthReady` the synthesizer is then ready (the usual start). `leadInMs`
+     * moves every sync point that much later on the media's axis: a recording whose bar 1 comes after a lead-in
+     * (a video's intro). The file's own bar 1 is at media time 0.
      */
-    public async loadSong(synthReady: boolean = true): Promise<MidiFile> {
+    public async loadSong(synthReady: boolean = true, leadInMs: number = 0): Promise<MidiFile> {
         const data = await TestPlatform.loadFile('test-data/audio/syncpoints-testfile.gp');
         const score = ScoreLoader.loadScoreFromBytes(data, new Settings());
         const midi = new MidiFile();
         const generator = new MidiFileGenerator(score, new Settings(), new AlphaSynthMidiFileHandler(midi));
         generator.generate();
+        for (const p of generator.syncPoints) {
+            p.syncTime += leadInMs;
+        }
+        if (this.mediaOutput) {
+            this.mediaOutput.backingTrackDuration += leadInMs;
+        }
+        if (this.handler) {
+            this.handler.backingTrackDuration += leadInMs;
+        }
         this.player.loadMidiFile(midi);
         this.player.loadBackingTrack(score);
         this.player.updateSyncPoints(generator.syncPoints);
@@ -7625,6 +7644,19 @@ describe('MediaSynthPlayerTransportTests', () => {
         expect(h.synth.lastSeek()).toBeCloseTo(4940 + 30, 3);
     });
 
+    it('a-start-away-from-1x-pre-rolls-into-a-lead-in', async () => {
+        // bar 1 starts 2 s into the recording: Play from the song's start seeks the media 60 ms before bar 1, not
+        // to the media's own start
+        const h = new MediaSynthHarness();
+        await h.loadSong(true, 2000);
+        h.probeLatencies.set(0.5, 60);
+        h.player.playbackSpeed = 0.5;
+        h.mediaOutput!.currentTime = 2000;
+        h.player.play();
+        expect(h.mediaOutput!.seekTimes[h.mediaOutput!.seekTimes.length - 1]).toBeCloseTo(1940, 3);
+        expect(h.synth.lastSeek()).toBeCloseTo(1940 + 30, 3);
+    });
+
     it('the-media-pre-roll-does-not-move-the-cursor-back', async () => {
         const h = new MediaSynthHarness();
         await h.loadSong();
@@ -8031,6 +8063,18 @@ describe('MediaSynthPlayerCountInTests', () => {
         h.timer.advance(2);
         expect(h.mediaOutput!.isPlaying).toBe(true);
         expect(h.graph.currentTime).toBeCloseTo(2.9, 3);
+    });
+
+    it('a-count-in-below-1x-pre-rolls-into-a-lead-in', async () => {
+        // bar 1 starts 2 s into the recording: the media waits 120 ms before bar 1, not at the media's own start
+        const h = new MediaSynthHarness();
+        await h.loadSong(true, 2000);
+        h.player.playbackSpeed = 0.5;
+        h.player.countInVolume = 1;
+        h.mediaOutput!.currentTime = 2000;
+        h.player.play();
+        expect(h.mediaOutput!.seekTimes[h.mediaOutput!.seekTimes.length - 1]).toBeCloseTo(1880, 3);
+        expect(h.synth.lastSeek()).toBeCloseTo(2000, 3);
     });
 
     it('a-refined-count-in-end-moves-the-media-start', async () => {
@@ -8546,6 +8590,20 @@ describe('MediaSynthPlayerLoopTests', () => {
         expect(h.finished).toBe(1);
         expect(h.states).toEqual(['Playing']);
         expect(h.mediaOutput!.currentTime).toBeLessThan(200);
+    });
+
+    it('a-whole-song-wrap-below-1x-pre-rolls-into-a-lead-in', async () => {
+        // bar 1 starts 2 s into the recording: every pass restarts 60 ms before bar 1, not at the media's own start
+        const h = new MediaSynthHarness();
+        await h.loadSong(true, 2000);
+        h.player.playbackSpeed = 0.5;
+        h.player.isLooping = true;
+        const songEnd = h.media.tickToMediaTime(h.media.loadedMidiInfo!.endTick);
+        h.mediaOutput!.currentTime = songEnd - 300;
+        h.player.play();
+        run(h, 800);
+        expect(h.finished).toBe(1);
+        expect(h.mediaOutput!.seekTimes[h.mediaOutput!.seekTimes.length - 1]).toBeCloseTo(1940, 3);
     });
 
     it('a-late-wrap-timer-still-wraps-at-the-song-end', async () => {
