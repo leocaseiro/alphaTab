@@ -126,7 +126,7 @@ recommendation as it stands. "Spiked" says whether a run backs it.
 | F-14 | both | Count-in media pre-roll below 1× = 120 ms (the recommendation). D-3 compares 60 ms and 120 ms with the real count-in. The 1.5× figure is restated as 0…+2.7 ms. The first count-in at an unlearned speed is marked (open). | Task 10 (constant) · Task 22 (D-3, spec edits) | lab count-in test at 0.5× | yes (spike 6, emulated count-in) | Medium |
 | Q-1 | both | S4 reports the first Play at a speed with no learned start lead separately and doesn't gate on it; S12 does the same for each auto-BPM repetition (D-4, settled in the plan review) | Task 22 (D-4, settled) | lab start test's first-Play cell | yes (spikes 11 §2, 12) | High |
 | F-15 | both | Re-run spike 4's loop test at 1× and 1.5×, listen at each wrap the lab flags, then pick the S10 gate (provisional: a median gate plus an ear check) | Task 22 (D-5) | lab loop test | partly (spike 4) | Medium |
-| F-5 | library-only | External media wraps without pausing: the media seeks to the range start, the synth stays silent until the first position update after the jump, then restarts. S10 is scoped to the backing track. | Task 19 (code, spec edit) | unit (fakes) | no | Low |
+| F-5 | alphaTabWebsite | External media wraps without pausing: the media seeks to the range start, and the synth stays silent until the media shows the jump and its clock has a fit again (three position updates over 100 ms or more). It then restarts at the media's position, past the range start (about 110–160 ms at 1× with the rhythm game's 50 ms updates), so every pass of a YouTube loop plays its first beat without a click. S10 is scoped to the backing track. | Task 19 (code, spec edit) · Task 26 (by ear) | unit (fakes) · by ear | on fakes only | Low |
 | F-6 | alphaTabWebsite | A start pressed inside YouTube (the position moved at `play()` or within 100 ms) gets no count-in and no learning. Integrations call `updatePosition()` right before `api.play()`. | Task 19 (code, spec §7 edit) · Task 20 (setting docs) | unit | no | Low |
 | F-17 | alphaTabWebsite | Stall rule: the same position for ≥ 100 ms silences the synth. Once the position moves, the fit restarts and the synth restarts at the media's position. | Tasks 11, 19 | unit | modeled (spike 9 §4) | Medium |
 | F-11 | alphaTabWebsite | Both clocks subtract `mediaSyncOffsetInMilliseconds × speed`. The spec states the sign (+ = synth later) and the unit (ms of real time). | Task 11 (code, spec edit) | unit | no (arithmetic) | High |
@@ -9173,14 +9173,15 @@ External media is best-effort (S9). It can't be held, so a seek or a wrap happen
 position arrives through the app's `updatePosition()` calls. Our design's problems, all **(untested)** except
 F-17's model:
 
-- **Seek while playing (§6.2):** the synth stays silent until the first update after the jump, then restarts at
-  the media's position. There's no count-in and no learning; the settling re-sync locks it. Updates that still show
+- **Seek while playing (§6.2):** the synth stays silent until the media shows the jump and its clock has a fit
+  again (three updates over 100 ms or more), then restarts at the media's position. There's no count-in and no learning; the settling re-sync locks it. Updates that still show
   the old position stop at the player's output: the media player's cursor and end check never see them. A seek the
   media hasn't shown after a second is given up, and its updates count again. If the media then holds at the
   target (buffering), the held updates stay out of the clock's line: it is fitted from where the media moves on, as
   after a stall.
-- **F-5** (library-only; Low): a wrap doesn't pause the media. It seeks to the range start, then does what a seek
-  does. S10 is scoped to the backing track.
+- **F-5** (alphaTabWebsite; Low): a wrap doesn't pause the media. It seeks to the range start, then does what a
+  seek does, so the synth restarts past the range start (about 110–160 ms at 1× with the rhythm game's 50 ms
+  updates): every pass of a YouTube loop plays its first beat without a click. S10 is scoped to the backing track.
 - **F-6** (alphaTabWebsite; Low): when the position moved since the pause (an update at most 100 ms old), the start
   came from the media's own player. The synth then starts at the media's position, with no count-in and no
   learning.
@@ -12302,7 +12303,8 @@ not the click.
 
 Run the app's checks: `npm run typecheck`, then what its CI runs, `npm run generate-alphatabdoc && npm run build` (the
 app has no test or lint script). By ear: a backing-track song with the metronome, a loop, a speed change; the YouTube
-flow.
+flow, with a two-bar YouTube loop and the metronome (each pass starts without its first click, then the clicks rejoin
+the video).
 
 ```bash
 git add -A
