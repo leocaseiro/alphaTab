@@ -12266,7 +12266,9 @@ to a different version than it was made for.
 `web/lib/alphatab/synth-with-media.ts` and its test (new), `web/app/play/PlayerShell.tsx`,
 `web/app/play/TransportRow.tsx` and `web/app/play/TracksPopover.tsx` (one prop comment each),
 `web/app/play/SettingsPopover.tsx` (the level rows' reasons), `web/lib/alphatab/settings-schema.ts` (two ranges, two
-rows), `web/lib/alphatab/transport-storage.ts` (two bounds), `docs/specs/2026-09-10-v0-local-file-player-design.md`
+rows), `web/lib/alphatab/transport-storage.ts` (two bounds) and two tests that expect the old bound
+(`web/lib/alphatab/transport-storage.test.ts`, and one in `web/e2e/player.e2e.ts`),
+`docs/specs/2026-09-10-v0-local-file-player-design.md`
 (the spec delta); for the drum tablature 1.9 draws (Step 2): `web/lib/alphatab/mixer-tracks.ts` and its test,
 `client/src/components/ui/TrackRow/TrackRow.tsx` (one doc comment), `web/e2e/player.e2e.ts` (two tests) and the
 changed screenshots in `web/e2e/pages.vr.ts-snapshots/`.
@@ -12374,7 +12376,10 @@ notation-hero has no platform helper and no external player. All new logic goes 
    8 dB under a mastered recording (spike 5); 2.5 is about +8 dB, and with Sonivox the click alone peaks at −1.6 dBFS
    at 3. Master volume stays at `max: 1`. In `web/lib/alphatab/transport-storage.ts`, `TRANSPORT_BOUNDS` gives
    `metronomeVolume` and `countInVolume` the same `max: 3`, and its comment stops calling them 0-1 ratios: otherwise a
-   stored 2.5 is clamped back to 1 on the next visit, with a "corrected" warning.
+   stored 2.5 is clamped back to 1 on the next visit, with a "corrected" warning. Two tests store a metronome volume
+   of 9 and expect the old top, 1; both now expect 3: `transport-storage.test.ts`'s "clamps a volume to the 0-1
+   range its row declares" (its name drops "0-1") and `web/e2e/player.e2e.ts`'s "a single out-of-range transport
+   value is corrected and the warning NAMES it" (its two comments stop saying the range is 0-1 and the top is 1).
 
    The score's tracks play over a recording (item 3) about 8 dB under a mastered one (the notes peak at −9.5 dBFS with
    Sonivox), and a track's own volume tops out at its channel's full level. So Settings ▸ Player gains two rows next
