@@ -152,7 +152,10 @@ Each one is flagged where it is used. Keep or drop them during the plan review.
   That is how spike 6 got its 0.2–4.8 ms. Task 17.
 - **G-6** (spec wording): the external clock stamps each sample with the context time *being heard* (via
   `getOutputTimestamp()`) and is read at frame time `F / sampleRate`. §6.3's "frame time + `outputLatency`" names
-  the same moment, so don't add `outputLatency` twice. Task 11.
+  the same moment, so don't add `outputLatency` twice. Task 11. The output limiter (Task 14) delays all it carries
+  by a fixed 6 ms look-ahead (Chromium and WebKit). A backing track passes through it with the synth, so that
+  cancels; external media doesn't, so there the synth sounds 6 ms later than this model says, and the offset tuned
+  by ear (S9) carries it.
 - **G-7** (spec wording, §13): the probe's tap is connected to the destination but outputs silence (as in spike 5).
   A node that isn't connected may not be processed. Task 12 fixes the §13 sentence.
 
