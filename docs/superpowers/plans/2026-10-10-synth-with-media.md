@@ -12113,7 +12113,9 @@ set yourself (never write absolute paths into tracked files).
 
 ### Task 25: Build, pack, and a first try in both apps (a `file:` dependency)
 
-**Files:** none tracked; a tarball outside both apps.
+**Files:**
+- Modify: `docs/spikes/issue-2397/target-devices-<date>.md` (Task 24's dated `.md`: Step 2's YouTube start answers)
+- Nothing else tracked: a tarball outside both apps.
 
 - [ ] **Step 1: Build and pack**
 
@@ -12183,6 +12185,18 @@ where). notation-hero has no YouTube flow, so check a file with its own recordin
 Metronome button is greyed out for a recording until Task 27, so turn the metronome on from DevTools: select the
 notation box and run `$0.at.metronomeVolume = 1` (the app keeps its live api there). Then go back (`cd -`), remove
 the worktree (`git worktree remove --force ../notation-hero-try-2397`) and delete the branch.
+
+- [ ] **Step 4: Commit the YouTube start answers**
+
+In the alphaTab feature worktree (Step 2 wrote them into Task 24's dated `.md`):
+
+```bash
+git add docs/spikes/issue-2397/target-devices-*.md
+git commit -m "docs: #2397 YouTube late-start answers (iOS, desktop Safari)"
+git push
+```
+
+The tree is clean again: Task 26 Step 4's rebase needs that, and so does Step 1 if a try sends you back there.
 
 If either try fails, stop here, fix it on `feat/2397-synth-with-media` (with a test), and come back to Step 1.
 
