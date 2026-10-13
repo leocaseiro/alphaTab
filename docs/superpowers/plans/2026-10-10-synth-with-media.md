@@ -11877,7 +11877,12 @@ await syncLab.countInPreRollTest(0.5, 6)
 await syncLab.countInTest(6, 1); await syncLab.countInTest(6, 1.5)
 ```
 
-Put D-3 to the person as `[Q-D3]` with the two pre-roll results in hand:
+Then listen once with the implemented 120 ms, on a real song (`?file=`, as for S11): **Audio** on the file's audio,
+count-in on, 0.5×, Play from the first beat after a fill or a crash. By Task 10's start model the recording plays
+about 180 ms of the bar before the downbeat under the count-in's last beat (about 60 ms with Option 2). Note what you
+hear next to both options.
+
+Put D-3 to the person as `[Q-D3]` with the two pre-roll results and that note in hand:
 
 - **Scenario:** in the rhythm game at 0.5×, you press Play with the count-in on; the backing track enters on the
   downbeat after one bar of clicks.
@@ -11903,6 +11908,8 @@ await syncLab.loopTest(0.5); await syncLab.loopTest(1); await syncLab.loopTest(1
 Then switch **Audio** to the file's audio, turn the synth tracks on, loop at 1× and 1.5×, and listen at each wrap
 the run's `gaps` flags. Loop at 0.5× too and listen at every wrap: nothing of the bar after the range (its downbeat,
 its click) may sound before the jump back. The lab's checks can't hear that: the stray beep and its click pair up.
+At 0.5× every pass also starts about 60 ms early (the 60 ms pre-roll): on a real song (`?file=`), loop a range that
+starts after a fill or a crash, and note in S10's result what of that bar you hear.
 Put to the person as `[Q-D5]`:
 
 - **Scenario:** in notation-hero you loop two bars to practice; at every wrap the recording jumps back to the
