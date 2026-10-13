@@ -338,7 +338,7 @@ must also recreate it when `enableSynthesizerWithMedia` changes (via `updateSett
 - Spike 3's exact decode-and-mix mode, and any own pitch-preserving time-stretch.
 - Firefox/Safari tuning beyond what the probe measures **(untested)**.
 - Direct worker→worklet `MessagePort` (would take sample traffic off the main thread; perf idea).
-- Muting the synth during YouTube buffering beyond the 120 ms re-sync rule.
+- Stall detection for integrations that stop calling `updatePosition()` while the media buffers (the §6.2 stall rule needs the updates the documented wiring keeps sending).
 - A re-sync that keeps the synth's notes sounding, so a held tempo sweep doesn't cut them at every step (spike 11).
 
 ## 13. Risks
