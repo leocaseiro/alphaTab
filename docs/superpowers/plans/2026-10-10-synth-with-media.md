@@ -123,11 +123,11 @@ recommendation as it stands. "Spiked" says whether a run backs it.
 | F-9a | both | A speed with no learned value of its own uses a straight-line guess between learned speeds (`PerSpeedValues`). A probe value that lands during playback settles without a forced re-sync. | Tasks 8, 10 · D-1 in Task 22 | unit (spike 11's numbers) · lab: first Play at an unprobed speed, probe value mid-loop | guess: yes (spike 11 §2) · probe part: no | Medium (guess) · Low (probe part) |
 | F-9d | both | S12 (new success criterion) plus lab tests for an auto-BPM loop (+5 BPM per wrap), a held sweep in 1-BPM steps, and the first Play at an unprobed speed | Task 21 (lab) · Task 22 (S12 into the spec, run) | lab | sweep: yes (spike 11 §1) | High (the sweep re-syncs at each step) · Medium (rest) |
 | F-3 | both | Settle re-sync threshold at 1× = max(12 ms, 2 × `baseLatency` + 1 ms). The lab's first-click tolerance = max(±11 ms, ±2 × `baseLatency`). A run on a machine with `baseLatency` > 5.3 ms. | Task 9 (code) · Task 21 (lab) · Task 23 (run, D-2) | unit + lab | no | Low |
-| F-14 | both | Count-in media pre-roll below 1× = 120 ms (the recommendation). D-3 compares 60 ms and 120 ms with the real count-in. The 1.5× figure is restated as 0…+2.7 ms. The first count-in at an unlearned speed is marked (open). | Task 10 (constant) · Task 22 (D-3, spec edits) | lab count-in test at 0.5× | yes (spike 6, emulated count-in) | Medium |
+| F-14 | both | Count-in media pre-roll below 1× = 120 ms (the recommendation). D-3 compares 60 ms and 120 ms with the real count-in. The 1.5× figure is restated as 0…+2.7 ms. The first count-in at an unlearned speed is marked (open). | Task 9 (constant) · Task 10 (rule) · Task 22 (D-3, spec edits) | lab count-in test at 0.5× | yes (spike 6, emulated count-in) | Medium |
 | Q-1 | both | S4 reports the first Play at a speed with no learned start lead separately and doesn't gate on it; S12 does the same for each auto-BPM repetition (D-4, settled in the plan review) | Task 22 (D-4, settled) | lab start test's first-Play cell | yes (spikes 11 §2, 12) | High |
-| F-15 | both | Re-run spike 4's loop test at 1× and 1.5×, listen at each wrap the lab flags, then pick the S10 gate (provisional: a median gate plus an ear check) | Task 22 (D-5) | lab loop test | partly (spike 4) | Medium |
+| F-15 | both | Re-run spike 4's loop test at 0.5×, 1× and 1.5×, listen at each wrap the lab flags (and at every 0.5× wrap), then pick the S10 gate (provisional: a median gate plus an ear check) | Task 22 (D-5) | lab loop test | partly (spike 4) | Medium |
 | F-5 | alphaTabWebsite | External media wraps without pausing: the media seeks to the range start, and the synth stays silent until the media shows the jump and its clock has a fit again (three position updates over 100 ms or more). It then restarts at the media's position, past the range start (about 110–160 ms at 1× with the rhythm game's 50 ms updates), so every pass of a YouTube loop plays its first beat without a click. S10 is scoped to the backing track. | Task 19 (code, spec edit) · Task 26 (by ear) | unit (fakes) · by ear | on fakes only | Low |
-| F-6 | alphaTabWebsite | A start pressed inside YouTube (the position moved at `play()` or within 100 ms) gets no count-in and no learning. Integrations call `updatePosition()` right before `api.play()`. | Task 19 (code, spec §7 edit) · Task 20 (setting docs) | unit | no | Low |
+| F-6 | alphaTabWebsite | A start pressed inside YouTube (the position moved at `play()` or within 100 ms) gets no count-in and no learning. Integrations call `updatePosition()` right before `api.play()`. | Task 11 (clock check) · Task 19 (code, spec §7 edit) · Task 20 (setting docs) | unit | no | Low |
 | F-17 | alphaTabWebsite | Stall rule: the same position for ≥ 100 ms silences the synth. Once the position moves, the fit restarts there, and the synth restarts at the media's position when the clock has a fit again (three position updates over 100 ms or more). | Tasks 11, 19 | unit | modeled (spike 9 §4) | Medium |
 | F-11 | alphaTabWebsite | Both clocks subtract `mediaSyncOffsetInMilliseconds × speed`. The spec states the sign (+ = synth later) and the unit (ms of real time). | Task 11 (code, spec edit) | unit | no (arithmetic) | High |
 | F-13 | both | Limiter: −1 dBFS, ratio 20, knee 0, attack 1 ms, release 100 ms, then a fixed −0.57 dB trim | Task 14 · lab check in Task 22 | unit (node params) + lab (spike 8 script) | yes (spike 8) | High |
@@ -7864,8 +7864,8 @@ git push
 - Create: `packages/alphatab/test/audio/MediaSynthPlayer.Transport.test.ts`
 
 **Interfaces:**
-- Consumes: Task 15's player; `MediaSyncController.planStart/started/speedChanged` (Task 10); `IMediaClock.whenSeeked`
-  (Task 11); `BackingTrackPlayer.seekMediaTo` (Task 15).
+- Consumes: Task 15's player; `MediaSyncController.planStart/started` (Task 10) and `speedChanged` (Task 9);
+  `IMediaClock.whenSeeked` (Task 11); `BackingTrackPlayer.seekMediaTo` (Task 15).
 - Produces (used by Tasks 17–19): `_startPlayback()`, `_runStart(plan, learnStartLead)`, `_interrupt()` with the
   handshake counter, `_holdBefore` for positions, `_mediaDelayTimer`.
 
@@ -8280,8 +8280,8 @@ git push
 
 **Interfaces:**
 - Consumes: `IMediaSynth.countInStarted` (Task 5), `IMediaFollowingOutput.countInEnd` (Task 7),
-  `MediaSyncController.handOffPlayTime/preRoll/startedAfterHandOff` (Task 10), `MediaSyncConstants` (Task 9),
-  `IMediaTimer.spinUntil` (Task 5).
+  `MediaSyncController.handOffPlayTime/preRoll` (Task 10), `MediaSyncController.startedAfterHandOff` and
+  `MediaSyncConstants` (Task 9), `IMediaTimer.spinUntil` (Task 5).
 - Produces (used by Tasks 18, 19): `_startPlayback(countIn: boolean)`, `_countIn` (non-null while counting in),
   `_watchMediaStart(delayMs)`, `MediaSynthCountInRecord` entries in `diagnostics.countIns`.
 
