@@ -10267,11 +10267,13 @@ Create `packages/playground/demos/sync-lab/index.ts`:
 ```ts
 // Sync lab (CoderLine/alphaTab#2397): measures the synthesizer against a backing track (spec §9).
 //
-// URL params: ?src=beeps|mp3 &listen=0|1 &mixing=0|1 &file=/test-data/audio/syncpoints-testfile.gp
+// URL params: ?src=beeps|mp3 &listen=0|1 &mixing=0|1 &rate=48000|44100 &file=/test-data/audio/syncpoints-testfile.gp
 //   src=beeps  the file's backing track is replaced by a 2 kHz beep on every beat (from the file's own sync points);
 //              the synth plays the metronome. Two taps record every beep (media) and every click (synth) on the
 //              AudioContext's clock, so click - beep is the audible offset.
 //   mixing=0   the S7 check: the same page with enableSynthesizerWithMedia off.
+//   rate=44100 the beep track at 44.1 kHz, the rate of most recordings (Guitar Pro audio tracks, MP3s): a 48 kHz
+//              context resamples it, as it does a real song (Task 22 Step 1).
 // Every test logs its result and keeps it in window.syncLab.results.
 import * as alphaTab from '@coderline/alphatab';
 import { AlphaSynthMidiFileHandler } from '@coderline/alphatab/midi/AlphaSynthMidiFileHandler';
@@ -10289,6 +10291,7 @@ import { Paths } from '../../src/util/Paths';
 const params = new URL(window.location.href).searchParams;
 const src = params.get('src') ?? 'beeps';
 const mixing = params.get('mixing') !== '0';
+const beepRate = Number(params.get('rate') ?? 48000);
 const file = params.get('file') ?? '/test-data/audio/syncpoints-testfile.gp';
 // D-8 (R-1): ?audioSession=playback sets iOS's audio session before any Play (Safari 16.4+), no console needed
 if (params.get('audioSession') === 'playback' && 'audioSession' in navigator) {
@@ -10457,7 +10460,7 @@ async function prepareScore(bytes: Uint8Array, name: string): Promise<alphaTab.m
     );
     beatMediaTimes = metronome.map(e => sequencer.mainTickToMediaTime(e.event.tick, durationMs));
     if (src === 'beeps') {
-        const rate = 48000;
+        const rate = beepRate;
         const pcm = new Int16Array(Math.ceil((durationMs / 1000) * rate));
         const beepFrames = Math.round(rate * 0.003);
         for (const t of beatMediaTimes) {
@@ -10469,7 +10472,7 @@ async function prepareScore(bytes: Uint8Array, name: string): Promise<alphaTab.m
         score.backingTrack!.rawAudioFile = encodeWav(pcm, rate);
     }
     log(
-        `file=${name} src=${src} mixing=${mixing} duration=${(durationMs / 1000).toFixed(2)}s beats=${beatMediaTimes.length} syncPoints=${generator.syncPoints.length}`
+        `file=${name} src=${src} rate=${beepRate} mixing=${mixing} duration=${(durationMs / 1000).toFixed(2)}s beats=${beatMediaTimes.length} syncPoints=${generator.syncPoints.length}`
     );
     return score;
 }
@@ -11587,6 +11590,11 @@ first runs its measurement, then puts the choice as a picker (see "How to run th
 Run `await syncLab.runMeasurement()`. Pass, on each segment's `settled.p95AbsMs`: S1 ≤ 3 ms ('start@0s 1.0x' and
 'seek 1.0x'), S2 ≤ 5 ms ('seek + 1.5x'; also run `syncLab.loopTest(1.25, 4, 3)` for a 1.25× figure), S3 ≤ 20 ms
 ('seek + 0.5x' and 'seek + 0.75x').
+
+Then reload the lab with `?rate=44100` and run `await syncLab.runMeasurement()` again. The default beep track is a
+48 kHz WAV, like the probe's, but most recordings are 44.1 kHz (Guitar Pro audio tracks, MP3s), and a 48 kHz context
+resamples them. With the probe's method, the plan review measured that path about 1.3 ms later at 1× (Chromium 152,
+macOS). Record these rows beside the 48 kHz ones, with the same targets: they are reported, not gated.
 
 - [ ] **Step 2: S4, S4b, S5 — starts, seeks and speed changes on a beat**
 
