@@ -12326,7 +12326,8 @@ to a different version than it was made for.
 
 **Files (notation-hero):** `pnpm-workspace.yaml` (`minimumReleaseAgeExclude`), `web/package.json`, `pnpm-lock.yaml`,
 `patches/@coderline__alphatab@<alpha>.patch` (written by pnpm) and `patchedDependencies`,
-`web/lib/alphatab/synth-with-media.ts` and its test (new), `web/app/play/PlayerShell.tsx`,
+`web/lib/alphatab/synth-with-media.ts` and its test (new), `web/app/play/PlayerShell.tsx` and its test,
+`web/lib/alphatab/useAlphaTab.ts` (two api keys),
 `web/app/play/TransportRow.tsx` and `web/app/play/TracksPopover.tsx` (one prop comment each),
 `web/app/play/SettingsPopover.tsx` (the level rows' reasons), `web/lib/alphatab/settings-schema.ts` (two ranges, two
 rows), `web/lib/alphatab/transport-storage.ts` (two bounds) and two tests that expect the old bound
@@ -12479,6 +12480,15 @@ notation-hero has no platform helper and no external player. All new logic goes 
    rows that disable. The two new levels are not stored: they start at 1 on every visit, and the stored transport
    values stay the four they are.
 
+   The two rows also need wiring in the shell, or they write the wrong value: `applyApiValue` in `PlayerShell.tsx`
+   sends every key it doesn't name to its `default` branch, which writes `isLooping`, and the `apiValues` memo has no
+   value for either key. Moving Synth volume would set Loop (on above 0, off at 0) and leave the level as it was,
+   and both rows would show 0. Add `'synthVolume' | 'backingTrackVolume'` to the `AlphaTabApiValue` union in
+   `web/lib/alphatab/useAlphaTab.ts` (`setAlphaTabValue` takes only that union). In `PlayerShell.tsx`, keep both
+   levels in state, starting at 1; give each a writer that calls `setAlphaTabValue` and nothing else (no
+   `persistTransport`); add both to the `apiValues` memo and its dependency list; and give `applyApiValue` a case for
+   each. Test it in `PlayerShell.test.tsx`: changing Synth volume writes `synthVolume` and leaves Loop off.
+
 Then add the spec delta to `docs/specs/2026-09-10-v0-local-file-player-design.md` (notation-hero) as a dated "Spec
 deltas" blockquote after the 2026-09-20 one, and mark §4's and §7's "render disabled" sentences as superseded for
 this case, in that file's existing style. The delta says:
@@ -12504,7 +12514,7 @@ Run the app's tests (`pnpm test`), its browser tests (`pnpm --filter web test:e2
 the metronome, a loop, a
 speed change (notation-hero has no YouTube flow). Also check that over that recording, Metronome, Count-In and the
 Tracks mixer are live (mute a track), that the Metronome volume row goes to 3 and keeps 2.5 after a reload, that
-Synth volume lifts the score's tracks over the recording, and that a file without a recording plays as before (Synth
+Synth volume lifts the score's tracks over the recording and leaves Loop off, and that a file without a recording plays as before (Synth
 volume and Recording volume greyed out, with their reason).
 
 ```bash
