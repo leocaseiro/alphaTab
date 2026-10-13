@@ -369,6 +369,19 @@ Expected: all pass. Write the test count into the task's commit message or PR no
 git push -u origin feat/2397-synth-with-media
 ```
 
+- [ ] **Step 5 (optional; the main session, with the person and the iPad): a WebKit pre-check**
+
+Before Task 2, a throwaway page answers the WebKit unknowns that shape Tasks 12, 15 and 17: R-2 (a refused delayed
+`play()`), the probe's hidden `<audio>` and R-1 (the Silent switch). Keep the page out of the repo and serve it over
+HTTPS as Task 24 Step 1 does. In the Web MIDI Browser app on the iPad, each on a fresh load: a tap that calls a
+routed `<audio>`'s `play()` 2 s later (a count-in bar); a tap that seeks it and calls `play()` in its `seeked`
+event (a start away from 1×); after one tap, a new hidden `Audio()` routed through `createMediaElementSource` and
+played with no tap (the probe); a routed `<audio>` at 0.5× (heard, and time-stretched rather than silent?); and,
+with the Silent switch on, a routed `<audio>` playing. Write what played in
+`docs/spikes/issue-2397/webkit-precheck-<date>.md`, then commit and push it. If a start was refused or the Silent
+switch muted the routed `<audio>`, put D-7 or D-8 (Task 24 Steps 3–4) to the person now: a fallback picked here is
+written into Tasks 12, 15 and 17 before they are built, and Task 24 confirms it with the lab.
+
 ---
 
 ## Phase 1 — The synth follows the media (shared code + worker)
