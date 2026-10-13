@@ -7639,6 +7639,9 @@ export class MediaSynthPlayer implements IAlphaSynth {
     }
 
     private _startPlayback(): void {
+        const speed = this.playbackSpeed;
+        this._queueProbe(speed, true);
+        this._probeNext();
         this._playMedia();
     }
 
@@ -7809,8 +7812,8 @@ export class MediaSynthPlayer implements IAlphaSynth {
 Notes for the implementer:
 - `soundFontLoadFailed` is declared with an initializer, and the constructor subscribes to it. Field initializers run
   before the constructor body, so the subscription is safe.
-- `_startPlayback` and `_seek` are their final selves only in media-only mode. Task 16 gives them the synthesizer's
-  handshakes.
+- Task 16 replaces `_startPlayback` and `_seek` with the synthesizer's start and seek handshakes. Its `_startPlayback`
+  keeps this one's first three lines: a Play measures the playing speed next when it has no value (§6.4).
 
 - [ ] **Step 8: Run the tests to see them pass**
 
