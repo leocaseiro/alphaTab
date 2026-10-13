@@ -9223,6 +9223,9 @@ F-17's model:
 - **A start through alphaTab** begins where alphaTab put the paused media: Stop, a range end and the song's end move
   it with no update from the media, and an integration may report positions only while the media plays (the
   youtube-sync demo). Inside a lead-in (before bar 1) only the media's own update knows its position.
+- **Every start** fits the clock from the media's first update that moves, as after a stall: the paused position, and
+  the updates an integration sends while the media starts (YouTube's clock starts ~45 ms after `playVideo()`, spike 6),
+  would bend the first fit and the start values learned from it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -9290,6 +9293,22 @@ describe('MediaSynthPlayerExternalTests', () => {
         }
         expect(last(h)).toBe('play:countIn=0');
         expect(h.synth.lastSeek()).toBeCloseTo(position + 10, 0); // where the video is now + the re-sync lead
+    });
+
+    it('a-start-fits-the-clock-from-where-the-media-moves', async () => {
+        // YouTube's clock starts ~45 ms after its play() (spike 6), on a slow start 100 ms or more; an integration that
+        // reports on a timer sends the paused position until then: those updates stay out of the clock's first fit
+        const h = new MediaSynthHarness(true);
+        await h.loadSong();
+        h.report(5000); // the paused media
+        h.player.play(); // through alphaTab, no count-in: the media's play() now
+        const moves = h.timer.time + 100;
+        const position = () => 5000 + Math.max(0, h.timer.time - moves);
+        for (let i = 0; i < 10 && Number.isNaN(h.externalClock!.mediaTimeNow()); i++) {
+            h.timer.advance(50);
+            h.report(position());
+        }
+        expect(h.externalClock!.mediaTimeNow()).toBeCloseTo(position(), 0); // where the video is, not behind it
     });
 
     it('a-wrap-seeks-without-pausing-the-media', async () => {
@@ -9752,6 +9771,18 @@ Speed change — the fit is at the old rate:
          }
 ```
 
+`_playMedia` — every start fits the external clock from where the media moves, as after a stall:
+
+```diff
+     private _playMedia(): void {
+         this._externalClock?.setPlaying(true);
++        // external media: the paused position and the updates while the media starts would bend the first fit: fit
++        // from where it moves, as after a stall
++        this._refitOnMove = true;
+         this._media.play();
+     }
+```
+
 New methods:
 
 ```ts
@@ -9760,8 +9791,12 @@ New methods:
         if (!clock) {
             return;
         }
-        if (this._awaitingSynthStart && !clock.isSeeking && position === clock.position) {
-            // the media shows the jump, then holds there (buffering): fit from where it moves, as after a stall
+        if (
+            (this._awaitingSynthStart || Number.isNaN(clock.mediaTimeNow())) &&
+            !clock.isSeeking &&
+            position === clock.position
+        ) {
+            // the media holds (after a jump, or at a start before its clock has a time): fit from where it moves
             this._refitOnMove = true;
         }
         if (this._refitOnMove && position !== clock.position) {
