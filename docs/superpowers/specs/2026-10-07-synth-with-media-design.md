@@ -127,10 +127,12 @@ written fresh, with tests, following §4–§7.
 
 New messages (main → worker): `alphaSynth.followMedia`, `alphaSynth.seekToMediaTime`,
 `alphaSynth.setRateCorrection`. Extended (worker → main → worklet):
-`alphaSynth.output.addSamples { samples, mediaStart?, mediaPerFrame? }`.
+`alphaSynth.output.addSamples { samples, mediaStart?, mediaPerFrame?, countInEnd?, countInFramesLeft? }` (a count-in
+chunk carries the frames left until the count-in ends).
 New (worklet → main): `alphaSynth.output.mediaTimestamp { frame, mediaTime }` about every 50 ms,
 only while the block being output came entirely from stamped chunks, and
-`alphaSynth.output.countInEnd { frame }` once the chunk holding the count-in's end is buffered (§6.2).
+`alphaSynth.output.countInEnd { frame }` from the count-in's first buffered chunk on, refined about every 50 ms
+(§6.2): the worklet's buffer (~213 ms at the default 500 ms) is shorter than the lead the 0.5× pre-roll needs.
 
 AudioWorklet changes:
 
@@ -179,7 +181,7 @@ Inputs: worklet stamps `(frame, synthMediaTime)`, a media clock giving `mediaTim
 | **Seek handshake** | Backing track: a seek while playing restarts through the start handshake (pause both, seek both, play both; no count-in, no `stateChanged`, §6.1). External media (can't be held): synth silent until the first position update after the jump, then restarts at the target (same rule) |
 | **Loop wrap** | `MediaSynthPlayer` owns `playbackRange` and `isLooping`. Just before the range end (the song's end when no range is set: `isLooping` alone loops the whole song, as today) it fires `finished` (as today), then pauses both, seeks both to the range start (~60 ms earlier at speeds other than 1×) and restarts them through the start handshake, with no count-in and no `stateChanged` (§6.1), so the range's first beat plays on every repetition (spike 4: 0 missing clicks at 0.5× / 1× / 1.5×; the backing track owning the wrap added 29–50 ms per wrap at 1× and lost beats at 1.5×) |
 | Speed change | apply speed to both, use the new speed's latency (probe value, else the §6.4 guess), re-sync, settle. The re-sync is needed: every change puts Chrome's media 15–43 ms behind the synth (spike 11), so a held tempo sweep re-syncs, and cuts the synth's sounding notes, at every step |
-| Count-in | the worker renders the count-in (one bar, §2) and then the song as one stamped stream (no buffer reset at the boundary). Once the chunk holding the boundary is buffered, the worklet reports its context frame (`countInEnd`); the media's `play()` is issued a learned media-start latency (one per speed) before that frame, with the start handshake's media pre-roll. The controller waits until the media plays; if `countInEnd` hasn't arrived by the count-in's length plus 250 ms, the media starts anyway and playback is media-only (§6.1). Spike 6's hand-offs ran at most 4.8 ms late, so this fires only when the hand-off never comes. Cursor stays at the start position meanwhile (spike 6: downbeat 1× ±1.3 ms, 1.5× 0…+2.7 ms, 0.5× with pre-roll +4.5…+13.9 ms, never skipped) |
+| Count-in | the worker renders the count-in (one bar, §2) and then the song as one stamped stream (no buffer reset at the boundary). From the count-in's first buffered chunk on, the worklet reports the context frame of its end (`countInEnd`; each count-in chunk carries the frames left until the count-in ends), refined about every 50 ms; the media's `play()` is issued a learned media-start latency (one per speed) before that frame, with the start handshake's media pre-roll. The controller waits until the media plays; if `countInEnd` hasn't arrived by the count-in's length plus 250 ms, the media starts anyway and playback is media-only (§6.1). Spike 6's hand-offs ran at most 4.8 ms late, so this fires only when the hand-off never comes. Cursor stays at the start position meanwhile (spike 6: downbeat 1× ±1.3 ms, 1.5× 0…+2.7 ms, 0.5× with pre-roll +4.5…+13.9 ms, never skipped) |
 | **External media start** | Through alphaTab (`play()` while the media is paused, e.g. the app's own Play button): count-in and start handshake as for the backing track; the handler's `play()` is issued a learned media-start latency before the downbeat (spike 6: YouTube's clock starts ~45 ms after `playVideo()`, ±3 ms in 17 of 20 starts). If the media hasn't started by the downbeat (buffering), the synth restarts at the media's position once it advances (as after an external-media seek). Started by the media (its position already advancing when `play()` is called, e.g. play pressed inside YouTube, which reaches the app ~220 ms late): no count-in and no start-lead learning; the synth starts at the media's position and locks through the settling re-sync |
 
 ### 6.3 Media clocks

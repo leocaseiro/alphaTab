@@ -240,6 +240,7 @@ export class MediaSampleChunk {
     public mediaStart: number = -1;      // media ms of the chunk's first frame; -1: not on the media's axis (count-in)
     public mediaPerFrame: number = 0;    // media ms per frame (constant within a chunk)
     public countInEnd: boolean = false;  // the chunk's first frame is the first frame after the count-in
+    public countInFramesLeft: number = -1; // a count-in chunk: frames from its first frame to the count-in's end
 }
 export interface IMediaSampleOutput {
     addMediaSamples(samples: Float32Array, chunk: MediaSampleChunk): void;
@@ -806,6 +807,12 @@ export class MediaSampleChunk {
      * Whether the chunk's first frame is the first frame after the count-in.
      */
     public countInEnd: boolean = false;
+
+    /**
+     * A count-in chunk: the frames from its first frame to the count-in's end, at the speed it was rendered at;
+     * -1 for other chunks. The worklet reports the count-in's end from it, about a bar ahead (Task 7).
+     */
+    public countInFramesLeft: number = -1;
 }
 
 /**
@@ -880,7 +887,13 @@ export class FollowTestOutput implements ISynthOutput, IMediaSampleOutput {
         this.chunks.push(new RecordedChunk(samples.length / SynthConstants.AudioChannels, -1, 0, false));
     }
 
+    /**
+     * The countInFramesLeft of each received media chunk.
+     */
+    public readonly countInFramesLeft: number[] = [];
+
     public addMediaSamples(samples: Float32Array, chunk: MediaSampleChunk): void {
+        this.countInFramesLeft.push(chunk.countInFramesLeft);
         this.chunks.push(
             new RecordedChunk(
                 samples.length / SynthConstants.AudioChannels,
@@ -1239,6 +1252,12 @@ Branch `onSampleRequest` and add the rendering method:
         const isCountIn = this.sequencer.isPlayingCountIn;
         const mediaStep = microBufferMs * this.sequencer.playbackSpeed * this._followRateCorrection;
         const mediaStart = this._followMediaTime;
+        // a count-in chunk carries the frames left until the count-in ends at the current speed: the worklet then
+        // knows the end about a bar ahead, sooner than its ~213 ms buffer would show it (Task 7)
+        const countInFramesLeft = isCountIn
+            ? Math.ceil((this.sequencer.currentEndTime - this.sequencer.currentTime) / microBufferMs) *
+              SynthConstants.MicroBufferSize
+            : -1;
         let samples: Float32Array = new Float32Array(
             SynthConstants.MicroBufferSize * SynthConstants.MicroBufferCount * SynthConstants.AudioChannels
         );
@@ -1281,6 +1300,8 @@ Branch `onSampleRequest` and add the rendering method:
             chunk.mediaPerFrame = mediaStep / SynthConstants.MicroBufferSize;
             chunk.countInEnd = this._followCountInEnded;
             this._followCountInEnded = false;
+        } else {
+            chunk.countInFramesLeft = countInFramesLeft;
         }
         this._followChunks.enqueue(
             new FollowedChunk(bufferPos / SynthConstants.AudioChannels, chunk.mediaStart, chunk.mediaPerFrame)
@@ -1396,6 +1417,8 @@ Add to the `FollowMediaSynthTests` describe in `FollowMedia.test.ts`:
         const countInFrames = output.chunks.filter(c => c.mediaStart < 0).reduce((s, c) => s + c.frames, 0);
         expect(countInFrames).toBeGreaterThanOrEqual((lengths[0] / 1000) * 44100);
         expect(countInFrames).toBeLessThanOrEqual((lengths[0] / 1000) * 44100 + SynthConstants.MicroBufferSize);
+        // the first count-in chunk already tells how far the count-in's end is (Task 7 reports it a bar ahead)
+        expect(Math.abs(output.countInFramesLeft[0] - countInFrames)).toBeLessThanOrEqual(SynthConstants.MicroBufferSize);
         const first = output.stampedChunks[0];
         expect(first.countInEnd).toBe(true);
         expect(first.mediaStart).toBe(target);
@@ -1551,7 +1574,7 @@ git push
   `mediaSampleOutput: IMediaSampleOutput | null` (set by `BrowserUiFacade` when mixing).
 
 §5: new main → worker messages `alphaSynth.followMedia`, `alphaSynth.seekToMediaTime`, `alphaSynth.setRateCorrection`;
-`alphaSynth.output.addSamples` gets `mediaStart?`, `mediaPerFrame?`, `countInEnd?`; worker → main
+`alphaSynth.output.addSamples` gets `mediaStart?`, `mediaPerFrame?`, `countInEnd?`, `countInFramesLeft?`; worker → main
 `alphaSynth.countInStarted`; worklet → main `alphaSynth.output.mediaTimestamp` and `alphaSynth.output.countInEnd`
 (Task 7 sends them); main → worklet `alphaSynth.output.hold` / `alphaSynth.output.resume` (keep-alive, Task 7).
 F-8 (spike 10 §1): a worker whose script fails to load reports nothing today, because only `message` is listened to.
@@ -1590,7 +1613,7 @@ export class MediaTimestampEventArgs {
 export interface IMediaFollowingOutput extends IMediaSampleOutput {
     readonly mediaTimestamp: IEventEmitterOfT<MediaTimestampEventArgs>;
     /**
-     * The context frame at which the count-in ends (refined while it is buffered).
+     * The context frame at which the count-in ends: from its first buffered chunk on, refined about every 50 ms.
      */
     readonly countInEnd: IEventEmitterOfT<number>;
     readonly workletFailed: IEventEmitterOfT<Error>;
@@ -1917,6 +1940,7 @@ extend the union and the worker interface:
 +          mediaStart?: number;
 +          mediaPerFrame?: number;
 +          countInEnd?: boolean;
++          countInFramesLeft?: number;
 +      }
 +    | { cmd: 'alphaSynth.output.mediaTimestamp'; frame: number; mediaTime: number }
 +    | { cmd: 'alphaSynth.output.countInEnd'; frame: number }
@@ -1952,7 +1976,8 @@ extend the union and the worker interface:
 +            samples: Environment.prepareForPostMessage(samples),
 +            mediaStart: chunk.mediaStart,
 +            mediaPerFrame: chunk.mediaPerFrame,
-+            countInEnd: chunk.countInEnd
++            countInEnd: chunk.countInEnd,
++            countInFramesLeft: chunk.countInFramesLeft
 +        });
 +    }
 ```
@@ -2066,6 +2091,7 @@ In `handleWorkerMessage`:
 +                    chunk.mediaStart = data.mediaStart;
 +                    chunk.mediaPerFrame = data.mediaPerFrame ?? 0;
 +                    chunk.countInEnd = data.countInEnd === true;
++                    chunk.countInFramesLeft = data.countInFramesLeft ?? -1;
 +                    mediaOutput.addMediaSamples(data.samples, chunk);
 +                } else {
 +                    this._output.addSamples(data.samples);
@@ -2108,9 +2134,11 @@ git push
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces (used by Task 7's processor): `MediaChunkMarkers` with `push(frames, mediaStart, mediaPerFrame, countInEnd)`,
-  `mediaTimeAtReadPosition(): number` (−1 = not stamped), `consume(frames): boolean` (true = every consumed frame was
-  stamped), `framesUntilCountInEnd(): number` (−1 = none buffered), `bufferedFrames`, `clear()`.
+- Produces (used by Task 7's processor): `MediaChunkMarkers` with
+  `push(frames, mediaStart, mediaPerFrame, countInEnd, countInFramesLeft = -1)`, `mediaTimeAtReadPosition(): number`
+  (−1 = not stamped), `consume(frames): boolean` (true = every consumed frame was stamped),
+  `framesUntilCountInEnd(): number` (exact once the chunk after the count-in is buffered, else from the latest
+  count-in chunk's frames left; −1 = neither buffered), `bufferedFrames`, `clear()`.
 
 §5: one marker per **written** chunk, stamped or not, so the markers stay aligned with the circular buffer. (The
 spike's version only kept stamped chunks, which drifts out of line as soon as the unstamped count-in samples sit in
@@ -2170,6 +2198,29 @@ describe('MediaChunkMarkersTests', () => {
         expect(markers.framesUntilCountInEnd()).toBe(-1);
     });
 
+    it('a-buffered-count-in-chunk-already-yields-the-end', () => {
+        // each count-in chunk carries the frames from its first frame to the count-in's end (Task 3)
+        const markers = new MediaChunkMarkers();
+        markers.push(2048, -1, 0, false, 96000);
+        expect(markers.framesUntilCountInEnd()).toBe(96000);
+        markers.consume(128);
+        expect(markers.framesUntilCountInEnd()).toBe(96000 - 128);
+        // after a speed change the latest count-in chunk counts
+        markers.push(2048, -1, 0, false, 180000);
+        expect(markers.framesUntilCountInEnd()).toBe(2048 - 128 + 180000);
+    });
+
+    it('the-chunk-after-the-count-in-gives-the-exact-end', () => {
+        const markers = new MediaChunkMarkers();
+        markers.push(2048, -1, 0, false, 2560);
+        markers.push(512, -1, 0, false, 512);
+        expect(markers.framesUntilCountInEnd()).toBe(2560);
+        markers.push(2048, 1000, 0.5, true);
+        expect(markers.framesUntilCountInEnd()).toBe(2560);
+        markers.consume(2561); // the song's first frame has been read
+        expect(markers.framesUntilCountInEnd()).toBe(-1);
+    });
+
     it('clear-forgets-everything', () => {
         const markers = new MediaChunkMarkers();
         markers.push(100, 1000, 0.5, true);
@@ -2201,12 +2252,21 @@ class MediaChunkMarker {
     public readonly mediaStart: number;
     public readonly mediaPerFrame: number;
     public readonly countInEnd: boolean;
+    /** A count-in chunk: the frames from its first frame to the count-in's end; -1 for other chunks. */
+    public readonly countInFramesLeft: number;
 
-    public constructor(frames: number, mediaStart: number, mediaPerFrame: number, countInEnd: boolean) {
+    public constructor(
+        frames: number,
+        mediaStart: number,
+        mediaPerFrame: number,
+        countInEnd: boolean,
+        countInFramesLeft: number
+    ) {
         this.frames = frames;
         this.mediaStart = mediaStart;
         this.mediaPerFrame = mediaPerFrame;
         this.countInEnd = countInEnd;
+        this.countInFramesLeft = countInFramesLeft;
     }
 }
 
@@ -2230,9 +2290,15 @@ export class MediaChunkMarkers {
     /**
      * Records a written chunk. A negative `mediaStart` marks samples that are not on the media's time axis.
      */
-    public push(frames: number, mediaStart: number, mediaPerFrame: number, countInEnd: boolean): void {
+    public push(
+        frames: number,
+        mediaStart: number,
+        mediaPerFrame: number,
+        countInEnd: boolean,
+        countInFramesLeft: number = -1
+    ): void {
         if (frames > 0) {
-            this._markers.push(new MediaChunkMarker(frames, mediaStart, mediaPerFrame, countInEnd));
+            this._markers.push(new MediaChunkMarker(frames, mediaStart, mediaPerFrame, countInEnd, countInFramesLeft));
         }
     }
 
@@ -2248,17 +2314,23 @@ export class MediaChunkMarkers {
     }
 
     /**
-     * The frames until the first frame of the chunk that starts after the count-in, or -1 when none is buffered.
+     * The frames until the count-in's end: exact once the chunk that starts after the count-in is buffered, else
+     * from the latest buffered count-in chunk's frames left (the speed it was rendered at); -1 when neither is
+     * buffered.
      */
     public framesUntilCountInEnd(): number {
         let frames = 0;
+        let estimate = -1;
         for (const marker of this._markers) {
             if (marker.countInEnd && marker.consumed === 0) {
                 return frames;
             }
+            if (marker.countInFramesLeft >= 0) {
+                estimate = frames + marker.countInFramesLeft - marker.consumed;
+            }
             frames += marker.frames - marker.consumed;
         }
-        return -1;
+        return estimate;
     }
 
     /**
@@ -2292,7 +2364,7 @@ export class MediaChunkMarkers {
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `npx vitest run test/audio/MediaChunkMarkers.test.ts`
-Expected: PASS (5 tests).
+Expected: PASS (7 tests).
 
 - [ ] **Step 5: Run the repo gates and commit**
 
@@ -2322,7 +2394,7 @@ git push
 
 | Change | Why |
 |---|---|
-| Chunk markers record written frames; a `mediaTimestamp` about every 50 ms, only when the block came entirely from stamped chunks; `countInEnd` when the boundary chunk is written, refined every ~50 ms until it is read | exact "media time at `currentFrame`"; the media start is scheduled before the count-in ends |
+| Chunk markers record written frames; a `mediaTimestamp` about every 50 ms, only when the block came entirely from stamped chunks; `countInEnd` from the first count-in chunk written (each carries the frames left until the count-in ends), refined every ~50 ms until the boundary is read | exact "media time at `currentFrame`"; the media start is planned a bar ahead: the ring buffer holds ~213 ms at the default 500 ms `bufferTimeInMilliseconds`, less than the 240 ms lead the 0.5× pre-roll needs |
 | Keep-alive (mixing only): `hold` = silent, no requests, buffer and markers cleared, incoming samples dropped; `resume`; `warmUp()` creates the node early | rebuilding the worklet on every Play made the first click 100–117 ms late (spike finding F7) |
 | `requestedBufferCount` never below 0, **all modes** | a negative count made the worklet over-request forever: overflow dropped, the synth ran ~1.8× fast (finding F8) |
 | `workletFailed` when a worklet operation fails (module load, node creation) | spike 10 §2: today the app hears nothing, the player shows Playing and nothing moves |
@@ -2592,9 +2664,11 @@ Replace the processor's `_handleMessage`:
                                 written / SynthConstants.AudioChannels,
                                 data.mediaStart ?? -1,
                                 data.mediaPerFrame ?? 0,
-                                data.countInEnd === true
+                                data.countInEnd === true,
+                                data.countInFramesLeft ?? -1
                             );
-                            if (data.countInEnd === true) {
+                            if (data.countInEnd === true || (data.countInFramesLeft ?? -1) >= 0) {
+                                // a count-in chunk already tells where the count-in ends, about a bar ahead;
                                 // between blocks currentFrame is the next block's first frame
                                 this._reportCountInEnd(currentFrame);
                             }
@@ -2841,7 +2915,8 @@ New messages in the main-side `_handleMessage`, and the stamped samples:
             samples: Environment.prepareForPostMessage(samples),
             mediaStart: chunk.mediaStart,
             mediaPerFrame: chunk.mediaPerFrame,
-            countInEnd: chunk.countInEnd
+            countInEnd: chunk.countInEnd,
+            countInFramesLeft: chunk.countInFramesLeft
         });
     }
 ```
@@ -3743,7 +3818,8 @@ earlier in the song.
 
 **F-14** (both; our design's problem; spiked in spike 6 with an emulated count-in; Medium): the count-in pre-roll
 below 1× is 120 ms (0.5× downbeat +4.5…+13.9 ms; 60 ms gave +7.2…+20.5 ms). Decision D-3 re-measures it with the
-real count-in.
+real count-in. Spike 6's count-in was the song's own beats, stamped on the media's axis, so its end was known a bar
+ahead; the real count-in is not stamped, so each of its chunks carries the frames left until it ends (Tasks 3, 6, 7).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -8127,8 +8203,11 @@ git push
   `_watchMediaStart(delayMs)`, `MediaSynthCountInRecord` entries in `diagnostics.countIns`.
 
 §6.2 count-in: only an app Play from Paused counts in (§6.1). The worker renders one bar and then the song in one
-stream (Task 4), while the media waits, paused, at its pre-roll start (60 ms above 1×, 120 ms below, F-14). Once
-the boundary chunk is buffered the worklet reports its context frame (Task 7). The media's `play()` is issued at
+stream (Task 4), while the media waits, paused, at its pre-roll start (60 ms above 1×, 120 ms below, F-14). From
+the count-in's first buffered chunk on, the worklet reports the context frame of its end, a bar ahead, and refines
+it about every 50 ms (Task 7: each count-in chunk carries the frames left until the count-in ends); each report
+plans the hand-off again. The worklet's ~213 ms buffer is shorter than the 240 ms lead the 0.5× pre-roll needs,
+so the chunk after the count-in comes too late to plan from. The media's `play()` is issued at
 `frame / sampleRate − (mediaStartLatency(speed) + preRoll / speed)`. **G-5:** the timer fires 12 ms early, then
 waits on the audio clock for at most 30 ms (spike 6: `play()` 0.2–4.8 ms after its time). If the count-in's end
 isn't reported by the count-in's length + 250 ms, the media starts anyway and this player turns media-only; an end
@@ -8243,9 +8322,28 @@ describe('MediaSynthPlayerCountInTests', () => {
         h.synth.startCountIn(2000);
         h.synthOutput.endCountIn(1.5 * 48000);
         h.synthOutput.endCountIn(1.51 * 48000); // an underrun moved the boundary 10 ms
-        h.timer.advance(1490);
+        h.timer.advance(1510 - 12 - 1);
+        expect(h.mediaOutput!.isPlaying).toBe(false); // the hand-off is planned again from the refined end
+        h.timer.advance(2);
         expect(h.mediaOutput!.isPlaying).toBe(true);
         expect(h.graph.currentTime).toBeGreaterThanOrEqual(1.51 - 1e-9);
+    });
+
+    it('a-speed-change-after-the-first-end-report-hands-off-at-the-new-end', async () => {
+        // the worklet reports the end from the count-in's first chunk; the clicks still to come then speed up
+        const h = await countingIn();
+        h.synth.startCountIn(2000);
+        h.synthOutput.endCountIn(2 * 48000); // a bar ahead
+        h.timer.advance(500);
+        h.player.playbackSpeed = 1.5;
+        h.timer.advance(100);
+        h.synthOutput.endCountIn(1.5 * 48000); // the chunks rendered at 1.5x: the end moved to 1.5 s
+        // play() at the new end minus the pre-roll in real time: 60 / 1.5 = 40 ms
+        h.timer.advance(1500 - 40 - 12 - 1 - 600);
+        expect(h.mediaOutput!.isPlaying).toBe(false);
+        h.timer.advance(2);
+        expect(h.mediaOutput!.isPlaying).toBe(true); // not at the old end's time (2 - 0.04 s)
+        expect(h.graph.currentTime).toBeCloseTo(1.46, 3);
     });
 
     it('the-time-limit-starts-the-media-alone', async () => {
@@ -8547,10 +8645,9 @@ New methods:
         this._timer.clearTimeout(countIn.limitTimer);
         countIn.limitTimer = 0;
         countIn.playAt = this.controller.handOffPlayTime(frame, this._graph.sampleRate, countIn.speed, countIn.preRoll);
-        if (countIn.handOffTimer !== 0) {
-            // a refined estimate only moves playAt
-            return;
-        }
+        // every report plans the hand-off again: the first comes about a bar ahead, and a speed change or an
+        // underrun moves the end after it
+        this._timer.clearTimeout(countIn.handOffTimer);
         const waitMs = (countIn.playAt - this._graph.currentTime) * 1000 - MediaSyncConstants.HandOffEarlyMs;
         countIn.handOffTimer = this._timer.setTimeout(() => this._handOff(countIn), Math.max(0, waitMs));
     }
