@@ -12299,6 +12299,10 @@ YouTube-only slider: alphaTab sets YouTube's level from `masterVolume` (spike 9 
 at 2.5 brings the click level with a mastered backing track, and Backing Track Volume at 0.3 lowers the recording,
 not the click.
 
+The transport's Metronome and Count-In buttons stay as they are: they switch between 0 and 1, so a press brings a
+raised level back to 1, and at any level other than 1 the Metronome button reads "Enable metronome" (a bug in the
+game today). A raised level is set with the sliders.
+
 - [ ] **Step 6: Check, commit, push**
 
 Run the app's checks: `npm run typecheck`, then what its CI runs, `npm run generate-alphatabdoc && npm run build` (the
@@ -12439,6 +12443,9 @@ notation-hero has no platform helper and no external player. All new logic goes 
    of 9 and expect the old top, 1; both now expect 3: `transport-storage.test.ts`'s "clamps a volume to the 0-1
    range its row declares" (its name drops "0-1") and `web/e2e/player.e2e.ts`'s "a single out-of-range transport
    value is corrected and the warning NAMES it" (its two comments stop saying the range is 0-1 and the top is 1).
+
+   The transport's Metronome and Count-In buttons stay as they are: off is 0 and on is 1, so turning one off and on
+   brings a raised level back to 1. A raised level is set in Settings ▸ Player.
 
    The score's tracks play over a recording (item 3) about 8 dB under a mastered one (the notes peak at −9.5 dBFS with
    Sonivox), and a track's own volume tops out at its channel's full level. So Settings ▸ Player gains two rows next
