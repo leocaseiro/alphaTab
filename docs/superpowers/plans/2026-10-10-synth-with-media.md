@@ -12072,7 +12072,8 @@ If either try fails, stop here, fix it on `feat/2397-synth-with-media` (with a t
 **Files (alphaTabWebsite):** `package.json`, its lockfile, `patches/@coderline+alphatab+<alpha>.patch` (new),
 `patches/@coderline+alphatab+1.8.1.patch` (delete), the rhythm game's API settings and YouTube player options,
 `cross-markers.tsx`, `src/utils.ts` (`supportsMixing()`, `hideYouTubeControls()`), `src/components/AlphaTabRhythmGame/youtube-player.tsx` (the
-volume scale), `src/components/AlphaTabRhythmGame/playground-settings.tsx` (the level sliders).
+volume scale), `src/components/AlphaTabRhythmGame/practice-mode-settings.tsx` (the Practice panel's Metronome and
+Count-In sliders), `src/components/AlphaTabRhythmGame/playground-settings.tsx` (the level sliders).
 
 **F-10** (both apps; our design's problem; not spiked; Medium): §11 step 4 turns the feature on in each app. Where mixing
 is on, the rhythm game creates its YouTube player with `controls: 0` and `disablekb: 1`, so starts go through the
@@ -12264,6 +12265,12 @@ the click alone peaks at −1.6 dBFS at 3. Two new sliders reach the new levels:
 +  control: { type: "number-range", min: 0, max: 1, step: 0.1 },
 +},
 ```
+
+The Practice panel (`src/components/AlphaTabRhythmGame/practice-mode-settings.tsx`, its Player Control group) has the
+same Metronome and Count-In sliders, also at `max: 1`. Give both `max: 3` the same way (the two `control` lines
+above); the two new sliders stay in Settings only. Left at 1, a level above 1 set in Settings shows there as a full
+slider, and moving either slider sets the level back to 1 or less. Check: Metronome at 2.5 in Settings, then open
+Practice: its Metronome slider sits at 2.5 of 3.
 
 Volume (`masterVolume`) stays at `max: 1`. It also drives YouTube's level, which stops at 100%, so above 1 only the
 synthesizer would get louder over a video. Volume and Synth Volume together reach every balance. There is no
