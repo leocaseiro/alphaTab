@@ -4174,8 +4174,10 @@ clocks then subtract the offset.
 - **F-17** (alphaTabWebsite; modeled in spike 9 §4; Medium): the same position for ≥ 100 ms after the media has
   moved is a stall. A trigger on the raw samples doesn't lag (a trigger on the fitted line fired 0.3–0.6 s late).
 - **F-6** (alphaTabWebsite; not spiked; Low): an update ≤ 100 ms old whose position differs from the paused
-  position means the media started itself. **G-6:** samples are stamped with the context time being heard, and
-  the clock is read at `frame / sampleRate`.
+  position means the media started itself. The paused position is where the media stopped: it stops up to one
+  update after the pause, so an update within 100 ms after the pause sets it (an integration may keep reporting
+  while paused, as the rhythm game does for 300 ms after YouTube's `PAUSED`). **G-6:** samples are stamped with
+  the context time being heard, and the clock is read at `frame / sampleRate`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4372,6 +4374,22 @@ describe('ExternalMediaClockTests', () => {
         expect(clock.position).toBe(9000);
         expect(clock.isSeeking).toBe(false);
         expect(clock.movedSincePause()).toBe(false);
+    });
+
+    it('updates-right-after-a-pause-show-where-the-media-stopped', () => {
+        // the media stops up to one update after the pause: an integration that keeps reporting while paused shows a
+        // later position than the update before the pause, and that is not a start inside the media
+        const time = new FakeHeardTime();
+        const clock = new ExternalMediaClock(time, () => 0);
+        clock.setPlaying(true);
+        feed(clock, time, 0, 1, t => t * 1000); // the last update: 1000
+        time.heard = 1.03;
+        clock.setPlaying(false); // the media stops at 1030
+        feed(clock, time, 1.05, 3, () => 1030);
+        expect(clock.movedSincePause()).toBe(false);
+        time.heard = 3.3;
+        clock.addSample(1250); // play pressed inside the media
+        expect(clock.movedSincePause()).toBe(true);
     });
 
     it('expect-jump-ignores-updates-from-before-the-seek', () => {
@@ -4583,6 +4601,8 @@ export class ExternalMediaClock implements IMediaClock {
     /** F-6: an update at most this old that shows the media moved since the pause: the media started itself. */
     public static readonly MovedWithinMs: number = 100;
     public static readonly MovedToleranceMs: number = 5;
+    /** The media stops up to one update after the pause: updates this soon after it show where it stopped. */
+    public static readonly PauseSettleMs: number = 100;
     /** After a seek, updates further than this from the target still show the old position. */
     public static readonly JumpToleranceMs: number = 500;
     /** A seek the media hasn't shown after this long (one it didn't do) is given up: its updates count again. */
@@ -4603,6 +4623,7 @@ export class ExternalMediaClock implements IMediaClock {
     private _lastSampleAt: number = Number.NEGATIVE_INFINITY;
     private _sawMovement: boolean = false;
     private _positionAtPause: number = Number.NaN;
+    private _pausedAt: number = Number.NEGATIVE_INFINITY;
     private _jumpTarget: number = Number.NaN;
     private _jumpAt: number = 0;
 
@@ -4620,7 +4641,11 @@ export class ExternalMediaClock implements IMediaClock {
         }
         this._jumpTarget = Number.NaN;
         const time = this._source.heardContextTime();
-        if (Number.isNaN(this._positionAtPause) && !this._playing) {
+        if (
+            !this._playing &&
+            (Number.isNaN(this._positionAtPause) || (time - this._pausedAt) * 1000 <= ExternalMediaClock.PauseSettleMs)
+        ) {
+            // the paused position: the first update, or one right after the pause (where the media stopped)
             this._positionAtPause = positionMs;
         }
         if (positionMs !== this._lastPosition) {
@@ -4666,6 +4691,7 @@ export class ExternalMediaClock implements IMediaClock {
             this._fit();
         } else {
             this._positionAtPause = this._lastPosition;
+            this._pausedAt = this._source.heardContextTime();
         }
     }
 
@@ -4795,7 +4821,7 @@ export class ExternalMediaClock implements IMediaClock {
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `npx vitest run test/audio/MediaClock.test.ts`
-Expected: PASS (15 tests). If `fits-a-line-that-one-late-update-does-not-bend` misses by more than 0.5 ms, check
+Expected: PASS (16 tests). If `fits-a-line-that-one-late-update-does-not-bend` misses by more than 0.5 ms, check
 that the late sample is the only one changed (`Math.abs(t - 0.5) < 1e-6` must match exactly one step of the loop).
 
 - [ ] **Step 5: State the offset's sign and unit in the spec (F-11, G-6)**
@@ -9444,6 +9470,33 @@ describe('MediaSynthPlayerExternalTests', () => {
         expect(h.synth.calls.filter(c => c.startsWith('play:'))).toEqual(['play:countIn=0']);
         expect(h.handler!.plays).toBe(1);
         expect(h.player.controller.startLeads.size).toBe(0);
+    });
+
+    it('a-play-after-a-pause-counts-in-while-the-media-reports-its-paused-position', async () => {
+        // an integration that keeps calling updatePosition() while the media is paused; the media stopped 30 ms after
+        // its last update before the pause
+        const h = await externalPlaying(); // the last update: 5300
+        h.timer.advance(30);
+        h.player.pause();
+        for (let i = 0; i < 20; i++) {
+            h.timer.advance(50);
+            h.report(5330); // where the media stopped
+        }
+        h.player.countInVolume = 1;
+        h.player.play(); // through alphaTab
+        expect(last(h)).toBe('play:countIn=1');
+    });
+
+    it('a-play-after-a-stop-counts-in-while-the-media-reports-its-paused-position', async () => {
+        const h = await externalPlaying();
+        h.player.stop(); // alphaTab sends the media back to the song's start
+        for (let i = 0; i < 20; i++) {
+            h.timer.advance(50);
+            h.report(0);
+        }
+        h.player.countInVolume = 1;
+        h.player.play();
+        expect(last(h)).toBe('play:countIn=1');
     });
 
     it('media-only-keeps-looping-external-media', async () => {
