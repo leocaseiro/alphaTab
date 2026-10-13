@@ -12050,7 +12050,9 @@ git push
 
 F-3 (both; our design's problem; not spiked; Low): the thresholds come from the context's audio callback. Settle
 re-sync at 1× = max(12 ms, 2 × `baseLatency` + 1 ms); the first-click tolerance = max(±11 ms, ±2 × `baseLatency`).
-Every run so far was on Chrome/macOS (`baseLatency` ≤ 5.3 ms), where both equal today's constants.
+Every run so far was on Chrome/macOS (`baseLatency` ≤ 5.3 ms), where both equal today's constants. WebKit (the
+iPad) reports `baseLatency` as one 128-frame render quantum (2.7 ms at 48 kHz) whatever the device's audio path,
+so there both stay at today's constants: its `toleranceMs` always reads 11, and it can't stand in for this gate.
 
 - [ ] **Step 1: Find the machine**
 
