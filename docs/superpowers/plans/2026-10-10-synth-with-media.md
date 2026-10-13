@@ -9176,7 +9176,9 @@ F-17's model:
 - **Seek while playing (§6.2):** the synth stays silent until the first update after the jump, then restarts at
   the media's position. There's no count-in and no learning; the settling re-sync locks it. Updates that still show
   the old position stop at the player's output: the media player's cursor and end check never see them. A seek the
-  media hasn't shown after a second is given up, and its updates count again.
+  media hasn't shown after a second is given up, and its updates count again. If the media then holds at the
+  target (buffering), the held updates stay out of the clock's line: it is fitted from where the media moves on, as
+  after a stall.
 - **F-5** (library-only; Low): a wrap doesn't pause the media. It seeks to the range start, then does what a seek
   does. S10 is scoped to the backing track.
 - **F-6** (alphaTabWebsite; Low): when the position moved since the pause (an update at most 100 ms old), the start
@@ -9238,6 +9240,26 @@ describe('MediaSynthPlayerExternalTests', () => {
         }
         expect(last(h)).toBe('play:countIn=0');
         expect(h.synth.lastSeek()).toBeCloseTo(target + 100 + 10, 0); // the media now + the re-sync lead
+    });
+
+    it('a-hold-at-the-jump-target-stays-out-of-the-fit', async () => {
+        // YouTube buffering after a seek: the video reports the target, stays there 150 ms, then moves
+        const h = await externalPlaying();
+        h.player.timePosition = 20000;
+        const target = h.media.mediaTimeOfPosition;
+        for (let i = 0; i < 4; i++) {
+            h.timer.advance(50);
+            h.report(target);
+        }
+        expect(last(h)).toBe('pause');
+        let position = target;
+        for (let i = 1; i <= 10 && last(h) !== 'play:countIn=0'; i++) {
+            h.timer.advance(50);
+            position = target + i * 50;
+            h.report(position);
+        }
+        expect(last(h)).toBe('play:countIn=0');
+        expect(h.synth.lastSeek()).toBeCloseTo(position + 10, 0); // where the video is now + the re-sync lead
     });
 
     it('a-wrap-seeks-without-pausing-the-media', async () => {
@@ -9680,6 +9702,10 @@ New methods:
         const clock = this._externalClock;
         if (!clock) {
             return;
+        }
+        if (this._awaitingSynthStart && !clock.isSeeking && position === clock.position) {
+            // the media shows the jump, then holds there (buffering): fit from where it moves, as after a stall
+            this._refitOnMove = true;
         }
         if (this._refitOnMove && position !== clock.position) {
             // the media moves (again): fit from here; a fit across a stall re-syncs twice (spike 9 §4)
