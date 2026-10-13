@@ -9269,6 +9269,8 @@ git push
 - Create: `packages/alphatab/test/audio/MediaSynthPlayer.External.test.ts`
 - Modify: `docs/superpowers/specs/2026-10-07-synth-with-media-design.md` (§1 S10 scope, F-5; §7 the
   `updatePosition()` call, F-6)
+- Modify: `packages/playground/src/components/youtube-sync/YoutubeSync.ts` (one more `updatePosition()` when the
+  video pauses)
 
 **Interfaces:**
 - Consumes: `ExternalMediaClock` (`addSample`, `setPlaying`, `notePausedPosition`, `restartFit`, `expectJumpTo`,
@@ -9299,7 +9301,9 @@ F-17's model:
   once the media moves.
 - **Media only** (no SoundFont, or the synth failed): there is no synth to restart after a jump (a seek or a wrap),
   so the next wrap is planned once the media reports from its new position.
-- **A start through alphaTab** begins where alphaTab put the paused media: Stop, a range end and the song's end move
+- **A start through alphaTab** begins where alphaTab put the paused media, which is only as exact as the media's last
+  update: the media stops up to one update after it, and at 1× nothing seeks it, so §7 asks integrations to report
+  once more when the media pauses. Stop, a range end and the song's end move
   it with no update from the media, and an integration may report positions only while the media plays (the
   youtube-sync demo). Inside a lead-in (before bar 1) only the media's own update knows its position.
 - **Every start** fits the clock from the media's first update that moves, as after a stall: the paused position, and
@@ -9959,12 +9963,30 @@ stays best-effort (S9)."
 > If your integration starts alphaTab from the media's own play event (for example YouTube's `PLAYING` state),
 > call `updatePosition()` right before `api.play()`: alphaTab then sees that the media already moves and starts
 > the synthesizer at its position, with no count-in (F-6).
+>
+> When the media pauses, call `updatePosition()` once more (YouTube: at its `PAUSED` state, before you stop your
+> timer), so the next start through alphaTab begins where the media stopped, not where it was one update earlier.
+
+In the playground's `youtube-sync` demo (`packages/playground/src/components/youtube-sync/YoutubeSync.ts`), report
+the position once more when the video pauses:
+
+```diff
+             case 2: // paused
++                // the video stops up to one update after the last one: report where it stopped (spec §7)
++                if (this.player) {
++                    const output = this.api.player?.output as alphaTab.synth.IExternalMediaSynthOutput | undefined;
++                    output?.updatePosition(this.player.getCurrentTime() * 1000);
++                }
+                 this.clearInterval();
+                 this.api.pause();
+                 break;
+```
 
 - [ ] **Step 6: Run the repo gates and commit**
 
 ```bash
 npm run lint && npm run typecheck && npm test
-git add packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts packages/alphatab/test/audio/MediaSynthPlayer.External.test.ts docs/superpowers/specs/2026-10-07-synth-with-media-design.md
+git add packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts packages/alphatab/test/audio/MediaSynthPlayer.External.test.ts docs/superpowers/specs/2026-10-07-synth-with-media-design.md packages/playground/src/components/youtube-sync/YoutubeSync.ts
 git commit -m "feat(web): external media seeks, wraps, stalls and starts inside the media (#2397, F-5, F-6, F-17)"
 git push
 ```
@@ -10163,6 +10185,8 @@ Expected: FAIL — `enableSynthesizerWithMedia` doesn't exist.
      * own controls (YouTube: `controls: 0`, `disablekb: 1`) so starts go through your Play button and keep their
      * count-in. If your integration starts alphaTab from the media's own play event, call `updatePosition()` right
      * before `api.play()`: alphaTab then starts the synthesizer where the media already is, without a count-in.
+     * When the media pauses, call `updatePosition()` once more (YouTube: at its `PAUSED` state, before you stop your
+     * timer), so the next start through alphaTab begins where the media stopped, not where it was one update earlier.
      */
     public enableSynthesizerWithMedia: boolean = false;
 
