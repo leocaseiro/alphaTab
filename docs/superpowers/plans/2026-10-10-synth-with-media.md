@@ -73,7 +73,9 @@ Copied from the spec; every task's requirements include these.
 - Mixing on: no decoded media in memory; CPU and main-thread cost comparable to synth mode (S8, §10).
 - Code homes (§2, §3): the synth "follow media" part is shared TypeScript (`synth/`, must stay transpilable to
   C#/Kotlin: no DOM types, no web APIs); the combined player, sync controller, clocks and probe are web-only
-  (`platform/javascript/`, `platform/worker/`, tagged `@target web`).
+  (`platform/javascript/`, tagged `@target web`). `platform/worker/` is shared with C# and Kotlin: their UI facades
+  create `AlphaSynthWebWorkerApi` and their thread workers implement `IAlphaSynthWorker`. Task 5's web-only additions
+  there are left for an upstream PR (After this plan); this plan's gates don't build C# or Kotlin.
 - Not changed (§4): the normal (non-following) synth path, the audio exporter, the media players' cursor logic.
   Non-mixed modes keep today's behavior (§8).
 - Delivery (§11): a patch for **both** apps — patch-package in `alphaTabWebsite`, `pnpm patch` in
@@ -12509,6 +12511,11 @@ git push
 - **Upstream PR (§11 step 5, optional and later):** only after a maintainer accepts an issue for it.
   - It needs C# and Kotlin versions of the shared changes: `IAlphaSynth.backingTrackVolume` and `synthVolume` on
     their players, and `IUiFacade.createMediaSynthPlayer` returning null.
+  - It needs Task 5's changes in `platform/worker/` made safe for C# and Kotlin, which build that folder:
+    `AlphaSynthWebWorkerApi implements IMediaSynth` (a `@target web` interface), and the `'error'` listener typed
+    with the browser's `ErrorEvent` (on `IAlphaSynthWorker` and in `_onWorkerError`), a type C# and Kotlin don't
+    have. Tag them `@target web`, or give C# and Kotlin their own versions (their thread workers implement
+    `IAlphaSynthWorker`).
   - It needs the alphaTab docs pages for the two settings and the two API members.
   - Drop the `docs/superpowers` and `docs/spikes` commits from the branch.
   - Add the `alphatab-ai-authored-v1` disclosure block to the PR body.
