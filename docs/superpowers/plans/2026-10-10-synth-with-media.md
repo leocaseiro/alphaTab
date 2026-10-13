@@ -11834,8 +11834,12 @@ far behind the synth the media then was). Put to the person as `[Q-D9]`:
 If Option 2: `BackingTrackPlayer` gets an internal `keepsPositionOnSpeedChange` that the combined player sets while
 mixing, `MediaSyncController.speedChanged()` settles without its forced re-sync (the drift rules still re-sync above
 the threshold), Task 9's `speed-change-re-syncs-and-settles` and Task 16's `a-speed-change-while-playing-re-syncs`
-follow, spec §4 and §6.2 get the carve-out, and S12 below says "settles" instead of "one re-sync per step". Run
-the repo gates, and commit and push it separately from the docs.
+follow, spec §4 and §6.2 get the carve-out, and S12 below says "settles" instead of "one re-sync per step". The
+other places that expect a re-sync at each speed change follow too: Step 7's Option 2 (it re-syncs "as
+`speedChanged()` does"), Step 9's listening check, the listening checks in spec §9 and Task 24 (Steps 2 and 5)
+where they name that re-sync, spec §12's tempo-sweep reason and §14's sweep line, and the code comments that
+say so (in `speedChanged()`, the speed setter and Task 16's `the-same-speed-again-changes-nothing`). Run the
+repo gates, and commit and push it separately from the docs.
 
 Add S12 to §1, with the numbers this run measured:
 
