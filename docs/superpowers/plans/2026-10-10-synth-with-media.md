@@ -132,7 +132,7 @@ recommendation as it stands. "Spiked" says whether a run backs it.
 | F-11 | alphaTabWebsite | Both clocks subtract `mediaSyncOffsetInMilliseconds × speed`. The spec states the sign (+ = synth later) and the unit (ms of real time). | Task 11 (code, spec edit) | unit | no (arithmetic) | High |
 | F-13 | both | Limiter: −1 dBFS, ratio 20, knee 0, attack 1 ms, release 100 ms, then a fixed −0.57 dB trim | Task 14 · lab check in Task 22 | unit (node params) + lab (spike 8 script) | yes (spike 8) | High |
 | FYI-3 | both | Keeps `synthVolume` public (D-6, settled in the plan review) | Task 13 (D-6, settled) | none needed | n/a | High |
-| F-10 | both | Turn the flag on in both apps where Task 24's platform rule allows (`supportsMixing()`). Rhythm game: YouTube player with `controls: 0`, `disablekb: 1` where mixing is on (on iOS only if Task 25's YouTube start check passed); elsewhere YouTube keeps its controls. notation-hero: Metronome, Count-In and the Tracks mixer open over a recording (the score's tracks play; mute them there); it has no external player yet (J-2), so its spec delta keeps that player's controls and F-6 for later. | Tasks 24, 26, 27 | manual, in each app | no | Medium |
+| F-10 | both | Turn the flag on in both apps where Task 24's platform rule allows (`supportsMixing()`). Rhythm game: YouTube player with `controls: 0`, `disablekb: 1` where mixing is on (on iOS and desktop Safari only if Task 25's YouTube start checks passed there); elsewhere YouTube keeps its controls. notation-hero: Metronome, Count-In and the Tracks mixer open over a recording (the score's tracks play; mute them there); it has no external player yet (J-2), so its spec delta keeps that player's controls and F-6 for later. | Tasks 24, 26, 27 | manual, in each app | no | Medium |
 | F-18 | both | Acceptance list becomes "S1–S6 (S6: backing track), S4b, S10, S12" after D-3 and D-4 | Task 22 | lab | n/a | High |
 | R-1 | both | iPad with the Ring/Silent switch on: is the backing track still heard? Remedy to try: `navigator.audioSession.type = 'playback'`. | Task 24 (D-8) | iPad, manual | no | Low |
 | R-2 | both | WebKit may refuse a `play()` that comes a bar after the gesture (the count-in) or after the pre-roll seek (speeds other than 1×). Safety net: a backing-track start that never happens pauses both and warns (Task 17); for external media the synth goes silent until the media moves, with no pause and no warning (Task 19). The real fallback is decided at D-7. | Task 17 (safety net) · Task 24 (D-7) | unit + iPad | no | Low |
@@ -12045,8 +12045,10 @@ HTTPS to the iPad (as in Task 24 Step 1), in the Web MIDI Browser app. On a fres
 Play on a YouTube song: does the video start after the count-in bar? Reload, turn the count-in off, set the speed to
 0.75 and tap Play once more: does it start? (Both starts reach YouTube after the tap, as in Task 24 Step 2.) Note
 both answers in Task 24's dated `.md`: Task 26 Step 5 hides YouTube's own controls on iOS only if both started
-(`YOUTUBE_LATE_START_WORKS_ON_IOS`). If the try can't reach the iPad, count it as not started. Then throw the branch
-away:
+(`YOUTUBE_LATE_START_WORKS_ON_IOS`). If the try can't reach the iPad, count it as not started. Do the same two starts
+in Safari on this Mac (a fresh load each; the dev server's `localhost` is a secure context, so mixing is on) and note
+them too: Task 26 Step 5 hides YouTube's own controls in desktop Safari only if both started there
+(`YOUTUBE_LATE_START_WORKS_ON_DESKTOP_SAFARI`). Then throw the branch away:
 
 ```bash
 cd -
@@ -12085,8 +12087,8 @@ Count-In sliders), `src/components/AlphaTabRhythmGame/playground-settings.tsx` (
 
 **F-10** (both apps; our design's problem; not spiked; Medium): §11 step 4 turns the feature on in each app. Where mixing
 is on, the rhythm game creates its YouTube player with `controls: 0` and `disablekb: 1`, so starts go through the
-app's Play button and keep their count-in (§7); elsewhere, and on iOS unless Task 25 showed that a late start plays
-the video there, YouTube keeps its controls.
+app's Play button and keep their count-in (§7); elsewhere, and on iOS and desktop Safari unless Task 25 showed that a
+late start plays the video there, YouTube keeps its controls.
 
 - [ ] **Step 1: A branch in its own worktree, and the alpha that is current today**
 
@@ -12194,17 +12196,27 @@ s.player.enableSynthesizerWithMedia = supportsMixing();
 ```
 
 Where it creates the YouTube player (`src/components/AlphaTabRhythmGame/youtube-player.tsx`), hide YouTube's own
-controls only where mixing is on, and on iOS only if Task 25 Step 2's late starts played the video there. Add
-`controls?: 0 | 1; disablekb?: 0 | 1;` to the `playerVars` type there (today it lists only `autoplay`), and this
-helper to `src/utils.ts`, next to `supportsMixing()`:
+controls only where mixing is on, and on WebKit (iOS and desktop Safari) only if Task 25 Step 2's late starts played
+the video there. Add `controls?: 0 | 1; disablekb?: 0 | 1;` to the `playerVars` type there (today it lists only
+`autoplay`), and this helper to `src/utils.ts`, next to `supportsMixing()`:
 
 ```ts
 // alphaTab #2397: YouTube's own controls are hidden only where mixing is on (starts then keep their count-in),
-// and on iOS only if a start issued after the tap played the video there (Task 25 Step 2)
+// and on WebKit (iOS, desktop Safari) only if a start issued after the tap played the video there (Task 25 Step 2)
 const YOUTUBE_LATE_START_WORKS_ON_IOS = false;
+const YOUTUBE_LATE_START_WORKS_ON_DESKTOP_SAFARI = false;
+
+function isDesktopSafari(): boolean {
+  // Chromium browsers (Chrome, Edge, Opera) name Safari in their user agent too
+  const ua = navigator.userAgent;
+  return /\bSafari\//.test(ua) && !/\bChrom(e|ium)\//.test(ua);
+}
 
 export function hideYouTubeControls(): boolean {
-  return supportsMixing() && (!isIOS() || YOUTUBE_LATE_START_WORKS_ON_IOS);
+  if (!supportsMixing()) return false;
+  if (isIOS()) return YOUTUBE_LATE_START_WORKS_ON_IOS;
+  if (isDesktopSafari()) return YOUTUBE_LATE_START_WORKS_ON_DESKTOP_SAFARI;
+  return true;
 }
 ```
 
@@ -12566,6 +12578,8 @@ git push
   platform rule, chosen in the plan review). Run the sync lab's Start, Loop and Count-in tests and the listening
   check in each, as in Task 24 Step 2. If one misses a §1 target, turn `MIXING_ON.other` off in both apps (the two
   browsers share that row) until it passes.
+  In Firefox, also start a YouTube song in the rhythm game with the count-in on, on a fresh load: if the video
+  doesn't start after the count-in bar, keep YouTube's controls in Firefox too (`hideYouTubeControls()`).
 - **Pre-calculating the first start at a new speed:** tried in spike 13
   (`docs/spikes/issue-2397/spike-13-pre-calculating-the-first-start.md`). A muted warm-up start or probing the
   coming speed doesn't move the first click at slow speeds; the media's time-stretch sets it (about +10 ms whether
