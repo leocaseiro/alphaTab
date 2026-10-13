@@ -11779,6 +11779,9 @@ git push
   (`CountInPreRollBelow1xMs`), `packages/alphatab/test/audio/MediaSyncController.test.ts` (`pre-roll-rules`),
   `packages/alphatab/test/audio/MediaSynthPlayer.CountIn.test.ts` (`below-1x-the-media-pre-rolls-120-ms`,
   `a-speed-change-during-the-count-in-hands-off-at-the-new-speed`, `a-count-in-below-1x-pre-rolls-into-a-lead-in`)
+- Modify (only if Step 7's D-1 answer also covers a value measured at another speed):
+  `packages/alphatab/src/platform/javascript/MediaSynthPlayer.ts` (`_onProbed`),
+  `packages/alphatab/test/audio/MediaSynthPlayer.Transport.test.ts` (a test for that case)
 - Modify (only if D-1 Option 2 is picked, Step 7): `packages/alphatab/src/platform/javascript/MediaSyncController.ts`
   (`latencyChanged`), `packages/alphatab/test/audio/MediaSyncController.test.ts`
   (`latency-change-settles-without-resync`), `packages/alphatab/test/audio/MediaSynthPlayer.Transport.test.ts`
@@ -11966,6 +11969,13 @@ with the synth tracks unmuted and listening, then the same pair at 0.625×. Put 
 - **Option 1 (recommended; implemented; not spiked before this run; Low → as measured):** settle only; the drift
   rules re-sync only if the agreed drift exceeds the threshold.
 - **Option 2 (the spec's current §6.4 text):** re-sync on arrival. It cuts the notes that are sounding (spike 4).
+
+A value measured at another speed can also move the playing speed's straight-line guess mid-playback: after an early
+Play at 0.875×, with only 1× measured and 0.5× being measured, the clock steps 13.1 ms of media time when 0.5× lands
+(15 ms heard, inside S4's ±25 ms below 1×), and only the nudge closes it, in about 6 s. The answer also says whether
+that case gets the same rule as the playing speed's own value; if it does, Task 15's `_onProbed` calls
+`latencyChanged()` whenever the playing speed's latency changes, with a Transport test, the repo gates, and a commit
+and push separate from the docs.
 
 Edit §6.4's sentence "A value that arrives during playback is applied like a speed change (re-sync, settle)" to
 match the answer.
