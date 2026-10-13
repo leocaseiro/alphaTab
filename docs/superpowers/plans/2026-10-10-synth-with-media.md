@@ -11862,7 +11862,11 @@ await syncLab.lab().measureLatency(0.25); await syncLab.lab().measureLatency(2)
 ```
 
 Record the click offsets and the measured latencies next to spike 5's (0.25×: 80 ms, 2×: −6 ms). These speeds are
-reported, not gated.
+reported, not gated. Below 0.5× no criterion applies (spec §1 stops at 0.5×), yet both apps go down to alphaTab's
+0.125× floor and the rhythm game's auto-BPM can start there. The re-sync limits and the nudge work in media ms, so
+what you hear loosens as 1 ÷ speed: at 0.25× an offset under 60 ms is never re-synced, and the nudge takes up to
+about 35 s to close it. Also run `await syncLab.autoBpmLoopTest(0.25, 5, 10)` (0.25× up to about 0.67×) and record
+its first beats and re-syncs, reported, not gated.
 
 - [ ] **Step 3: S4 — the first Play at a speed with no learned start lead (Q-1, D-4: reported, not gated)**
 
