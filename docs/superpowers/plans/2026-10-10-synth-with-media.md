@@ -3143,8 +3143,10 @@ git push
   `correction`, `isActive`, `isSettling`, `startLeads`, `mediaStartLatencies`; `MediaSyncLearnedValues` (where the
   learned start values live: one set per media kind for the page session).
 
-The rules (§6.2): act only on two consecutive readings that agree within 3 ms (their mean). Settle for 1.5 s after
-a play, seek or speed change. Re-sync while settling above 12 ms at 1× and 15 ms elsewhere, and above 120 ms once
+The rules (§6.2): re-syncs, and the learning of the re-sync lead and the media-start latency, act only on two
+consecutive readings that agree within 3 ms (their mean). The nudge's EMA takes each reading itself: while settling
+only a reading that agrees with the one before it, once locked every reading. Settle for 1.5 s after a play, seek or
+speed change. Re-sync while settling above 12 ms at 1× and 15 ms elsewhere, and above 120 ms once
 locked. Nudge `correction = 1 − clamp(EMA(drift) / 3000 ms, ±2 %)` with EMA factor 0.3; while settling at 1× the
 gain is 300 ms (spike 4: 0 re-syncs in 30 starts). Re-sync lead learned from the first agreed reading after each
 re-sync (0–100 ms). **F-3** (both; our design's problem; not spiked; Low): the 1× settle threshold is

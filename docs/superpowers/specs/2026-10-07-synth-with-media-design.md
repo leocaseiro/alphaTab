@@ -171,7 +171,7 @@ Inputs: worklet stamps `(frame, synthMediaTime)`, a media clock giving `mediaTim
 
 | Rule | Value (internal constants) |
 |---|---|
-| Act only on **two consecutive readings that agree within 3 ms** (use their mean) | 3 ms |
+| Re-sync, and learn the re-sync lead and the media-start latency, only on **two consecutive readings that agree within 3 ms** (use their mean). The nudge's EMA takes each reading itself: while settling only one that agrees with the reading before it, once locked every reading | 3 ms |
 | Settling window after play/seek/speed change | 1.5 s |
 | Re-sync threshold while settling | 12 ms at 1× (above two of Chrome's 5.3 ms `<audio>` start steps), 15 ms at other speeds (time-stretch jitter). While settling at 1×, smaller offsets are closed by a faster nudge (gain 300 ms instead of 3000 ms, still ±2 %), not by a re-sync, so sounding notes aren't cut (spike 4: 0 re-syncs in 30 starts; at 4 ms, 10 re-syncs in 6 of 15 starts, and with unmuted drums each one cut them to silence) |
 | Re-sync threshold when locked | 120 ms |
