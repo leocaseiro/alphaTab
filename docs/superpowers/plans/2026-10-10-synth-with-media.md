@@ -12046,9 +12046,25 @@ git merge-base --is-ancestor <gitHead> HEAD && echo ancestor
 If it isn't an ancestor: rebase `feat/2397-synth-with-media` onto `develop` at or after `<gitHead>`, run the repo
 gates, rebuild (`npm run build`), push. If the rebase brings in CoderLine/alphaTab#2932 (the count-in freeze fix for
 the media-only modes, spec §8), expect one conflict in `AlphaSynth.ts`: Task 13's `backingTrackVolume`/`synthVolume`
-members and #2932's `supportsCountIn` getter both sit right after `countInVolume`. Keep both. After the gates, run the
-sync lab's `await syncLab.countInTest(6, 1)` once on the rebuilt branch (S6, the count-in). Then copy the build into
-alphaTabWebsite and create the patch:
+members and #2932's `supportsCountIn` getter both sit right after `countInVolume`. Keep both.
+
+The rebase also brings two merged changes (both in `develop` by 2026-10-08). Neither conflicts, but each needs one
+change:
+
+- CoderLine/alphaTab#2928 adds `test/audio/AlphaSynthWebWorkerApi.test.ts`. Its `TestSynthWorker` has no `'error'`
+  overload (Task 5), so `npm run typecheck` fails. Type its `addEventListener` as
+  `(_event: 'message' | 'error', _handler: (ev: never) => void)`, as Task 5's `FakeSynthWorker` does.
+- CoderLine/alphaTab#2939 counts in one bar plus the beats up to a mid-bar or pick-up start. It ends the count-in
+  early by the distance from the start to the next beat. That distance is in the song's milliseconds, but a count-in
+  that follows the media plays at the media's tempo (Task 2's `bpmOverride`). In `generateCountInMidi`, keep the tempo
+  from before the override (`const songBpm = bpm;`) and scale the distance:
+  `const distanceToClick = ((nextClick.time - this._mainState.currentTime) * songBpm) / bpm;`. Add a test to
+  `FollowMedia.test.ts`: a 120 BPM score, sync points at 100 BPM, a start half a beat before beat 3. The song's beat 3
+  must come 600 ms (one beat at 100 BPM) after the count-in's last click; without the change it comes at 650 ms.
+  Then update spec §2's count-in row and S6: one bar, plus the beats up to the start beat.
+
+After the gates, run the sync lab's `await syncLab.countInTest(6, 1)` once on the rebuilt branch (S6, the count-in).
+Then copy the build into alphaTabWebsite and create the patch:
 
 ```bash
 rm -r node_modules/@coderline/alphatab/dist
