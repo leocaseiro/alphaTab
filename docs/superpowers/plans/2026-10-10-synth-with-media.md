@@ -3154,7 +3154,10 @@ only a reading that agrees with the one before it, once locked every reading. Se
 speed change. Re-sync while settling above 12 ms at 1× and 15 ms elsewhere, and above 120 ms once
 locked. Nudge `correction = 1 − clamp(EMA(drift) / 3000 ms, ±2 %)` with EMA factor 0.3; while settling at 1× the
 gain is 300 ms (spike 4: 0 re-syncs in 30 starts). Re-sync lead learned from the first agreed reading after each
-re-sync (0–100 ms). **F-3** (both; our design's problem; not spiked; Low): the 1× settle threshold is
+re-sync (0–100 ms). After the first start at a speed, a start moves the learned start lead or media-start latency
+only when the value it implies agrees within 10 ms with the one the start before it implied (their mean): one late
+media start (a YouTube start that buffers) teaches nothing. **F-3** (both; our design's problem; not spiked; Low):
+the 1× settle threshold is
 max(12 ms, 2 × `baseLatency` + 1 ms). That equals 12 ms on every machine measured so far (Chrome on macOS:
 `baseLatency` ≤ 5.3 ms); Task 23 runs a higher one (D-2). **G-2:** stamps are ignored for 200 ms after a re-sync.
 **Speed change** (§6.2, spike 11 §1, High): always re-sync, because every change puts Chrome's media 15–43 ms behind
@@ -3347,6 +3350,27 @@ describe('MediaSyncControllerTests', () => {
         expect(fast.controller.mediaStartLatencies.get(1.5)).toBeCloseTo(2, 9);
     });
 
+    it('one-late-hand-off-teaches-nothing', () => {
+        // a media that starts late once (spike 6: about 1 YouTube start in 7-10 buffers) mustn't move the next start
+        const s = setup();
+        const handOff = (late: number) => {
+            s.time.t += 5000;
+            s.controller.startedAfterHandOff(1, true);
+            s.stamp(late);
+            s.stamp(late);
+        };
+        handOff(45); // the first hand-off at a speed learns at once
+        expect(s.controller.mediaStartLatencies.get(1)).toBe(45);
+        handOff(200); // 200 ms late, once
+        expect(s.controller.mediaStartLatencies.get(1)).toBe(45);
+        handOff(0);
+        expect(s.controller.mediaStartLatencies.get(1)).toBe(45);
+        handOff(50); // the media now starts 50 ms later: one start doesn't move it
+        expect(s.controller.mediaStartLatencies.get(1)).toBe(45);
+        handOff(50); // two in a row that agree do
+        expect(s.controller.mediaStartLatencies.get(1)).toBe(95);
+    });
+
     it('a-jumpy-clock-must-not-re-sync', () => {
         const s = settled();
         for (let i = 0; i < 6; i++) {
@@ -3435,6 +3459,11 @@ export class MediaSyncConstants {
     public static readonly StartLeadMaxMs: number = 150;
     public static readonly MediaStartLatencyMinMs: number = -50;
     public static readonly MediaStartLatencyMaxMs: number = 250;
+    /**
+     * After the first start at a speed, a learned start value moves only when two starts in a row imply values within
+     * this of each other (to their mean): one late media start (a YouTube start that buffers) teaches nothing.
+     */
+    public static readonly StartAgreementMs: number = 10;
     /** At speeds other than 1× both start this much media time before the target (spikes 4 and 6). */
     public static readonly PreRollMs: number = 60;
     /** F-14 (decision D-3): the count-in's media pre-roll below 1× (spike 6). */
@@ -3532,6 +3561,9 @@ export class MediaSyncLearnedValues {
     public static readonly externalMedia: MediaSyncLearnedValues = new MediaSyncLearnedValues();
     public readonly startLeads: PerSpeedValues = new PerSpeedValues();
     public readonly mediaStartLatencies: PerSpeedValues = new PerSpeedValues();
+    /** What the last start at each speed implied for them (two starts in a row must agree). */
+    public readonly lastStartLeads: PerSpeedValues = new PerSpeedValues();
+    public readonly lastMediaStartLatencies: PerSpeedValues = new PerSpeedValues();
 }
 
 /**
@@ -3554,6 +3586,7 @@ export class MediaSyncController {
     private readonly _synth: IMediaSyncSynth;
     private readonly _clock: IMediaSyncClock;
     private readonly _time: IMediaSyncTime;
+    private readonly _learned: MediaSyncLearnedValues;
     private _speed: number = 1;
     private _active: boolean = false;
     private _window: number[] = [];
@@ -3579,6 +3612,7 @@ export class MediaSyncController {
         this._synth = synth;
         this._clock = clock;
         this._time = time;
+        this._learned = learned;
         this.startLeads = learned.startLeads;
         this.mediaStartLatencies = learned.mediaStartLatencies;
     }
@@ -3703,13 +3737,13 @@ export class MediaSyncController {
         if (this._learnMediaStartLatency && hasAgreed) {
             // the media started agreed/speed ms late (synth ahead): issue its play() that much earlier next time
             this._learnMediaStartLatency = false;
-            this.mediaStartLatencies.set(
+            MediaSyncController._learnFromStart(
+                this.mediaStartLatencies,
+                this._learned.lastMediaStartLatencies,
                 speed,
-                MediaSyncController._clamp(
-                    this.mediaStartLatencies.get(speed) + agreed / speed,
-                    MediaSyncConstants.MediaStartLatencyMinMs,
-                    MediaSyncConstants.MediaStartLatencyMaxMs
-                )
+                this.mediaStartLatencies.get(speed) + agreed / speed,
+                MediaSyncConstants.MediaStartLatencyMinMs,
+                MediaSyncConstants.MediaStartLatencyMaxMs
             );
         }
         if (this._learnResyncLead && hasAgreed) {
@@ -3776,6 +3810,26 @@ export class MediaSyncController {
         return 'nudge';
     }
 
+    /**
+     * One start's implied value (the value it used plus its correction) for a learned start value: the first start at
+     * a speed sets it; after that it moves only when this start and the one before it agree (§6.2).
+     */
+    private static _learnFromStart(
+        values: PerSpeedValues,
+        last: PerSpeedValues,
+        speed: number,
+        implied: number,
+        min: number,
+        max: number
+    ): void {
+        if (!values.has(speed)) {
+            values.set(speed, MediaSyncController._clamp(implied, min, max));
+        } else if (last.has(speed) && Math.abs(implied - last.get(speed)) <= MediaSyncConstants.StartAgreementMs) {
+            values.set(speed, MediaSyncController._clamp((implied + last.get(speed)) / 2, min, max));
+        }
+        last.set(speed, implied);
+    }
+
     private static _clamp(value: number, min: number, max: number): number {
         return Math.max(min, Math.min(max, value));
     }
@@ -3785,7 +3839,7 @@ export class MediaSyncController {
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `npx vitest run test/audio/MediaSyncController.test.ts`
-Expected: PASS (16 tests).
+Expected: PASS (17 tests).
 
 - [ ] **Step 5: Run the repo gates and commit**
 
@@ -3819,9 +3873,10 @@ earlier in the song.
 - At other speeds both start 60 ms of media time early, and the synth starts where the media will be heard
   (latency applied). Near media time 0 the pre-roll stops at 0: the media can't seek below it.
 - L is learned from the median of the first three readings after Play. If a re-sync comes first, it is learned from
-  that reading instead.
+  that reading instead. After the first start at a speed, L moves only when two starts in a row agree (Task 9).
 - Count-in hand-off: `play()` at `countInEndFrame / sampleRate − (mediaStartLatency(speed) + preRoll / speed)`. The
-  media-start latency is learned from the first agreed reading.
+  media-start latency is learned from the first agreed reading. After the first hand-off at a speed, it moves only when
+  two hand-offs in a row agree (Task 9).
 
 **F-14** (both; our design's problem; spiked in spike 6 with an emulated count-in; Medium): the count-in pre-roll
 below 1× is 120 ms (0.5× downbeat +4.5…+13.9 ms; 60 ms gave +7.2…+20.5 ms). Decision D-3 re-measures it with the
@@ -3917,6 +3972,27 @@ describe('MediaSyncControllerStartTests', () => {
         s.stamp(21); // 20.5 > 12 while settling
         expect(s.synth.seeks.length).toBe(1);
         expect(s.controller.startLeads.get(1)).toBeCloseTo(-20.5, 9);
+    });
+
+    it('one-late-start-teaches-nothing', () => {
+        const s = setup();
+        const start = (offset: number) => {
+            s.time.t += 5000;
+            s.controller.started(s.controller.planStart(5000, 1, 0), true);
+            s.stamp(offset);
+            s.stamp(offset);
+            s.stamp(offset);
+        };
+        start(-5); // the first start at a speed learns at once: the synth was 5 ms behind
+        expect(s.controller.startLeads.get(1)).toBe(5);
+        start(200); // the media started 200 ms late, once: the synth ran ahead
+        expect(s.controller.startLeads.get(1)).toBe(5);
+        start(0);
+        expect(s.controller.startLeads.get(1)).toBe(5);
+        start(-20); // the synth now comes out 20 ms later: one start doesn't move it
+        expect(s.controller.startLeads.get(1)).toBe(5);
+        start(-20); // two in a row that agree do
+        expect(s.controller.startLeads.get(1)).toBe(25);
     });
 
     it('the-catch-up-gap-raises-the-settle-threshold-until-caught-up', () => {
@@ -4077,14 +4153,13 @@ New methods:
     }
 
     private _learnStart(speed: number, offset: number): void {
-        const current = this.startLeads.get(speed);
-        this.startLeads.set(
+        MediaSyncController._learnFromStart(
+            this.startLeads,
+            this._learned.lastStartLeads,
             speed,
-            MediaSyncController._clamp(
-                current - (offset + this._catchUpGap) / speed,
-                MediaSyncConstants.StartLeadMinMs,
-                MediaSyncConstants.StartLeadMaxMs
-            )
+            this.startLeads.get(speed) - (offset + this._catchUpGap) / speed,
+            MediaSyncConstants.StartLeadMinMs,
+            MediaSyncConstants.StartLeadMaxMs
         );
     }
 ```
