@@ -11115,7 +11115,8 @@ async function countInPreRollTest(speed = 0.5, n = 6) {
 }
 
 /**
- * S10: loops `bars` bars from beat 40 for `wraps` repetitions; every beep must have its own click.
+ * S10: loops `bars` bars from beat 40 for `wraps` repetitions; every beep must have its own click, and each
+ * repetition's first beat is checked against S4b's tolerance.
  */
 async function loopTest(speed: number, bars = 2, wraps = 10, beatsPerBar = 4) {
     const sr = ctx().sampleRate;
@@ -11137,13 +11138,18 @@ async function loopTest(speed: number, bars = 2, wraps = 10, beatsPerBar = 4) {
     api.playbackRange = range;
     api.isLooping = true;
     const wrapsBefore = lab().wraps.length;
+    // the context frame of each wrap, as autoBpmLoopTest records it
+    const wrapFrames: number[] = [];
+    const unsubscribeWraps = api.playerFinished.on(() => wrapFrames.push(ctx().currentTime * sr));
     await sleep(300);
     tapOnsets.media.length = 0;
     tapOnsets.synth.length = 0;
     const playFrame = ctx().currentTime * sr;
+    const playT = performance.now();
     api.play();
     await sleep(((endMedia - startMedia) / speed) * (wraps + 1) + 300);
     const wrapCount = lab().wraps.length - wrapsBefore;
+    unsubscribeWraps();
     restore();
     await sleep(300);
     const media = tapOnsets.media.filter(f => f > playFrame).sort((a, b) => a - b);
@@ -11168,6 +11174,13 @@ async function loopTest(speed: number, bars = 2, wraps = 10, beatsPerBar = 4) {
     }
     const abs = offsets.map(Math.abs).sort((a, b) => a - b);
     const sortedGaps = [...gaps].sort((a, b) => a - b);
+    // each repetition's first beat: the first beep after each of the first `wraps` wraps (as autoBpmLoopTest);
+    // a later wrap comes too close to the run's end for its first beat to be heard
+    const firstBeats = wrapFrames.slice(0, wraps).map(w => {
+        const beep = media.find(f => f > w);
+        return beep === undefined || synth.length === 0 ? null : r1(((nearest(synth, beep) - beep) / sr) * 1000);
+    });
+    const tolerance = firstClickToleranceMs(speed);
     const result = {
         speed,
         beeps: media.length,
@@ -11179,7 +11192,12 @@ async function loopTest(speed: number, bars = 2, wraps = 10, beatsPerBar = 4) {
         wraps: wrapCount,
         gaps,
         medianGapMs: sortedGaps.length ? sortedGaps[Math.floor(sortedGaps.length / 2)] : null,
-        beatMs: Math.round(beatMs)
+        beatMs: Math.round(beatMs),
+        firstBeatsMs: firstBeats,
+        toleranceMs: r1(tolerance),
+        firstBeatsWithinTolerance:
+            firstBeats.length === wraps && firstBeats.every(x => x !== null && Math.abs(x) <= tolerance),
+        resyncs: lab().stats.resyncTimes.filter(t => t > playT).length
     };
     record('loopTest', result);
     return result;
@@ -11783,7 +11801,7 @@ Put to the person as `[Q-D5]`:
 - **Scenario:** in notation-hero you loop two bars to practice; at every wrap the recording jumps back to the
   first beat.
 - **Option 1 (recommended; provisional; partly spiked in spike 4; Medium):** a median gate (median added time per
-  wrap ≤ 30 ms, every first beat within S4b), plus the ear check.
+  wrap ≤ 30 ms, every first beat within S4b: each loop test row's `firstBeatsWithinTolerance`), plus the ear check.
 - **Option 2 (spike 4; Medium):** every wrap ≤ 30 ms. A single slow seek fails it.
 
 Write the gate into §1 S10.
@@ -11945,7 +11963,8 @@ above 5.5 ms, and delivery (Tasks 25–27) doesn't wait for it.
 await syncLab.startTest(10, 30, 1); await syncLab.startTest(10, 0, 1); await syncLab.loopTest(1)
 ```
 
-Record each row's `toleranceMs`, `withinTolerance`, `resyncs` and `lockMs`.
+Record each start test's `toleranceMs` and its rows' `withinTolerance`, `resyncs` and `lockMs`; from the loop test,
+`toleranceMs`, `firstBeatsMs`, `firstBeatsWithinTolerance` and `resyncs`.
 
 - [ ] **Step 3: STOP — decision gate D-2**
 
