@@ -23,7 +23,7 @@ wrap.
 `createMediaElementSource`, `DynamicsCompressorNode`), vitest (Node), Biome, the alphaTab playground (Vite).
 
 **Spec:** [`docs/superpowers/specs/2026-10-07-synth-with-media-design.md`](../specs/2026-10-07-synth-with-media-design.md)
-@ `49050fac` (its review closed after lap 2 at `f3aff5b4`; this plan's review amended it after that; its §14 open
+@ `97afd3ab` (its review closed after lap 2 at `f3aff5b4`; this plan's review amended it after that; its §14 open
 items are settled by this plan). Section numbers below (§4, §6.2, …) are the spec's. Spike evidence: [`docs/spikes/issue-2397/`](../../spikes/issue-2397/).
 
 ---
