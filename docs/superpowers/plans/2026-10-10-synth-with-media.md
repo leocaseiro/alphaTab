@@ -4851,7 +4851,9 @@ the beep being heard). The probe's tap is registered in alphaTab's own worklet m
 (CSP- and bundler-safe). The spec's ~1 s probe with 125 ms spacing is **untested**: the spike used 4 s with 250 ms
 spacing, and Task 22 compares the two. A measurement gives up after the probe's length at that speed plus 2 s: WebKit
 may never load or start a hidden `<audio>` outside a gesture, and a measurement that never ends would block every
-later one. The schedule (Task 15) then leaves that speed unmeasured.
+later one. A measurement whose tap hears fewer than two beeps fails too, rather than giving 0: the first beep is
+skipped, so nothing is left to measure (a time-stretch may smear the 3 ms beeps under the tap's threshold). The
+schedule (Task 15) then leaves that speed unmeasured.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4898,8 +4900,12 @@ describe('MediaLatencyProbeTests', () => {
         });
     }
 
-    it('no-onsets-is-0', () => {
-        expect(MediaLatencyProbe.latencyFromOnsets([], [], [0.125], 1)).toBe(0);
+    it('fewer-than-two-onsets-is-nan', () => {
+        // the first beep is skipped: no beep or one beep heard is no measurement (measure() then fails)
+        const polls = [new ProbePoll(0, 1), new ProbePoll(1, 2)];
+        expect(MediaLatencyProbe.latencyFromOnsets([], polls, [0.125, 0.25], 1)).toBeNaN();
+        expect(MediaLatencyProbe.latencyFromOnsets([1.105], polls, [0.125, 0.25], 1)).toBeNaN();
+        expect(MediaLatencyProbe.latencyFromOnsets([1.105, 1.23], polls, [0.125, 0.25], 1)).toBeCloseTo(20, 6);
     });
 
     it('background-speeds-and-a-session-cache', () => {
@@ -4934,6 +4940,45 @@ describe('MediaLatencyProbeTests', () => {
         expect(paused).toBe(1);
         vi.unstubAllGlobals();
         vi.useRealTimers();
+    });
+
+    it('a-measurement-that-hears-no-beeps-fails', async () => {
+        // the hidden <audio> played to its end, but the tap heard no beep: not a measured 0 (Task 15)
+        vi.stubGlobal(
+            'Audio',
+            class {
+                public preload: string = '';
+                public playbackRate: number = 1;
+                public currentTime: number = 0;
+                public ended: boolean = false;
+                public addEventListener(_type: string, listener: () => void): void {
+                    listener(); // canplaythrough at once
+                }
+                public play(): Promise<void> {
+                    this.ended = true;
+                    return Promise.resolve();
+                }
+                public pause(): void {}
+            }
+        );
+        vi.stubGlobal(
+            'AudioWorkletNode',
+            class {
+                public port: { onmessage: unknown } = { onmessage: null };
+                public connect(): void {}
+                public disconnect(): void {}
+            }
+        );
+        const context = {
+            sampleRate: 48000,
+            currentTime: 0,
+            destination: {},
+            createMediaElementSource: () => ({ connect: () => {}, disconnect: () => {} })
+        } as unknown as AudioContext;
+        await expect(new MediaLatencyProbe(context, () => Promise.resolve()).measure(1)).rejects.toThrow(
+            'no beeps heard'
+        );
+        vi.unstubAllGlobals();
     });
 });
 ```
@@ -5125,7 +5170,7 @@ export class MediaLatencyProbe implements IMediaLatencyProbe {
 
     /**
      * The median of (currentTime reaching a beep − the beep being heard), real ms. The first beep carries the
-     * start transient and is skipped. No onsets: 0.
+     * start transient and is skipped. Fewer than two beeps heard: NaN, not a measured 0 (measure() then fails).
      */
     public static latencyFromOnsets(onsets: number[], polls: ProbePoll[], beepTimes: number[], speed: number): number {
         const offsets: number[] = [];
@@ -5150,7 +5195,7 @@ export class MediaLatencyProbe implements IMediaLatencyProbe {
         }
         offsets.shift();
         if (offsets.length === 0) {
-            return 0;
+            return Number.NaN;
         }
         offsets.sort((x, y) => x - y);
         return offsets[Math.floor(offsets.length / 2)];
@@ -5216,7 +5261,12 @@ export class MediaLatencyProbe implements IMediaLatencyProbe {
             source?.disconnect();
             tap?.disconnect();
         }
-        return MediaLatencyProbe.latencyFromOnsets(onsets, polls, wav.beepTimes, speed);
+        const latency = MediaLatencyProbe.latencyFromOnsets(onsets, polls, wav.beepTimes, speed);
+        if (Number.isNaN(latency)) {
+            // the media played, but its tap heard fewer than two beeps: a failure, not a measured 0 (Task 15)
+            throw new Error('no beeps heard');
+        }
+        return latency;
     }
 }
 ```
@@ -5224,7 +5274,7 @@ export class MediaLatencyProbe implements IMediaLatencyProbe {
 - [ ] **Step 5: Run the tests to see them pass**
 
 Run: `npx vitest run test/audio/MediaLatencyProbe.test.ts`
-Expected: PASS (7 tests).
+Expected: PASS (8 tests).
 
 - [ ] **Step 6: Fix the §13 wording (G-7)**
 
@@ -6096,9 +6146,9 @@ Task 19 external media. What this task settles:
   `timeUpdate`); the device methods come from the synth output, because the media now plays through its
   AudioContext.
 - **Probe schedule (§6.4):** 1, 0.5, 0.75, 1.25, 1.5× in the background after ready, one at a time, waiting for a
-  running AudioContext. A speed without a value goes to the front. A failure (refused, or no result within the
-  probe's time limit, Task 12) is not a measured 0: that speed stays unmeasured, so the guess applies, and it is
-  measured again on its next use (a Play or a speed change).
+  running AudioContext. A speed without a value goes to the front. A failure (refused, no result within the
+  probe's time limit, or fewer than two beeps heard, Task 12) is not a measured 0: that speed stays unmeasured, so
+  the guess applies, and it is measured again on its next use (a Play or a speed change).
 
 - [ ] **Step 1: BackingTrackPlayer helpers**
 
@@ -7443,8 +7493,8 @@ export class MediaSynthPlayer implements IAlphaSynth {
     }
 
     /**
-     * A refused or timed-out measurement is not a measured 0: the speed stays unmeasured (the guess applies) and is
-     * measured again on its next use, a Play or a speed change (§6.4).
+     * A refused, timed-out or silent (no beeps heard) measurement is not a measured 0: the speed stays unmeasured
+     * (the guess applies) and is measured again on its next use, a Play or a speed change (§6.4).
      */
     private _onProbeFailed(speed: number, e: unknown): void {
         this._probing = false;
@@ -11824,8 +11874,8 @@ ready", tick **count-in**, keep **Speed** at 1 and tap **Play / Pause** once. Th
 the media start, and how long after the tap) and any player warning, such as "The media did not start". Reload, untick **count-in**, set **Speed** to 0.75 and tap **Play / Pause** once (a start below 1× seeks the
 media and plays it after the seek, also outside the tap). Record both rows. Then copy
 `syncLab.lab().probeLatencies` and any "Measuring the media latency" warning from the log: a speed missing from
-the list is one the probe could not measure on this device (its hidden `<audio>` was refused or never loaded), not a
-sync miss.
+the list is one the probe could not measure on this device (its hidden `<audio>` was refused or never loaded, or its
+tap heard no beeps: "no beeps heard"), not a sync miss.
 
 Then the measured runs, with the page's **Start test**, **Loop test**, **Count-in test**, **Seek test** and
 **Speed-change test** buttons (**Speed** sets the speed; the rows print in the log), or from the console where there is
