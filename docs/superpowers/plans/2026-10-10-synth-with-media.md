@@ -12052,7 +12052,11 @@ way, remove "**untested**" from §6.4 and state what was measured.
   ```
 
   Then turn the metronome on and tune with `api.settings.player.mediaSyncOffsetInMilliseconds = <ms>` (read live: no
-  `updateSettings()` needed).
+  `updateSettings()` needed). With that offset set and the count-in off, start the video three times with
+  `api.play()` at 1× (pause in between), then read `api.player.instance.controller.startLeads.toRecord()` and record
+  the 1× value in the dated acceptance `.md`. YouTube's start lead includes the offset (a positive offset lowers it by
+  as much), and the lead stops at −50 ms (G-4): at −50, every Play without a count-in starts the synth ahead of the
+  video and re-syncs once. If it reads −50, the floor needs a decision before Task 26 ships the offset.
 
 - [ ] **Step 10: F-18 — the acceptance list**
 
