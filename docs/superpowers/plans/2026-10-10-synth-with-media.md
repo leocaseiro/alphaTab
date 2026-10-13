@@ -128,7 +128,7 @@ recommendation as it stands. "Spiked" says whether a run backs it.
 | F-15 | both | Re-run spike 4's loop test at 1× and 1.5×, listen at each wrap the lab flags, then pick the S10 gate (provisional: a median gate plus an ear check) | Task 22 (D-5) | lab loop test | partly (spike 4) | Medium |
 | F-5 | alphaTabWebsite | External media wraps without pausing: the media seeks to the range start, and the synth stays silent until the media shows the jump and its clock has a fit again (three position updates over 100 ms or more). It then restarts at the media's position, past the range start (about 110–160 ms at 1× with the rhythm game's 50 ms updates), so every pass of a YouTube loop plays its first beat without a click. S10 is scoped to the backing track. | Task 19 (code, spec edit) · Task 26 (by ear) | unit (fakes) · by ear | on fakes only | Low |
 | F-6 | alphaTabWebsite | A start pressed inside YouTube (the position moved at `play()` or within 100 ms) gets no count-in and no learning. Integrations call `updatePosition()` right before `api.play()`. | Task 19 (code, spec §7 edit) · Task 20 (setting docs) | unit | no | Low |
-| F-17 | alphaTabWebsite | Stall rule: the same position for ≥ 100 ms silences the synth. Once the position moves, the fit restarts and the synth restarts at the media's position. | Tasks 11, 19 | unit | modeled (spike 9 §4) | Medium |
+| F-17 | alphaTabWebsite | Stall rule: the same position for ≥ 100 ms silences the synth. Once the position moves, the fit restarts there, and the synth restarts at the media's position when the clock has a fit again (three position updates over 100 ms or more). | Tasks 11, 19 | unit | modeled (spike 9 §4) | Medium |
 | F-11 | alphaTabWebsite | Both clocks subtract `mediaSyncOffsetInMilliseconds × speed`. The spec states the sign (+ = synth later) and the unit (ms of real time). | Task 11 (code, spec edit) | unit | no (arithmetic) | High |
 | F-13 | both | Limiter: −1 dBFS, ratio 20, knee 0, attack 1 ms, release 100 ms, then a fixed −0.57 dB trim | Task 14 · lab check in Task 22 | unit (node params) + lab (spike 8 script) | yes (spike 8) | High |
 | FYI-3 | both | Keeps `synthVolume` public (D-6, settled in the plan review) | Task 13 (D-6, settled) | none needed | n/a | High |
@@ -4672,7 +4672,7 @@ export class ExternalMediaClock implements IMediaClock {
     }
 
     public whenSeeked(action: () => void): void {
-        // an external seek can't be awaited here; the combined player waits for the first update after it
+        // an external seek can't be awaited here; the clock gives no time until it has a fit again
         action();
     }
 
@@ -9215,7 +9215,8 @@ F-17's model:
   came from the media's own player. The synth then starts at the media's position, with no count-in and no
   learning.
 - **F-17** (alphaTabWebsite; modeled in spike 9 §4; Medium): the same position for 100 ms or more silences the
-  synth. On the first update that moves, the fit restarts there and the synth restarts.
+  synth. On the first update that moves, the fit restarts there; the synth restarts at the media's position once
+  the clock has a fit again (three updates over 100 ms or more).
 - **A media that hasn't started 500 ms after its planned start** (buffering): the synth goes silent and restarts
   once the media moves.
 - **Media only** (no SoundFont, or the synth failed): there is no synth to restart after a jump (a seek or a wrap),
@@ -9257,7 +9258,7 @@ function last(h: MediaSynthHarness): string {
 }
 
 describe('MediaSynthPlayerExternalTests', () => {
-    it('a-seek-silences-the-synth-until-the-first-update-after-the-jump', async () => {
+    it('a-seek-silences-the-synth-until-the-clock-has-a-fit-again', async () => {
         const h = await externalPlaying();
         h.player.timePosition = 20000;
         const target = h.media.mediaTimeOfPosition;
@@ -9376,7 +9377,7 @@ describe('MediaSynthPlayerExternalTests', () => {
             h.timer.advance(50);
             h.report(start + i * 50 * 1.05);
         }
-        expect(last(h)).toBe('play:countIn=0'); // the synth restarts at the range start
+        expect(last(h)).toBe('play:countIn=0'); // the synth restarts past the range start, where the media is
     });
 
     it('a-whole-song-loop-wraps-to-bar-1-after-a-lead-in', async () => {
@@ -9746,7 +9747,7 @@ pausing (next).
          this.diagnostics.wraps.push(this._timer.now());
 +        const range = this._playbackRange;
 +        if (this._externalClock) {
-+            // F-5: external media wraps without pausing: seek it, the synth waits for the first update after
++            // F-5: external media wraps without pausing: seek it; the synth waits until its clock has a fit again
 +            // without a range the song's start: bar 1's media time, as the backing-track wrap and today's player go
 +            const start = this._media.tickToMediaTime(range ? range.startTick : 0);
 +            this._media.seekMediaTo(start);
