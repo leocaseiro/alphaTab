@@ -41,7 +41,7 @@ items are settled by this plan). Section numbers below (§4, §6.2, …) are the
 - **Each task ends green and pushed.** Run the gates named in the task, commit, `git push`. Never
   `git commit --no-verify` / `git push --no-verify`. Never a bare `git stash` (the stash is shared across
   worktrees). Tracked files never contain absolute home-directory paths: use repo-relative paths.
-- **Decision gates (D-1 … D-9)** are marked **STOP — decision gate**. The main session runs them, never a task
+- **Decision gates (D-1 … D-10)** are marked **STOP — decision gate**. The main session runs them, never a task
   subagent: run the measurement named in the gate first, then put the choice to the person as an
   `AskUserQuestion` picker tagged `[Q-D<n>]`, following `spec-triage-loop:triage` (load it before the first picker):
   scenario first, the app it affects, High / Medium / Low confidence per option, whether each option was spiked.
@@ -172,6 +172,7 @@ Each one is flagged where it is used. Keep or drop them during the plan review.
 | D-7 | R-2: the fallback when WebKit refuses the delayed `play()` | Task 24 | safety net only |
 | D-8 | R-1: whether to set `navigator.audioSession.type = 'playback'` while mixing on iOS | Task 24 | not set |
 | D-9 | Speed changes while mixing: keep the media player's seek and one re-sync per step **or** change the media's speed without that seek and let a step settle | Task 22 | keep |
+| D-10 | A device class that missed a §1 target or failed the listening check: "off" until it passes **or** "on" with the miss written down | Task 24 | off |
 
 ## File structure
 
@@ -12114,8 +12115,9 @@ git push
 §9's target-device row: before delivery, run the sync lab's start, loop and count-in tests and the listening check
 on two devices. One is an iPad (WebKit, inside the Web MIDI Browser shim app both apps use there); the other is an
 Android tablet (Chrome). Load the lab over HTTPS: AudioWorklets need a secure context. A device that misses the
-targets stays media-only in both apps until it passes (each app leaves the flag off there): Step 5 writes that down
-as a platform rule, and Tasks 26 and 27 apply it.
+targets or fails the listening check goes to the person (D-10), who keeps it media-only in both apps until it
+passes (each app leaves the flag off there) or keeps mixing on with the miss written down: Step 5 writes that
+down as a platform rule, and Tasks 26 and 27 apply it.
 
 - [ ] **Step 1: Serve the lab over HTTPS on the local network**
 
@@ -12146,7 +12148,8 @@ await syncLab.midPlaybackTest(10, 30, 'seek', 1); await syncLab.midPlaybackTest(
 Run **Seek test** and **Speed-change test** at 1× and at 0.5×: they are S4b, which spec §9 asks of the devices too.
 
 Then do the listening check: the file's audio, synth tracks on; Play, a seek, a speed change. Listen for cut notes
-and dropouts. Put the results beside the §1 targets in the dated `.md`.
+and dropouts beyond the one re-sync at each speed change (Task 22 Step 9 expects that one). Put the results beside
+the §1 targets in the dated `.md`: what was heard, in the recording or the synth tracks, and after which action.
 
 - [ ] **Step 3: STOP — decision gate D-8 (R-1), iOS's Ring/Silent switch**
 
@@ -12193,13 +12196,17 @@ it separately from the docs.
 - [ ] **Step 5: The platform rule (Tasks 26 and 27 copy it)**
 
 End the dated `.md` with a **Platform rule** table: one row per platform class, how the apps detect it, the runs
-that cover it, and the flag. A class that missed a §1 target, or that D-8 left media-only, gets "off".
+that cover it, and the flag. A class that D-8 left media-only gets "off". A class that missed a §1 target, or
+whose listening check heard dropouts or cut notes beyond the one re-sync at each speed change, is decision gate
+D-10 (STOP): put it to the person as `[Q-D10]`, with the miss (by how many ms, or what was heard and after which
+action) and whether a listener hears it. **Option 1 (the default):** "off" until it passes again.
+**Option 2:** "on", with the miss written in that class's row.
 
 | Class | Detected by | Runs | Flag |
 |---|---|---|---|
-| Chromium on a desktop | `Chrome/` in the user agent, no `Android` | Task 22, and Task 23 if a machine was found | on, unless a run missed a §1 target |
-| Android Chrome | `Chrome/` and `Android` in the user agent | this task | on, unless it missed a target |
-| iOS and iPadOS (WebKit: every browser there) | the rhythm game's `isIOS()` | this task, D-7, D-8 | on, unless it missed a target or D-8 left mixing off on iOS |
+| Chromium on a desktop | `Chrome/` in the user agent, no `Android` | Task 22, and Task 23 if a machine was found | on, unless D-10 turned it off (a missed §1 target, or Task 22 Step 9's listening check) |
+| Android Chrome | `Chrome/` and `Android` in the user agent | this task | on, unless D-10 turned it off |
+| iOS and iPadOS (WebKit: every browser there) | the rhythm game's `isIOS()` | this task, D-7, D-8 | on, unless D-10 turned it off or D-8 left mixing off on iOS |
 | Every other browser (desktop Safari, desktop Firefox) | none of the above | none | on (chosen in the plan review: reach over a run; spec §13's manual checks are still owed) |
 
 - [ ] **Step 6: Commit**
@@ -12826,8 +12833,9 @@ git push
   `MessagePort`; Firefox and Safari tuning beyond the probe.
 - **Spec §13's manual checks on desktop Safari and desktop Firefox:** both get mixing without a run (Task 24's
   platform rule, chosen in the plan review). Run the sync lab's Start, Loop and Count-in tests and the listening
-  check in each, as in Task 24 Step 2. If one misses a §1 target, turn `MIXING_ON.other` off in both apps (the two
-  browsers share that row) until it passes.
+  check in each, as in Task 24 Step 2. If one misses a §1 target or fails the listening check, put it to the person
+  as D-10 does in Task 24: `MIXING_ON.other` off in both apps (the two browsers share that row) until it passes, or
+  on with the miss written down.
   In Firefox, also start a YouTube song in the rhythm game with the count-in on, on a fresh load: if the video
   doesn't start after the count-in bar, keep YouTube's controls in Firefox too (`hideYouTubeControls()`).
 - **Pre-calculating the first start at a new speed:** tried in spike 13
