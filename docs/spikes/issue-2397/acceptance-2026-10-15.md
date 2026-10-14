@@ -101,9 +101,15 @@ The first count-in at an unlearned speed: (open).
 | 1× | −9 ms | 0 | 0…+5.3, within ±11 | 89/89 |
 | 1.5× | **47.9 ms** | 10/10 (48–53 ms) | −1.3…+1.3, within ±20 | 88/88, 1 re-sync |
 
-Away from 1× every wrap restarts through the start handshake, which pre-rolls the media 60 ms and waits for its
-seek: the recording stumbles by ~50–75 ms at each wrap. Both of D-5's gates (median ≤ 30 ms; every wrap ≤ 30 ms)
-fail at 0.5× and 1.5×.
+A second load: 0.75× **+87.4 ms** (87–93 ms at every wrap, first beats −4.5…−15.1, 0 missing); 0.5× +67.3 ms.
+
+Away from 1× every wrap restarts through the start plan, which pre-rolls the media (and the synth) 60 media ms, so
+each wrap adds about 60 ÷ speed minus the media's latency head start: the recording stumbles by ~50–90 ms at each
+wrap. Both of D-5's gates (median ≤ 30 ms; every wrap ≤ 30 ms) fail at 0.5×, 0.75× and 1.5×.
+
+A throwaway spike (not committed) fired the wrap early by the pre-roll: 0.75× +7.4 ms, 1.5× +10.6 ms, 1× −9 ms (all
+pass), but 0.5× −50 ms (the pass now comes early). The shift moves the gap one-for-one, but the lead each speed needs
+differs (about 35, 66 and 72 media ms at 0.5×, 0.75× and 1.5×).
 
 ### S12 — the apps' speed patterns (`sweepTest`, `autoBpmLoopTest`)
 
